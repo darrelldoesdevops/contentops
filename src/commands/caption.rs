@@ -478,7 +478,98 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
         })?;
     }
 
-    // 8. Cleanup temp files
+    // 8. Burn captions into video (if --burn flag passed)
+    if args.burn && !words.is_empty() {
+        let video_output = derive_caption_output(&args.input, "captioned", "mp4");
+
+        let ass_content = generate_ass(&words);
+        let ass_temp = make_temp_file(parent_dir, ".ass")?;
+        let ass_path = ass_temp.path().to_path_buf();
+        registry.register(ass_path.clone());
+        std::fs::write(&ass_path, ass_content).map_err(|e| AppError::StageIo {
+            stage: "write-ass".to_string(),
+            source: e,
+        })?;
+
+        let vf_string = format!("ass={}", ass_path.to_string_lossy());
+        let video_output_str = video_output.to_string_lossy().to_string();
+
+        let burn_args = [
+            "-i",
+            &input_str,
+            "-vf",
+            &vf_string,
+            "-c:v",
+            "libx264",
+            "-crf",
+            "23",
+            "-preset",
+            "medium",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "copy",
+            &video_output_str,
+        ];
+
+        let spinner = if !verbose {
+            Some(make_spinner("Burning captions...".to_string()))
+        } else {
+            eprintln!("Running: ffmpeg {}", burn_args.join(" "));
+            None
+        };
+
+        let result = if verbose {
+            ffmpeg::run_ffmpeg_verbose(&burn_args)
+        } else {
+            ffmpeg::run_ffmpeg(&burn_args)
+        };
+
+        let _ = std::fs::remove_file(&ass_path);
+        registry.remove(&ass_path);
+
+        match result {
+            Ok(ref output) if output.success => {
+                if let Some(ref pb) = spinner {
+                    pb.finish_with_message("Captions burned");
+                }
+            }
+            Ok(output) => {
+                if let Some(pb) = spinner {
+                    pb.finish_and_clear();
+                }
+                let truncated = last_n_lines(&output.stderr, 20);
+                let code = output.exit_code.unwrap_or(-1);
+                return Err(AppError::FfmpegFailed {
+                    stage: "caption-burn".to_string(),
+                    code,
+                    stderr: truncated,
+                }
+                .into());
+            }
+            Err(io_err) => {
+                if let Some(pb) = spinner {
+                    pb.finish_and_clear();
+                }
+                return Err(AppError::StageIo {
+                    stage: "caption-burn".to_string(),
+                    source: io_err,
+                }
+                .into());
+            }
+        }
+
+        let video_size = std::fs::metadata(&video_output)
+            .map(|m| format_size(m.len(), DECIMAL))
+            .unwrap_or_else(|_| "unknown size".to_string());
+        eprintln!(
+            "\u{2713} Created {} ({})",
+            video_output.display(),
+            video_size
+        );
+    }
+
+    // 9. Cleanup temp files
     let _ = std::fs::remove_file(&temp_wav);
     registry.remove(&temp_wav);
     let _ = std::fs::remove_file(&whisper_json_path);
