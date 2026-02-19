@@ -27,4 +27,8 @@ pub struct CutArgs {
     /// Output path (default: input_cut.mp4)
     #[arg(short = 'o')]
     pub output: Option<PathBuf>,
+
+    /// Preview what would be cut without producing output
+    #[arg(long)]
+    pub dry_run: bool,
 }
