@@ -72,10 +72,10 @@ Plans:
   1. Running `contentops process input.mp4 --caption` produces a video with hard-burned subtitles visible in the output
   2. Captions use karaoke-style word-by-word highlighting (words light up as they are spoken)
   3. Caption text is positioned within TikTok safe zones (not obscured by the top status bar or bottom UI controls)
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 04-01: TBD
+- [ ] 04-01-PLAN.md -- ASS karaoke subtitle generation and FFmpeg burn pipeline with TikTok safe zones
 
 ### Phase 5: Overlays and Polish
 **Goal**: User can add text overlays, normalize audio loudness, and see progress during processing -- completing the full feature set
