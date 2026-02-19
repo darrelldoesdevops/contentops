@@ -124,6 +124,120 @@ fn group_words_into_srt(words: &[Word]) -> Vec<SrtEntry> {
     entries
 }
 
+struct AssGroup {
+    start: f64,
+    end: f64,
+    words: Vec<AssWord>,
+}
+
+struct AssWord {
+    text: String,
+    duration_cs: u32,
+}
+
+fn group_words_for_ass(words: &[Word]) -> Vec<AssGroup> {
+    let mut groups = Vec::new();
+    let mut current: Vec<&Word> = Vec::new();
+
+    for word in words {
+        current.push(word);
+
+        let ends_with_punctuation = word.word.ends_with('.')
+            || word.word.ends_with('!')
+            || word.word.ends_with('?')
+            || word.word.ends_with(',');
+
+        if current.len() >= 5 || (current.len() >= 3 && ends_with_punctuation) {
+            let start = current[0].start;
+            let end = current.last().unwrap().end;
+            let ass_words = current
+                .iter()
+                .map(|w| AssWord {
+                    text: w.word.clone(),
+                    duration_cs: ((w.end - w.start) * 100.0).round() as u32,
+                })
+                .collect();
+            groups.push(AssGroup {
+                start,
+                end,
+                words: ass_words,
+            });
+            current.clear();
+        }
+    }
+
+    if !current.is_empty() {
+        let start = current[0].start;
+        let end = current.last().unwrap().end;
+        let ass_words = current
+            .iter()
+            .map(|w| AssWord {
+                text: w.word.clone(),
+                duration_cs: ((w.end - w.start) * 100.0).round() as u32,
+            })
+            .collect();
+        groups.push(AssGroup {
+            start,
+            end,
+            words: ass_words,
+        });
+    }
+
+    groups
+}
+
+fn format_ass_time(seconds: f64) -> String {
+    let total_cs = (seconds * 100.0).round() as u64;
+    let hours = total_cs / 360_000;
+    let minutes = (total_cs % 360_000) / 6_000;
+    let secs = (total_cs % 6_000) / 100;
+    let cs = total_cs % 100;
+    format!("{}:{:02}:{:02}.{:02}", hours, minutes, secs, cs)
+}
+
+fn generate_ass(words: &[Word]) -> String {
+    let mut output = String::new();
+
+    // Script Info
+    output.push_str("[Script Info]\n");
+    output.push_str("ScriptType: v4.00+\n");
+    output.push_str("PlayResX: 1080\n");
+    output.push_str("PlayResY: 1920\n");
+    output.push_str("WrapStyle: 0\n");
+    output.push('\n');
+
+    // V4+ Styles
+    output.push_str("[V4+ Styles]\n");
+    output.push_str("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n");
+    output.push_str("Style: Default,Arial,48,&H00FFFFFF,&H0000FFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,3,2,0,2,40,40,320,1\n");
+    output.push('\n');
+
+    // Events
+    output.push_str("[Events]\n");
+    output.push_str("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");
+
+    let groups = group_words_for_ass(words);
+    for group in &groups {
+        let start = format_ass_time(group.start);
+        let end = format_ass_time(group.end);
+
+        let mut text = String::new();
+        for (i, w) in group.words.iter().enumerate() {
+            text.push_str(&format!("{{\\kf{}}}{}", w.duration_cs, w.text));
+            if i < group.words.len() - 1 {
+                text.push(' ');
+            }
+        }
+
+        output.push_str(&format!(
+            "Dialogue: 0,{},{},Default,,0,0,0,,{}\n",
+            start, end, text
+        ));
+    }
+
+    output
+}
+
 fn format_srt(entries: &[SrtEntry]) -> String {
     entries
         .iter()

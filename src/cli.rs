@@ -48,4 +48,8 @@ pub struct CaptionArgs {
     /// Language code for transcription
     #[arg(long, default_value = "en")]
     pub lang: String,
+
+    /// Burn captions into video
+    #[arg(long)]
+    pub burn: bool,
 }
