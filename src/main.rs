@@ -2,6 +2,7 @@ mod cli;
 mod commands;
 mod error;
 mod ffmpeg;
+pub mod silence;
 mod temp;
 
 use clap::{CommandFactory, Parser};
