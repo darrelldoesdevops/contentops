@@ -40,9 +40,9 @@ Plans:
 **Depends on**: Phase 1
 **Requirements**: SIL-01, SIL-02, SIL-03, SIL-04, SIL-05
 **Success Criteria** (what must be TRUE):
-  1. Running `contentops process input.mp4 --remove-silence` produces an output video with silent segments removed from both audio and video tracks
+  1. Running `contentops cut input.mp4` produces an output video with silent segments removed from both audio and video tracks
   2. Cuts have 200-500ms padding so words are not clipped at segment boundaries
-  3. Running `contentops process input.mp4 --remove-silence --dry-run` prints detected silent segments and what would be cut, without producing an output file
+  3. Running `contentops cut input.mp4 --dry-run` prints detected silent segments and what would be cut, without producing an output file
   4. Output video is H.264/AAC with yuv420p pixel format, playable on TikTok without re-encoding
   5. Audio and video remain in sync throughout the output (no drift from cutting)
 **Plans**: 2 plans
