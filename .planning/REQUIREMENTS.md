@@ -1,0 +1,101 @@
+# Requirements: contentops
+
+**Defined:** 2026-02-19
+**Core Value:** Take a raw video file and remove dead air automatically
+
+## v1 Requirements
+
+### Pipeline Infrastructure
+
+- [ ] **PIPE-01**: User can run contentops and it detects FFmpeg on PATH, failing with a clear error if missing
+- [ ] **PIPE-02**: FFmpeg subprocess wrapper handles pipe safety, exit code checking, and always passes `-y -nostdin`
+- [ ] **PIPE-03**: Temporary files are automatically cleaned up after successful processing
+- [ ] **PIPE-04**: Processing errors are reported with context (which stage failed, FFmpeg stderr output)
+- [ ] **PIPE-05**: User sees a progress bar during FFmpeg processing stages
+
+### Silence Removal
+
+- [ ] **SIL-01**: User can detect silent segments in a video using `contentops process input.mp4 --remove-silence`
+- [ ] **SIL-02**: Silent segments are removed from both audio and video tracks using select/aselect filters
+- [ ] **SIL-03**: Cuts include 200-500ms margin/padding to avoid clipping word starts
+- [ ] **SIL-04**: User can run `--remove-silence --dry-run` to see what would be cut without modifying the video
+- [ ] **SIL-05**: Output is in TikTok-standard format (H.264/AAC, yuv420p, CRF 23, AAC 192kbps)
+
+### Auto-Captioning
+
+- [ ] **CAP-01**: User can generate captions using `contentops process input.mp4 --caption`
+- [ ] **CAP-02**: Audio is extracted from video and transcribed via local Whisper with word-level timestamps
+- [ ] **CAP-03**: Subtitles are burned into the video as hard subs
+- [ ] **CAP-04**: Captions use karaoke-style word-by-word highlighting (ASS format with \k tags)
+- [ ] **CAP-05**: Caption positioning respects TikTok safe zones (avoids top 250px and bottom 320px)
+
+### Text Overlays
+
+- [ ] **OVL-01**: User can add title text using `contentops process input.mp4 --overlay "Title Text"`
+- [ ] **OVL-02**: User can control font, color, position, and duration of overlay text
+- [ ] **OVL-03**: Overlay positioning respects TikTok safe zones
+
+### Audio
+
+- [ ] **AUD-01**: User can normalize audio loudness to a target LUFS value
+
+## v2 Requirements
+
+### Silence Removal
+
+- **SIL-06**: User can configure silence threshold (dB) via CLI flag
+- **SIL-07**: User can configure minimum silence duration via CLI flag
+
+### Pipeline
+
+- **PIPE-06**: User can process multiple input files in batch
+- **PIPE-07**: User can define pipeline presets for common workflows
+- **PIPE-08**: User can define pipeline stages via TOML config file
+
+### Content Intelligence
+
+- **INTL-01**: User can remove filler words (um, uh) detected via Whisper transcription
+
+## Out of Scope
+
+| Feature | Reason |
+|---------|--------|
+| GUI or web interface | CLI-only personal tool |
+| Cloud/API transcription | Local Whisper only for privacy and cost |
+| Resolution/aspect ratio conversion | TikTok standard only for now |
+| Cross-platform testing | macOS primary, personal tool |
+| Real-time preview | Batch processing only |
+| Video concatenation/joining | Single input file processing |
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| PIPE-01 | — | Pending |
+| PIPE-02 | — | Pending |
+| PIPE-03 | — | Pending |
+| PIPE-04 | — | Pending |
+| PIPE-05 | — | Pending |
+| SIL-01 | — | Pending |
+| SIL-02 | — | Pending |
+| SIL-03 | — | Pending |
+| SIL-04 | — | Pending |
+| SIL-05 | — | Pending |
+| CAP-01 | — | Pending |
+| CAP-02 | — | Pending |
+| CAP-03 | — | Pending |
+| CAP-04 | — | Pending |
+| CAP-05 | — | Pending |
+| OVL-01 | — | Pending |
+| OVL-02 | — | Pending |
+| OVL-03 | — | Pending |
+| AUD-01 | — | Pending |
+
+**Coverage:**
+- v1 requirements: 19 total
+- Mapped to phases: 0
+- Unmapped: 19 ⚠️
+
+---
+*Requirements defined: 2026-02-19*
+*Last updated: 2026-02-19 after initial definition*
