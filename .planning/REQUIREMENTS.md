@@ -7,10 +7,10 @@
 
 ### Pipeline Infrastructure
 
-- [ ] **PIPE-01**: User can run contentops and it detects FFmpeg on PATH, failing with a clear error if missing
-- [ ] **PIPE-02**: FFmpeg subprocess wrapper handles pipe safety, exit code checking, and always passes `-y -nostdin`
-- [ ] **PIPE-03**: Temporary files are automatically cleaned up after successful processing
-- [ ] **PIPE-04**: Processing errors are reported with context (which stage failed, FFmpeg stderr output)
+- [x] **PIPE-01**: User can run contentops and it detects FFmpeg on PATH, failing with a clear error if missing
+- [x] **PIPE-02**: FFmpeg subprocess wrapper handles pipe safety, exit code checking, and always passes `-y -nostdin`
+- [x] **PIPE-03**: Temporary files are automatically cleaned up after successful processing
+- [x] **PIPE-04**: Processing errors are reported with context (which stage failed, FFmpeg stderr output)
 - [ ] **PIPE-05**: User sees a progress bar during FFmpeg processing stages
 
 ### Silence Removal
@@ -71,10 +71,10 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PIPE-01 | Phase 1 | Pending |
-| PIPE-02 | Phase 1 | Pending |
-| PIPE-03 | Phase 1 | Pending |
-| PIPE-04 | Phase 1 | Pending |
+| PIPE-01 | Phase 1 | Done |
+| PIPE-02 | Phase 1 | Done |
+| PIPE-03 | Phase 1 | Done |
+| PIPE-04 | Phase 1 | Done |
 | PIPE-05 | Phase 5 | Pending |
 | SIL-01 | Phase 2 | Pending |
 | SIL-02 | Phase 2 | Pending |
@@ -98,4 +98,4 @@
 
 ---
 *Requirements defined: 2026-02-19*
-*Last updated: 2026-02-19 after roadmap creation*
+*Last updated: 2026-02-19 after Phase 1 completion*

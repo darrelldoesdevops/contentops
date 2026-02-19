@@ -4,5 +4,8 @@
   "parallelization": true,
   "planning": {
     "commit_docs": true
+  },
+  "workflow": {
+    "auto_advance": true
   }
 }

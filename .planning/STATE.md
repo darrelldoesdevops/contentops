@@ -5,33 +5,33 @@
 See: .planning/PROJECT.md (updated 2026-02-19)
 
 **Core value:** Take a raw video file and remove dead air automatically
-**Current focus:** Phase 1: Foundation
+**Current focus:** Phase 2: Silence Removal
 
 ## Current Position
 
-Phase: 1 of 5 (Foundation)
+Phase: 2 of 5 (Silence Removal)
 Plan: 0 of ? in current phase
 Status: Ready to plan
-Last activity: 2026-02-19 -- Roadmap created
+Last activity: 2026-02-19 -- Phase 1 completed
 
-Progress: [..........] 0%
+Progress: [##........] 20%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 0
-- Average duration: -
-- Total execution time: 0 hours
+- Total plans completed: 2
+- Average duration: ~5 min
+- Total execution time: ~10 min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| 1. Foundation | 2 | ~10 min | ~5 min |
 
 **Recent Trend:**
-- Last 5 plans: -
-- Trend: -
+- Last 5 plans: 01-01, 01-02
+- Trend: Fast (foundation setup)
 
 *Updated after each plan completion*
 
@@ -44,6 +44,7 @@ Recent decisions affecting current work:
 
 - Roadmap: select/aselect filter approach (not segment-and-concat) locked in for silence removal
 - Roadmap: Caption split into generation (Phase 3) and rendering (Phase 4) for independent testing
+- Phase 1: Subcommand pattern (`cut`, `caption`, `overlay`) instead of generic `process` with flags
 
 ### Pending Todos
 
@@ -57,5 +58,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-19
-Stopped at: Roadmap created, ready to plan Phase 1
+Stopped at: Phase 1 complete, ready to plan Phase 2
 Resume file: None
