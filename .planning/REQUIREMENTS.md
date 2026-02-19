@@ -23,11 +23,11 @@
 
 ### Auto-Captioning
 
-- [ ] **CAP-01**: User can generate captions using `contentops process input.mp4 --caption`
-- [ ] **CAP-02**: Audio is extracted from video and transcribed via local Whisper with word-level timestamps
-- [ ] **CAP-03**: Subtitles are burned into the video as hard subs
-- [ ] **CAP-04**: Captions use karaoke-style word-by-word highlighting (ASS format with \k tags)
-- [ ] **CAP-05**: Caption positioning respects TikTok safe zones (avoids top 250px and bottom 320px)
+- [x] **CAP-01**: User can generate captions using `contentops process input.mp4 --caption`
+- [x] **CAP-02**: Audio is extracted from video and transcribed via local Whisper with word-level timestamps
+- [x] **CAP-03**: Subtitles are burned into the video as hard subs
+- [x] **CAP-04**: Captions use karaoke-style word-by-word highlighting (ASS format with \k tags)
+- [x] **CAP-05**: Caption positioning respects TikTok safe zones (avoids top 250px and bottom 320px)
 
 ### Text Overlays
 
@@ -81,11 +81,11 @@
 | SIL-03 | Phase 2 | Done |
 | SIL-04 | Phase 2 | Done |
 | SIL-05 | Phase 2 | Done |
-| CAP-01 | Phase 3 | Pending |
-| CAP-02 | Phase 3 | Pending |
-| CAP-03 | Phase 4 | Pending |
-| CAP-04 | Phase 4 | Pending |
-| CAP-05 | Phase 4 | Pending |
+| CAP-01 | Phase 3 | Done |
+| CAP-02 | Phase 3 | Done |
+| CAP-03 | Phase 4 | Done |
+| CAP-04 | Phase 4 | Done |
+| CAP-05 | Phase 4 | Done |
 | OVL-01 | Phase 5 | Pending |
 | OVL-02 | Phase 5 | Pending |
 | OVL-03 | Phase 5 | Pending |
@@ -98,4 +98,4 @@
 
 ---
 *Requirements defined: 2026-02-19*
-*Last updated: 2026-02-20 after Phase 2 Plan 2 completion*
+*Last updated: 2026-02-20 after parallel phase merge*

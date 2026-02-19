@@ -17,6 +17,9 @@ pub struct Cli {
 pub enum Commands {
     /// Remove silence from video
     Cut(CutArgs),
+
+    /// Generate captions from video
+    Caption(CaptionArgs),
 }
 
 #[derive(Args)]
@@ -31,4 +34,26 @@ pub struct CutArgs {
     /// Preview what would be cut without producing output
     #[arg(long)]
     pub dry_run: bool,
+}
+
+#[derive(Args)]
+pub struct CaptionArgs {
+    /// Input video file
+    pub input: PathBuf,
+
+    /// Output SRT path (default: input_captioned.srt)
+    #[arg(short = 'o')]
+    pub output: Option<PathBuf>,
+
+    /// Path to whisper model file
+    #[arg(long)]
+    pub model: PathBuf,
+
+    /// Language code for transcription
+    #[arg(long, default_value = "en")]
+    pub lang: String,
+
+    /// Burn captions into video
+    #[arg(long)]
+    pub burn: bool,
 }

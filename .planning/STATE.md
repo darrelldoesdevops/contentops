@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-19)
 
 **Core value:** Take a raw video file and remove dead air automatically
-**Current focus:** Phase 2: Silence Removal
+**Current focus:** Merging all phases
 
 ## Current Position
 
-Phase: 2 of 5 (Silence Removal) -- COMPLETE
-Plan: 2 of 2 in current phase
-Status: Phase Complete
-Last activity: 2026-02-20 -- Completed 02-02 (silence removal pipeline)
+Phase: 5 of 5 (all phases complete, merging)
+Plan: All plans complete
+Status: Merging parallel branches
+Last activity: 2026-02-20 -- Parallel execution of phases 2, 3, 4, 5
 
-Progress: [####......] 40%
+Progress: [#########.] 90%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 4
-- Average duration: ~4 min
-- Total execution time: ~14 min
+- Total plans completed: 8
+- Average duration: ~3 min
+- Total execution time: ~25 min
 
 **By Phase:**
 
@@ -29,10 +29,14 @@ Progress: [####......] 40%
 |-------|-------|-------|----------|
 | 1. Foundation | 2 | ~10 min | ~5 min |
 | 2. Silence Removal | 2 | ~4 min | ~2 min |
+| 3. Caption Generation | 1 | ~3 min | ~3 min |
+| 4. Caption Rendering | 1 | ~2 min | ~2 min |
+| 5. Overlays and Polish | 2 | ~6 min | ~3 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-01, 01-02, 02-01, 02-02
-- Trend: Fast (pipeline wiring)
+- Phases 2, 3, 5 executed in parallel via git worktrees
+- Phase 4 followed Phase 3 sequentially
+- Trend: Fast
 
 *Updated after each plan completion*
 
@@ -51,6 +55,10 @@ Recent decisions affecting current work:
 - Phase 2: Hardcoded silence defaults (-30dB, 0.5s min, 0.2s padding) -- good starting values for spoken content
 - Phase 2: Default 30fps for select filter -- covers most video content without frame rate probing
 - Phase 2: No-silence case exits cleanly with message (not error)
+- Phase 3: Shell out to whisper-cpp binary (not whisper-rs) for stability
+- Phase 3: Word grouping at 3-5 words per SRT entry, breaking on punctuation
+- Phase 4: ASS MarginV=320 for TikTok bottom safe zone avoidance
+- Phase 4: kf tags (smooth fill) over k tags (instant swap) for karaoke highlighting
 
 ### Pending Todos
 
@@ -58,11 +66,11 @@ None yet.
 
 ### Blockers/Concerns
 
-- Phase 3: whisper-rs v0.15.1 stability uncertain -- verify compatibility or fall back to whisper CLI
-- Phase 4: ASS karaoke tag syntax and FFmpeg ass filter behavior need research during planning
+- Phase 3: RESOLVED -- chose whisper-cpp CLI over whisper-rs for stability
+- Phase 4: RESOLVED -- ASS kf tags and FFmpeg ass filter working in burn pipeline
 
 ## Session Continuity
 
 Last session: 2026-02-20
-Stopped at: Completed 02-02-PLAN.md, Phase 2 complete. Ready for Phase 3.
+Stopped at: Merging parallel phase branches into main
 Resume file: None
