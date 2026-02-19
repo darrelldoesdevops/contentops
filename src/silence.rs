@@ -10,26 +10,147 @@ pub struct SpeechInterval {
     pub end: f64,
 }
 
-pub fn parse_silencedetect(_stderr: &str, _duration: f64) -> Vec<SilenceInterval> {
-    todo!()
+pub fn parse_silencedetect(stderr: &str, duration: f64) -> Vec<SilenceInterval> {
+    let mut intervals = Vec::new();
+    let mut pending_start: Option<f64> = None;
+    let mut seen_start = false;
+
+    for line in stderr.lines() {
+        if let Some(pos) = line.find("silence_start:") {
+            let value_str = line[pos + "silence_start:".len()..].trim();
+            if let Ok(start) = value_str.parse::<f64>() {
+                if let Some(prev_start) = pending_start {
+                    intervals.push(SilenceInterval {
+                        start: prev_start,
+                        end: duration,
+                    });
+                }
+                pending_start = Some(start);
+                seen_start = true;
+            }
+        } else if let Some(pos) = line.find("silence_end:") {
+            let after = &line[pos + "silence_end:".len()..];
+            let value_str = after.split('|').next().unwrap_or("").trim();
+            if let Ok(end) = value_str.parse::<f64>() {
+                if let Some(start) = pending_start.take() {
+                    intervals.push(SilenceInterval { start, end });
+                } else if !seen_start {
+                    intervals.push(SilenceInterval { start: 0.0, end });
+                }
+            }
+        }
+    }
+
+    if let Some(start) = pending_start {
+        intervals.push(SilenceInterval {
+            start,
+            end: duration,
+        });
+    }
+
+    intervals
 }
 
 pub fn silence_to_speech(
-    _silences: &[SilenceInterval],
-    _duration: f64,
-    _padding: f64,
+    silences: &[SilenceInterval],
+    duration: f64,
+    padding: f64,
 ) -> Vec<SpeechInterval> {
-    todo!()
+    if silences.is_empty() {
+        return vec![SpeechInterval {
+            start: 0.0,
+            end: duration,
+        }];
+    }
+
+    let mut raw_speeches = Vec::new();
+    let mut cursor = 0.0_f64;
+
+    for silence in silences {
+        if silence.start > cursor {
+            raw_speeches.push(SpeechInterval {
+                start: cursor,
+                end: silence.start,
+            });
+        }
+        cursor = silence.end;
+    }
+
+    if cursor < duration {
+        raw_speeches.push(SpeechInterval {
+            start: cursor,
+            end: duration,
+        });
+    }
+
+    if raw_speeches.is_empty() {
+        return Vec::new();
+    }
+
+    let mut padded: Vec<SpeechInterval> = raw_speeches
+        .iter()
+        .map(|s| SpeechInterval {
+            start: (s.start - padding).max(0.0),
+            end: (s.end + padding).min(duration),
+        })
+        .collect();
+
+    let mut merged = Vec::new();
+    let mut current = padded.remove(0);
+
+    for next in padded {
+        if next.start <= current.end {
+            current.end = current.end.max(next.end);
+        } else {
+            merged.push(current);
+            current = next;
+        }
+    }
+    merged.push(current);
+
+    merged
 }
 
-pub fn build_select_filter(_speeches: &[SpeechInterval], _frame_rate: f64) -> String {
-    todo!()
+fn format_between(speeches: &[SpeechInterval]) -> String {
+    speeches
+        .iter()
+        .map(|s| format!("between(t,{:.3},{:.3})", s.start, s.end))
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
-pub fn build_aselect_filter(_speeches: &[SpeechInterval]) -> String {
-    todo!()
+pub fn build_select_filter(speeches: &[SpeechInterval], frame_rate: f64) -> String {
+    if speeches.is_empty() {
+        return String::new();
+    }
+    let betweens = format_between(speeches);
+    let rate = if rate_is_integer(frame_rate) {
+        format!("{}", frame_rate as i64)
+    } else {
+        format!("{}", frame_rate)
+    };
+    format!("select='{}',setpts=N/{}/TB", betweens, rate)
 }
 
-pub fn total_silence_removed(_silences: &[SilenceInterval], _padding: f64) -> f64 {
-    todo!()
+pub fn build_aselect_filter(speeches: &[SpeechInterval]) -> String {
+    if speeches.is_empty() {
+        return String::new();
+    }
+    let betweens = format_between(speeches);
+    format!("aselect='{}',asetpts=N/SR/TB", betweens)
+}
+
+fn rate_is_integer(rate: f64) -> bool {
+    (rate - rate.round()).abs() < 1e-9
+}
+
+pub fn total_silence_removed(silences: &[SilenceInterval], padding: f64) -> f64 {
+    silences
+        .iter()
+        .map(|s| {
+            let raw = s.end - s.start;
+            let removed = raw - 2.0 * padding;
+            removed.max(0.0)
+        })
+        .sum()
 }
