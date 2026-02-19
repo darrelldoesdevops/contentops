@@ -24,10 +24,27 @@ pub enum AppError {
 
     #[error("input file not found: {0}")]
     InputNotFound(PathBuf),
+
+    #[error("whisper-cpp not found on PATH\n  hint: brew install whisper-cpp")]
+    WhisperNotFound,
+
+    #[error("error in stage '{stage}': whisper-cpp exited with code {code}\n{stderr}")]
+    WhisperFailed {
+        stage: String,
+        code: i32,
+        stderr: String,
+    },
+
+    #[error("whisper model not found: {0}\n  hint: download from https://huggingface.co/ggerganov/whisper.cpp")]
+    ModelNotFound(PathBuf),
 }
 
 pub fn require_ffmpeg() -> Result<PathBuf, AppError> {
     which::which("ffmpeg").map_err(|_| AppError::FfmpegNotFound)
+}
+
+pub fn require_whisper() -> Result<PathBuf, AppError> {
+    which::which("whisper-cpp").map_err(|_| AppError::WhisperNotFound)
 }
 
 pub fn last_n_lines(stderr: &[u8], n: usize) -> String {
@@ -77,6 +94,39 @@ pub fn format_error(err: &AppError) -> String {
                 "{} input file not found: {}",
                 "error:".red().bold(),
                 path.display()
+            )
+        }
+        AppError::WhisperNotFound => {
+            format!(
+                "{} whisper-cpp not found on PATH\n  {}: brew install whisper-cpp",
+                "error:".red().bold(),
+                "hint".bold()
+            )
+        }
+        AppError::WhisperFailed {
+            stage,
+            code,
+            stderr,
+        } => {
+            let indented: String = stderr
+                .lines()
+                .map(|line| format!("  {}", line))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "{} in stage '{}': whisper-cpp exited with code {}\n{}",
+                "error:".red().bold(),
+                stage.bold(),
+                code,
+                indented
+            )
+        }
+        AppError::ModelNotFound(path) => {
+            format!(
+                "{} whisper model not found: {}\n  {}: download from https://huggingface.co/ggerganov/whisper.cpp",
+                "error:".red().bold(),
+                path.display(),
+                "hint".bold()
             )
         }
     }
