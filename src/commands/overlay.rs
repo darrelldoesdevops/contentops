@@ -1,8 +1,6 @@
 use std::path::Path;
-use std::time::Duration;
 
 use humansize::{format_size, DECIMAL};
-use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::cli::OverlayArgs;
 use crate::commands::cut::derive_output_path;
@@ -78,33 +76,19 @@ pub fn run(args: OverlayArgs, verbose: bool, registry: &TempFileRegistry) -> any
         &temp_str,
     ];
 
-    let spinner = if !verbose {
-        let filename = args
-            .input
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy();
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::with_template("{spinner:.cyan} {msg}")
-                .unwrap()
-                .tick_strings(&[
-                    "\u{2800}", "\u{2801}", "\u{2809}", "\u{2819}", "\u{281b}", "\u{283b}",
-                    "\u{2839}", "\u{2838}", "\u{2830}", "\u{2820}", "\u{2800}", "\u{2713}",
-                ]),
-        );
-        pb.enable_steady_tick(Duration::from_millis(80));
-        pb.set_message(format!("Adding overlay to {}...", filename));
-        Some(pb)
-    } else {
-        eprintln!("Running: ffmpeg {}", ffmpeg_args.join(" "));
-        None
-    };
+    let filename = args
+        .input
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let message = format!("Adding overlay to {}...", filename);
 
     let result = if verbose {
+        eprintln!("Running: ffmpeg {}", ffmpeg_args.join(" "));
         ffmpeg::run_ffmpeg_verbose(&ffmpeg_args)
     } else {
-        ffmpeg::run_ffmpeg(&ffmpeg_args)
+        let duration = ffmpeg::probe_duration(&input_str);
+        ffmpeg::run_ffmpeg_with_progress(&ffmpeg_args, duration, &message)
     };
 
     match result {
@@ -121,21 +105,9 @@ pub fn run(args: OverlayArgs, verbose: bool, registry: &TempFileRegistry) -> any
                 .map(|m| format_size(m.len(), DECIMAL))
                 .unwrap_or_else(|_| "unknown size".to_string());
 
-            if let Some(pb) = spinner {
-                pb.finish_with_message(format!(
-                    "\u{2713} Created {} ({})",
-                    output.display(),
-                    size
-                ));
-            } else {
-                eprintln!("\u{2713} Created {} ({})", output.display(), size);
-            }
+            eprintln!("\u{2713} Created {} ({})", output.display(), size);
         }
         Ok(ffmpeg_output) => {
-            if let Some(pb) = spinner {
-                pb.finish_and_clear();
-            }
-
             let truncated_stderr = last_n_lines(&ffmpeg_output.stderr, 20);
             let code = ffmpeg_output.exit_code.unwrap_or(-1);
 
@@ -153,10 +125,6 @@ pub fn run(args: OverlayArgs, verbose: bool, registry: &TempFileRegistry) -> any
             .into());
         }
         Err(io_err) => {
-            if let Some(pb) = spinner {
-                pb.finish_and_clear();
-            }
-
             return Err(AppError::StageIo {
                 stage: "overlay".to_string(),
                 source: io_err,
