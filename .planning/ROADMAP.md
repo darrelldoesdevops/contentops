@@ -14,8 +14,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation** - CLI skeleton, FFmpeg wrapper, error handling, temp file lifecycle
 - [ ] **Phase 2: Silence Removal** - Core value: detect and remove silence from video with clean cuts
-- [ ] **Phase 3: Caption Generation** - Whisper integration producing word-level subtitle files
-- [ ] **Phase 4: Caption Rendering** - Burn styled karaoke captions into video within safe zones
+- [x] **Phase 3: Caption Generation** - Whisper integration producing word-level subtitle files
+- [x] **Phase 4: Caption Rendering** - Burn styled karaoke captions into video within safe zones
 - [ ] **Phase 5: Overlays and Polish** - Text overlays, audio normalization, progress feedback
 
 ## Phase Details
@@ -62,7 +62,7 @@ Plans:
 **Plans**: 1 plan
 
 Plans:
-- [ ] 03-01-PLAN.md -- Caption subcommand, whisper-cpp integration, SRT + JSON output
+- [x] 03-01-PLAN.md -- Caption subcommand, whisper-cpp integration, SRT + JSON output
 
 ### Phase 4: Caption Rendering
 **Goal**: User gets a video with styled, animated captions burned directly into the frame, positioned within TikTok safe zones
@@ -75,7 +75,7 @@ Plans:
 **Plans**: 1 plan
 
 Plans:
-- [ ] 04-01-PLAN.md -- ASS karaoke subtitle generation and FFmpeg burn pipeline with TikTok safe zones
+- [x] 04-01-PLAN.md -- ASS karaoke subtitle generation and FFmpeg burn pipeline with TikTok safe zones
 
 ### Phase 5: Overlays and Polish
 **Goal**: User can add text overlays, normalize audio loudness, and see progress during processing -- completing the full feature set
@@ -102,6 +102,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 |-------|----------------|--------|-----------|
 | 1. Foundation | 2/2 | Complete | 2026-02-19 |
 | 2. Silence Removal | 0/? | Not started | - |
-| 3. Caption Generation | 0/1 | Planned | - |
-| 4. Caption Rendering | 0/? | Not started | - |
+| 3. Caption Generation | 1/1 | Complete | 2026-02-20 |
+| 4. Caption Rendering | 1/1 | Complete | 2026-02-20 |
 | 5. Overlays and Polish | 0/? | Not started | - |
