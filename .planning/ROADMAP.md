@@ -29,11 +29,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. Running `contentops process input.mp4 --remove-silence` with a valid file invokes FFmpeg with `-y -nostdin` flags and reports FFmpeg's exit code on failure
   3. Temporary files created during processing are cleaned up after both successful and failed runs
   4. When FFmpeg fails, the error message includes which pipeline stage failed and relevant FFmpeg stderr output
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 01-01: TBD
-- [ ] 01-02: TBD
+- [ ] 01-01-PLAN.md -- Project bootstrap, CLI skeleton, error types, FFmpeg detection
+- [ ] 01-02-PLAN.md -- FFmpeg subprocess wrapper, temp file lifecycle, spinner, cut command
 
 ### Phase 2: Silence Removal
 **Goal**: User can take a raw video and get back a jump-cut version with dead air removed -- the tool delivers its core value and is usable from this point forward
@@ -100,7 +100,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/? | Not started | - |
+| 1. Foundation | 0/2 | Planned | - |
 | 2. Silence Removal | 0/? | Not started | - |
 | 3. Caption Generation | 0/? | Not started | - |
 | 4. Caption Rendering | 0/? | Not started | - |
