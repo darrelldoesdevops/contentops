@@ -45,11 +45,11 @@ Plans:
   3. Running `contentops process input.mp4 --remove-silence --dry-run` prints detected silent segments and what would be cut, without producing an output file
   4. Output video is H.264/AAC with yuv420p pixel format, playable on TikTok without re-encoding
   5. Audio and video remain in sync throughout the output (no drift from cutting)
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 02-01: TBD
-- [ ] 02-02: TBD
+- [ ] 02-01-PLAN.md -- Silence detection parsing, padding logic, filter expression building (TDD)
+- [ ] 02-02-PLAN.md -- FFmpeg pipeline integration, dry-run, TikTok-standard output
 
 ### Phase 3: Caption Generation
 **Goal**: User can extract speech from a video as word-level timestamped subtitles via local Whisper
@@ -101,7 +101,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 2/2 | Complete | 2026-02-19 |
-| 2. Silence Removal | 0/? | Not started | - |
+| 2. Silence Removal | 0/2 | Planned | - |
 | 3. Caption Generation | 0/? | Not started | - |
 | 4. Caption Rendering | 0/? | Not started | - |
 | 5. Overlays and Polish | 0/? | Not started | - |
