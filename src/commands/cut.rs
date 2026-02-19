@@ -63,7 +63,7 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
         None
     };
 
-    let video_duration = ffmpeg::probe_duration(&input_str).map_err(|e| AppError::StageIo {
+    let video_duration = ffmpeg::probe_duration_strict(&input_str).map_err(|e| AppError::StageIo {
         stage: "probe-duration".to_string(),
         source: e,
     })?;
@@ -148,14 +148,18 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
         &temp_str,
     ];
 
-    if verbose {
-        eprintln!("Running: ffmpeg {}", ffmpeg_args.join(" "));
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
     }
 
+    let message = format!("Removing silence from {}...", filename);
+
     let result = if verbose {
+        eprintln!("Running: ffmpeg {}", ffmpeg_args.join(" "));
         ffmpeg::run_ffmpeg_verbose(&ffmpeg_args)
     } else {
-        ffmpeg::run_ffmpeg(&ffmpeg_args)
+        let duration = ffmpeg::probe_duration(&input_str);
+        ffmpeg::run_ffmpeg_with_progress(&ffmpeg_args, duration, &message)
     };
 
     match result {
@@ -173,27 +177,10 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
                 .unwrap_or_else(|_| "unknown size".to_string());
 
             let silence_total = silence::total_silence_removed(&silences, SPEECH_PADDING);
-
-            if let Some(pb) = spinner {
-                pb.finish_with_message(format!(
-                    "\u{2713} Created {} ({})",
-                    output.display(),
-                    size
-                ));
-            } else {
-                eprintln!(
-                    "\u{2713} Created {} ({})",
-                    output.display(),
-                    size
-                );
-            }
+            eprintln!("\u{2713} Created {} ({})", output.display(), size);
             eprintln!("Removed {:.1}s of silence", silence_total);
         }
         Ok(ffmpeg_output) => {
-            if let Some(pb) = spinner {
-                pb.finish_and_clear();
-            }
-
             let truncated_stderr = last_n_lines(&ffmpeg_output.stderr, 20);
             let code = ffmpeg_output.exit_code.unwrap_or(-1);
 
@@ -211,10 +198,6 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
             .into());
         }
         Err(io_err) => {
-            if let Some(pb) = spinner {
-                pb.finish_and_clear();
-            }
-
             return Err(AppError::StageIo {
                 stage: "silence-remove".to_string(),
                 source: io_err,
