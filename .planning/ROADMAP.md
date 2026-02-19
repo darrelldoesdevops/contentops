@@ -59,10 +59,10 @@ Plans:
   1. Running `contentops process input.mp4 --caption` extracts audio and produces a transcription with word-level timestamps
   2. Transcription runs locally via Whisper (no cloud API calls)
   3. Generated subtitle data includes per-word start/end times accurate enough for karaoke rendering
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 03-01: TBD
+- [ ] 03-01-PLAN.md -- Caption subcommand, whisper-cpp integration, SRT + JSON output
 
 ### Phase 4: Caption Rendering
 **Goal**: User gets a video with styled, animated captions burned directly into the frame, positioned within TikTok safe zones
@@ -102,6 +102,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 |-------|----------------|--------|-----------|
 | 1. Foundation | 2/2 | Complete | 2026-02-19 |
 | 2. Silence Removal | 0/? | Not started | - |
-| 3. Caption Generation | 0/? | Not started | - |
+| 3. Caption Generation | 0/1 | Planned | - |
 | 4. Caption Rendering | 0/? | Not started | - |
 | 5. Overlays and Polish | 0/? | Not started | - |
