@@ -1,0 +1,107 @@
+# Roadmap: contentops
+
+## Overview
+
+Build a Rust CLI that replaces CapCut by orchestrating FFmpeg for automated video processing. Start with the FFmpeg subprocess foundation, then deliver the core value (silence removal) as a usable tool, then layer on captioning (generation then rendering), and finish with overlays and polish. After Phase 2, the tool ships real value -- every subsequent phase is additive.
+
+## Phases
+
+**Phase Numbering:**
+- Integer phases (1, 2, 3): Planned milestone work
+- Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
+
+Decimal phases appear between their surrounding integers in numeric order.
+
+- [ ] **Phase 1: Foundation** - CLI skeleton, FFmpeg wrapper, error handling, temp file lifecycle
+- [ ] **Phase 2: Silence Removal** - Core value: detect and remove silence from video with clean cuts
+- [ ] **Phase 3: Caption Generation** - Whisper integration producing word-level subtitle files
+- [ ] **Phase 4: Caption Rendering** - Burn styled karaoke captions into video within safe zones
+- [ ] **Phase 5: Overlays and Polish** - Text overlays, audio normalization, progress feedback
+
+## Phase Details
+
+### Phase 1: Foundation
+**Goal**: User can invoke the CLI, it validates FFmpeg is available, and the subprocess/error/temp-file infrastructure is solid enough to build every pipeline stage on top of
+**Depends on**: Nothing (first phase)
+**Requirements**: PIPE-01, PIPE-02, PIPE-03, PIPE-04
+**Success Criteria** (what must be TRUE):
+  1. Running `contentops` without FFmpeg installed prints a clear error naming FFmpeg and exits non-zero
+  2. Running `contentops process input.mp4 --remove-silence` with a valid file invokes FFmpeg with `-y -nostdin` flags and reports FFmpeg's exit code on failure
+  3. Temporary files created during processing are cleaned up after both successful and failed runs
+  4. When FFmpeg fails, the error message includes which pipeline stage failed and relevant FFmpeg stderr output
+**Plans**: TBD
+
+Plans:
+- [ ] 01-01: TBD
+- [ ] 01-02: TBD
+
+### Phase 2: Silence Removal
+**Goal**: User can take a raw video and get back a jump-cut version with dead air removed -- the tool delivers its core value and is usable from this point forward
+**Depends on**: Phase 1
+**Requirements**: SIL-01, SIL-02, SIL-03, SIL-04, SIL-05
+**Success Criteria** (what must be TRUE):
+  1. Running `contentops process input.mp4 --remove-silence` produces an output video with silent segments removed from both audio and video tracks
+  2. Cuts have 200-500ms padding so words are not clipped at segment boundaries
+  3. Running `contentops process input.mp4 --remove-silence --dry-run` prints detected silent segments and what would be cut, without producing an output file
+  4. Output video is H.264/AAC with yuv420p pixel format, playable on TikTok without re-encoding
+  5. Audio and video remain in sync throughout the output (no drift from cutting)
+**Plans**: TBD
+
+Plans:
+- [ ] 02-01: TBD
+- [ ] 02-02: TBD
+
+### Phase 3: Caption Generation
+**Goal**: User can extract speech from a video as word-level timestamped subtitles via local Whisper
+**Depends on**: Phase 1
+**Requirements**: CAP-01, CAP-02
+**Success Criteria** (what must be TRUE):
+  1. Running `contentops process input.mp4 --caption` extracts audio and produces a transcription with word-level timestamps
+  2. Transcription runs locally via Whisper (no cloud API calls)
+  3. Generated subtitle data includes per-word start/end times accurate enough for karaoke rendering
+**Plans**: TBD
+
+Plans:
+- [ ] 03-01: TBD
+
+### Phase 4: Caption Rendering
+**Goal**: User gets a video with styled, animated captions burned directly into the frame, positioned within TikTok safe zones
+**Depends on**: Phase 3
+**Requirements**: CAP-03, CAP-04, CAP-05
+**Success Criteria** (what must be TRUE):
+  1. Running `contentops process input.mp4 --caption` produces a video with hard-burned subtitles visible in the output
+  2. Captions use karaoke-style word-by-word highlighting (words light up as they are spoken)
+  3. Caption text is positioned within TikTok safe zones (not obscured by the top status bar or bottom UI controls)
+**Plans**: TBD
+
+Plans:
+- [ ] 04-01: TBD
+
+### Phase 5: Overlays and Polish
+**Goal**: User can add text overlays, normalize audio loudness, and see progress during processing -- completing the full feature set
+**Depends on**: Phase 1
+**Requirements**: OVL-01, OVL-02, OVL-03, AUD-01, PIPE-05
+**Success Criteria** (what must be TRUE):
+  1. Running `contentops process input.mp4 --overlay "Title Text"` burns the specified text into the video
+  2. User can control overlay font, color, position, and duration via CLI flags
+  3. Overlay text is positioned within TikTok safe zones by default
+  4. Running `contentops process input.mp4 --normalize` adjusts audio loudness to a target LUFS value
+  5. User sees a progress indicator during FFmpeg processing stages
+**Plans**: TBD
+
+Plans:
+- [ ] 05-01: TBD
+- [ ] 05-02: TBD
+
+## Progress
+
+**Execution Order:**
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
+
+| Phase | Plans Complete | Status | Completed |
+|-------|----------------|--------|-----------|
+| 1. Foundation | 0/? | Not started | - |
+| 2. Silence Removal | 0/? | Not started | - |
+| 3. Caption Generation | 0/? | Not started | - |
+| 4. Caption Rendering | 0/? | Not started | - |
+| 5. Overlays and Polish | 0/? | Not started | - |

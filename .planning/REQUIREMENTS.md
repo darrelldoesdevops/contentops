@@ -71,31 +71,31 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PIPE-01 | — | Pending |
-| PIPE-02 | — | Pending |
-| PIPE-03 | — | Pending |
-| PIPE-04 | — | Pending |
-| PIPE-05 | — | Pending |
-| SIL-01 | — | Pending |
-| SIL-02 | — | Pending |
-| SIL-03 | — | Pending |
-| SIL-04 | — | Pending |
-| SIL-05 | — | Pending |
-| CAP-01 | — | Pending |
-| CAP-02 | — | Pending |
-| CAP-03 | — | Pending |
-| CAP-04 | — | Pending |
-| CAP-05 | — | Pending |
-| OVL-01 | — | Pending |
-| OVL-02 | — | Pending |
-| OVL-03 | — | Pending |
-| AUD-01 | — | Pending |
+| PIPE-01 | Phase 1 | Pending |
+| PIPE-02 | Phase 1 | Pending |
+| PIPE-03 | Phase 1 | Pending |
+| PIPE-04 | Phase 1 | Pending |
+| PIPE-05 | Phase 5 | Pending |
+| SIL-01 | Phase 2 | Pending |
+| SIL-02 | Phase 2 | Pending |
+| SIL-03 | Phase 2 | Pending |
+| SIL-04 | Phase 2 | Pending |
+| SIL-05 | Phase 2 | Pending |
+| CAP-01 | Phase 3 | Pending |
+| CAP-02 | Phase 3 | Pending |
+| CAP-03 | Phase 4 | Pending |
+| CAP-04 | Phase 4 | Pending |
+| CAP-05 | Phase 4 | Pending |
+| OVL-01 | Phase 5 | Pending |
+| OVL-02 | Phase 5 | Pending |
+| OVL-03 | Phase 5 | Pending |
+| AUD-01 | Phase 5 | Pending |
 
 **Coverage:**
 - v1 requirements: 19 total
-- Mapped to phases: 0
-- Unmapped: 19 ⚠️
+- Mapped to phases: 19
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-19*
-*Last updated: 2026-02-19 after initial definition*
+*Last updated: 2026-02-19 after roadmap creation*
