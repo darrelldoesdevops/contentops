@@ -16,10 +16,10 @@
 ### Silence Removal
 
 - [x] **SIL-01**: User can detect silent segments in a video using `contentops process input.mp4 --remove-silence`
-- [ ] **SIL-02**: Silent segments are removed from both audio and video tracks using select/aselect filters
+- [x] **SIL-02**: Silent segments are removed from both audio and video tracks using select/aselect filters
 - [x] **SIL-03**: Cuts include 200-500ms margin/padding to avoid clipping word starts
-- [ ] **SIL-04**: User can run `--remove-silence --dry-run` to see what would be cut without modifying the video
-- [ ] **SIL-05**: Output is in TikTok-standard format (H.264/AAC, yuv420p, CRF 23, AAC 192kbps)
+- [x] **SIL-04**: User can run `--remove-silence --dry-run` to see what would be cut without modifying the video
+- [x] **SIL-05**: Output is in TikTok-standard format (H.264/AAC, yuv420p, CRF 23, AAC 192kbps)
 
 ### Auto-Captioning
 
@@ -77,10 +77,10 @@
 | PIPE-04 | Phase 1 | Done |
 | PIPE-05 | Phase 5 | Pending |
 | SIL-01 | Phase 2 | Done |
-| SIL-02 | Phase 2 | Pending |
+| SIL-02 | Phase 2 | Done |
 | SIL-03 | Phase 2 | Done |
-| SIL-04 | Phase 2 | Pending |
-| SIL-05 | Phase 2 | Pending |
+| SIL-04 | Phase 2 | Done |
+| SIL-05 | Phase 2 | Done |
 | CAP-01 | Phase 3 | Pending |
 | CAP-02 | Phase 3 | Pending |
 | CAP-03 | Phase 4 | Pending |
@@ -98,4 +98,4 @@
 
 ---
 *Requirements defined: 2026-02-19*
-*Last updated: 2026-02-20 after Phase 2 Plan 1 completion*
+*Last updated: 2026-02-20 after Phase 2 Plan 2 completion*

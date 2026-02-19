@@ -9,30 +9,30 @@ See: .planning/PROJECT.md (updated 2026-02-19)
 
 ## Current Position
 
-Phase: 2 of 5 (Silence Removal)
-Plan: 1 of 2 in current phase
-Status: Executing
-Last activity: 2026-02-20 -- Completed 02-01 (silence detection core)
+Phase: 2 of 5 (Silence Removal) -- COMPLETE
+Plan: 2 of 2 in current phase
+Status: Phase Complete
+Last activity: 2026-02-20 -- Completed 02-02 (silence removal pipeline)
 
-Progress: [###.......] 30%
+Progress: [####......] 40%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 3
+- Total plans completed: 4
 - Average duration: ~4 min
-- Total execution time: ~12 min
+- Total execution time: ~14 min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 1. Foundation | 2 | ~10 min | ~5 min |
-| 2. Silence Removal | 1 | ~2 min | ~2 min |
+| 2. Silence Removal | 2 | ~4 min | ~2 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-01, 01-02, 02-01
-- Trend: Fast (pure logic TDD)
+- Last 5 plans: 01-01, 01-02, 02-01, 02-02
+- Trend: Fast (pipeline wiring)
 
 *Updated after each plan completion*
 
@@ -48,6 +48,9 @@ Recent decisions affecting current work:
 - Phase 1: Subcommand pattern (`cut`, `caption`, `overlay`) instead of generic `process` with flags
 - Phase 2: String splitting over regex for silencedetect parsing -- no new dependency needed
 - Phase 2: lib.rs added to expose modules for integration tests
+- Phase 2: Hardcoded silence defaults (-30dB, 0.5s min, 0.2s padding) -- good starting values for spoken content
+- Phase 2: Default 30fps for select filter -- covers most video content without frame rate probing
+- Phase 2: No-silence case exits cleanly with message (not error)
 
 ### Pending Todos
 
@@ -61,5 +64,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-20
-Stopped at: Completed 02-01-PLAN.md, ready for 02-02
+Stopped at: Completed 02-02-PLAN.md, Phase 2 complete. Ready for Phase 3.
 Resume file: None

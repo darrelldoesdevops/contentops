@@ -13,7 +13,7 @@ Build a Rust CLI that replaces CapCut by orchestrating FFmpeg for automated vide
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation** - CLI skeleton, FFmpeg wrapper, error handling, temp file lifecycle
-- [ ] **Phase 2: Silence Removal** - Core value: detect and remove silence from video with clean cuts
+- [x] **Phase 2: Silence Removal** - Core value: detect and remove silence from video with clean cuts
 - [ ] **Phase 3: Caption Generation** - Whisper integration producing word-level subtitle files
 - [ ] **Phase 4: Caption Rendering** - Burn styled karaoke captions into video within safe zones
 - [ ] **Phase 5: Overlays and Polish** - Text overlays, audio normalization, progress feedback
@@ -49,7 +49,7 @@ Plans:
 
 Plans:
 - [x] 02-01-PLAN.md -- Silence detection parsing, padding logic, filter expression building (TDD)
-- [ ] 02-02-PLAN.md -- FFmpeg pipeline integration, dry-run, TikTok-standard output
+- [x] 02-02-PLAN.md -- FFmpeg pipeline integration, dry-run, TikTok-standard output
 
 ### Phase 3: Caption Generation
 **Goal**: User can extract speech from a video as word-level timestamped subtitles via local Whisper
@@ -101,7 +101,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 2/2 | Complete | 2026-02-19 |
-| 2. Silence Removal | 1/2 | In Progress | - |
+| 2. Silence Removal | 2/2 | Complete | 2026-02-20 |
 | 3. Caption Generation | 0/? | Not started | - |
 | 4. Caption Rendering | 0/? | Not started | - |
 | 5. Overlays and Polish | 0/? | Not started | - |
