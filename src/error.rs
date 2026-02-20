@@ -25,10 +25,10 @@ pub enum AppError {
     #[error("input file not found: {0}")]
     InputNotFound(PathBuf),
 
-    #[error("whisper-cpp not found on PATH\n  hint: brew install whisper-cpp")]
+    #[error("whisper-cli not found on PATH\n  hint: brew install whisper-cli")]
     WhisperNotFound,
 
-    #[error("error in stage '{stage}': whisper-cpp exited with code {code}\n{stderr}")]
+    #[error("error in stage '{stage}': whisper-cli exited with code {code}\n{stderr}")]
     WhisperFailed {
         stage: String,
         code: i32,
@@ -44,7 +44,7 @@ pub fn require_ffmpeg() -> Result<PathBuf, AppError> {
 }
 
 pub fn require_whisper() -> Result<PathBuf, AppError> {
-    which::which("whisper-cpp").map_err(|_| AppError::WhisperNotFound)
+    which::which("whisper-cli").map_err(|_| AppError::WhisperNotFound)
 }
 
 pub fn last_n_lines(stderr: &[u8], n: usize) -> String {
@@ -98,7 +98,7 @@ pub fn format_error(err: &AppError) -> String {
         }
         AppError::WhisperNotFound => {
             format!(
-                "{} whisper-cpp not found on PATH\n  {}: brew install whisper-cpp",
+                "{} whisper-cli not found on PATH\n  {}: brew install whisper-cli",
                 "error:".red().bold(),
                 "hint".bold()
             )
@@ -114,7 +114,7 @@ pub fn format_error(err: &AppError) -> String {
                 .collect::<Vec<_>>()
                 .join("\n");
             format!(
-                "{} in stage '{}': whisper-cpp exited with code {}\n{}",
+                "{} in stage '{}': whisper-cli exited with code {}\n{}",
                 "error:".red().bold(),
                 stage.bold(),
                 code,
