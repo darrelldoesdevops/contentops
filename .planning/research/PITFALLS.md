@@ -458,6 +458,216 @@
 
 ---
 
+## Critical Pitfalls — v1.2 Distribution & Docs Milestone
+
+> **Scope:** Adding a personal Homebrew tap with auto-updating formula and full README documentation to an existing Rust CLI tool with working GitHub Actions releases.
+
+---
+
+### Pitfall 22: SHA256 in Formula Does Not Match the Downloaded Binary
+
+**What goes wrong:** The most common Homebrew install failure. The formula's `sha256` field contains a stale or incorrectly computed checksum. `brew install` downloads the binary and verifies it — mismatch causes a hard failure with no useful diagnostic for the end user.
+
+**Why it happens:** Three root causes:
+1. **Format confusion:** `shasum -a 256` outputs `<hash>  <filename>` (two fields with double space). If the full output is copy-pasted into the formula instead of just the hex string, Homebrew rejects it.
+2. **Computed against wrong artifact:** The existing release workflow uploads individual binaries AND `.sha256` sidecar files. The `.sha256` files contain the hash of the binary, but in `shasum` format (with filename). If an automation script reads the sidecar file and uses its full content as the formula's `sha256`, it will fail.
+3. **Formula updated before release assets are finalized:** If the GitHub Actions workflow that updates the formula triggers too early (race condition between asset upload and formula update), the formula may reference an asset URL that doesn't yet exist or an asset that was re-uploaded after the hash was computed.
+
+**How to avoid:**
+- Compute the hash by downloading directly: `curl -sL <URL> | shasum -a 256 | awk '{print $1}'` — always pipe through `awk '{print $1}'` to strip the filename field.
+- In the auto-update workflow, compute the hash from the actual release asset URL, not from the sidecar `.sha256` file. The sidecar is for human verification; the formula hash must be freshly computed from the artifact.
+- Gate the formula update step on the `release` job completing with `needs: [release]` in GitHub Actions — never trigger formula updates from a separate event that could race with asset uploads.
+- After updating the formula, run `brew install --formula ./Formula/contentops.rb` locally to verify before pushing.
+
+**Warning signs:**
+- `brew install` fails with "SHA256 mismatch" immediately after a new release.
+- The formula's `sha256` value contains spaces or a filename suffix (e.g., `abc123def  contentops-aarch64-apple-darwin`).
+- The automation script reads from a `.sha256` sidecar file instead of recomputing from the binary URL.
+
+**Phase to address:** Homebrew tap setup (Phase 1 of v1.2). Nail the hash computation before wiring up any automation.
+
+**Confidence:** HIGH — documented in [Homebrew tap creation guide](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap), confirmed by [multiple community SHA256 mismatch threads](https://github.com/orgs/Homebrew/discussions/1312). The `shasum` format difference (vs `sha256sum`) is confirmed by [sha256sum command note](https://github.com/sobolevn/git-secret/issues/124).
+
+---
+
+### Pitfall 23: Architecture Detection in Formula Serves Wrong Binary
+
+**What goes wrong:** The formula uses a single URL and `sha256`, downloading the same binary for all macOS users. ARM users get an Intel binary (works under Rosetta 2 but slower); Intel users get an ARM binary that Rosetta 2 cannot run in reverse (ARM-only binaries don't run on Intel natively). Alternatively, the formula uses the universal binary for everyone, which is larger (2x size) and less transparent.
+
+**Why it happens:** The simplest formula structure has one `url` and one `sha256`. Developers default to this and use the universal binary, not realizing Homebrew has first-class support for architecture-conditional downloads that users expect for native performance.
+
+**How to avoid:**
+- Use Homebrew's `on_arm` and `on_intel` blocks for per-architecture URLs and checksums:
+  ```ruby
+  on_arm do
+    url "https://github.com/user/contentops/releases/download/v#{version}/contentops-aarch64-apple-darwin"
+    sha256 "<arm64-hash>"
+  end
+  on_intel do
+    url "https://github.com/user/contentops/releases/download/v#{version}/contentops-x86_64-apple-darwin"
+    sha256 "<x86_64-hash>"
+  end
+  ```
+- The existing release workflow already produces both `contentops-aarch64-apple-darwin` and `contentops-x86_64-apple-darwin` — use them.
+- Do NOT use `Hardware::CPU.arm?` inside `def install` for URL selection — `on_arm`/`on_intel` blocks at the formula level are the correct pattern.
+- `Hardware::CPU.arm?` is only valid inside `def install` and `test do` blocks, not at the formula definition level.
+
+**Warning signs:**
+- `brew install` on an Intel Mac downloads the aarch64 binary (wrong arch, will silently fail or run via Rosetta 2).
+- Formula uses universal binary at 2x the size with no architecture-specific optimization.
+- Formula was tested only on ARM (developer's M-series Mac) but not verified on Intel.
+
+**Phase to address:** Homebrew tap setup (Phase 1 of v1.2). Architecture detection must be correct from the first published formula.
+
+**Confidence:** HIGH — confirmed by [Homebrew Formula Cookbook](https://docs.brew.sh/Formula-Cookbook) (`on_arm`/`on_intel` block documentation) and [architecture-specific cask discussion](https://github.com/orgs/Homebrew/discussions/3096).
+
+---
+
+### Pitfall 24: GITHUB_TOKEN Cannot Push to a Different Repository
+
+**What goes wrong:** The auto-update workflow in the `contentops` repo needs to push a commit to `homebrew-contentops` (a separate tap repository). GitHub's automatic `GITHUB_TOKEN` is scoped exclusively to the repository the workflow runs in. Using `GITHUB_TOKEN` to push to the tap repo fails with a 403 or authentication error.
+
+**Why it happens:** This is a fundamental GitHub Actions security constraint, not a configuration mistake. `GITHUB_TOKEN` is a short-lived token with permissions limited to the current repository. Cross-repository writes require a token scoped to the target repository.
+
+**How to avoid:**
+- Create a Personal Access Token (classic) with `repo` scope (or fine-grained token with `Contents: write` on the tap repo).
+- Store it as a repository secret in the `contentops` repo (e.g., `HOMEBREW_TAP_TOKEN`).
+- Use it explicitly in the formula-update workflow step:
+  ```yaml
+  - name: Update formula
+    env:
+      GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    run: |
+      git clone https://x-access-token:${GH_TOKEN}@github.com/user/homebrew-contentops.git
+      # ... update formula ...
+      git push
+  ```
+- Alternatively, use `peter-evans/create-pull-request` or similar actions that handle auth internally with the PAT.
+- Rotate the PAT annually; document expiry in the repo.
+
+**Warning signs:**
+- Release workflow fails at the formula-update step with "remote: Permission to user/homebrew-contentops.git denied to github-actions[bot]".
+- Workflow uses `GITHUB_TOKEN` for a `git push` to a different repository.
+
+**Phase to address:** GitHub Actions integration (Phase 2 of v1.2). Set up the PAT before writing the automation step.
+
+**Confidence:** HIGH — confirmed by [GitHub docs on GITHUB_TOKEN scope](https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/controlling-permissions-for-github_token) and multiple community reports. The token limitation is by design.
+
+---
+
+### Pitfall 25: Formula Ruby Class Name Must Match Filename Exactly
+
+**What goes wrong:** Homebrew loads formula files by requiring the Ruby file and finding the class named after the formula. If the filename is `contentops.rb`, the class must be `Contentops`. If the class is named `ContentOps`, `ContentOps`, or `CONTENTOPS`, Homebrew fails to load the formula with an obscure Ruby error, not a helpful "class name mismatch" message.
+
+**Why it happens:** Ruby class naming rules combined with Homebrew's file-to-class mapping. Homebrew converts the filename to a class name by capitalizing the first letter and replacing hyphens with CamelCase (e.g., `my-tool.rb` → `MyTool`). Developers hand-write the class name and guess wrong.
+
+**How to avoid:**
+- For `contentops.rb`, the class is `class Contentops < Formula` — single word, first letter capitalized only.
+- Run `brew style Formula/contentops.rb` locally before pushing to catch naming issues.
+- The tap repository name must start with `homebrew-` (e.g., `homebrew-contentops`) to enable the short `brew tap user/contentops` form.
+
+**Warning signs:**
+- `brew tap user/contentops && brew install contentops` fails with a Ruby `NameError` or "undefined method" error.
+- `brew audit Formula/contentops.rb` reports a class name error.
+
+**Phase to address:** Homebrew tap setup (Phase 1 of v1.2). Verify locally with `brew install --formula` before setting up automation.
+
+**Confidence:** HIGH — confirmed by [Homebrew Formula Cookbook naming rules](https://docs.brew.sh/Formula-Cookbook) and [community discussion on class name enforcement](https://github.com/homebrew/brew/issues/508).
+
+---
+
+### Pitfall 26: Formula URL Points to Bare Binary but Homebrew Expects an Archive
+
+**What goes wrong:** The existing release workflow uploads raw binary files (e.g., `contentops-aarch64-apple-darwin` — no extension, no archive). Homebrew formulas using the standard `url` + `def install` pattern expect a tarball or zip that Homebrew extracts before running `def install`. Pointing `url` to a raw binary causes Homebrew to try to `tar -xf` the binary, which fails with a tar error.
+
+**Why it happens:** Homebrew's default download strategy for URLs without a recognized archive extension is to treat the download as a resource to be extracted. A bare ELF/Mach-O binary is not a valid archive.
+
+**How to avoid:** Two valid approaches:
+1. **Change the release workflow** to package each binary in a `.tar.gz`: `tar -czf contentops-aarch64-apple-darwin.tar.gz contentops-aarch64-apple-darwin`. The formula's `def install` then does `bin.install "contentops-aarch64-apple-darwin"` (or just `bin.install "contentops"` if you rename inside the archive).
+2. **Use a cask instead of a formula.** Homebrew casks handle pre-built binaries more naturally and don't require source compilation semantics. However, casks are typically for GUI apps; a CLI-only tool is slightly unconventional as a cask.
+
+The tarball approach (option 1) is recommended — it matches the standard pattern used by other Rust CLI tools distributed via Homebrew taps (e.g., `ripgrep`, `fd`, `bat` all distribute tarballs).
+
+**Warning signs:**
+- `brew install` fails with `tar: Error opening archive: Failed to open '<binary>'`.
+- The release URL in the formula has no `.tar.gz`, `.zip`, or similar extension.
+- `brew fetch --formula Formula/contentops.rb` succeeds but `brew install` fails at the extraction step.
+
+**Phase to address:** Homebrew tap setup (Phase 1 of v1.2) AND release workflow update. The release workflow needs to produce tarballs, not bare binaries, before the formula can be written.
+
+**Confidence:** HIGH — standard Homebrew behavior; confirmed by [Formula Cookbook](https://docs.brew.sh/Formula-Cookbook) which states the working directory during `def install` is "the extracted tarball."
+
+---
+
+### Pitfall 27: Auto-Update Race Condition Between Asset Upload and Formula Push
+
+**What goes wrong:** The formula-update workflow triggers on the `release` event or on a tag push. Asset uploads happen asynchronously after the release is created. If the formula update workflow runs immediately when the release event fires — before all assets are uploaded — it computes SHA256 from an asset URL that may return 404 or a partial file.
+
+**Why it happens:** GitHub's release workflow in this project has three jobs: `build-arm64`, `build-x86_64`, and `release` (which downloads artifacts, creates universal binary, and uploads everything). The `release` event fires when the release is created, which happens before all files are attached. A formula-update workflow triggered by `on: release: types: [published]` may run before the `release` job in the source repo finishes uploading binaries.
+
+**How to avoid:**
+- Add the formula-update step as a final step INSIDE the existing `release` job (after the `softprops/action-gh-release` step), not as a separate workflow triggered by the release event.
+- This guarantees the formula update runs only after all assets are confirmed uploaded.
+- If the formula update must be a separate workflow, use `workflow_run` with `workflows: ["Release"]` and `types: [completed]` to wait for the Release workflow to finish.
+- Add a `sleep 30` or retry loop before computing SHA256 as a defensive measure (not a substitute for proper ordering).
+
+**Warning signs:**
+- Formula-update step reports "404 Not Found" when fetching the release asset URL.
+- `brew install` fails with SHA256 mismatch on new releases but works 30 minutes later (race condition resolved itself).
+- The formula references a version that was tagged but not yet released.
+
+**Phase to address:** GitHub Actions integration (Phase 2 of v1.2). Sequence the jobs correctly from the start.
+
+**Confidence:** HIGH — race condition is inherent in event-driven workflows; confirmed by analysis of the existing `release.yml` which has a separate `release` job with upload steps that take time to complete.
+
+---
+
+### Pitfall 28: README Documents Flags That Clap Doesn't Actually Expose (or Vice Versa)
+
+**What goes wrong:** The README is written once and immediately drifts from the actual CLI interface. Users run a command from the README, get a "unexpected argument" or "no such option" error, and lose trust in the documentation. Common drift points: flags renamed during development, new flags added but not documented, deprecated flags left in docs after removal.
+
+**Why it happens:** Manual documentation maintenance. There is no automated check that the README's documented flags match what `clap` actually parses. For a personal tool with five subcommands and multiple flags each, drift is easy and costly.
+
+**How to avoid:**
+- Write the README at the end of v1.2, not the beginning. Document from `contentops --help` and `contentops <subcommand> --help` output, not from memory or design docs.
+- Copy the actual help output into the README rather than paraphrasing it — users will run `--help` anyway; exact flag names matter.
+- Add a CI smoke test that runs `contentops --help` and each subcommand's `--help` and asserts exit code 0. This catches regressions where the binary crashes on `--help` (broken `clap` config).
+- For the flags table in the README: generate it from `clap`'s output rather than writing it by hand. A `contentops generate-docs` subcommand or a build script can automate this in a future milestone.
+
+**Warning signs:**
+- README example uses `--silence-threshold` but the actual flag is `--threshold`.
+- `contentops cut --help` shows flags not mentioned in the README.
+- README was written before `clap` definitions were finalized.
+
+**Phase to address:** Documentation phase (Phase 3 of v1.2). Write README last; derive from live binary output.
+
+**Confidence:** HIGH — universal CLI documentation problem; confirmed by community observations and direct analysis of contentops having five subcommands with multiple flags each.
+
+---
+
+### Pitfall 29: Homebrew Tap Caches Stale Formula After Update
+
+**What goes wrong:** After pushing a formula update to the tap repository, `brew install contentops` (or `brew upgrade contentops`) on an existing installation still installs the old version. The user's local Homebrew cache has the tap cached and doesn't pick up the new formula immediately.
+
+**Why it happens:** Homebrew caches tap contents locally. `brew update` refreshes the cache, but users who don't run `brew update` before `brew install` get stale results. More commonly: the tap was updated but the cached tap in `$(brew --repository)/Library/Taps/` was not refreshed.
+
+**How to avoid:**
+- This is expected Homebrew behavior, not a bug. Document it: "Run `brew update && brew upgrade contentops` to get the latest version."
+- If the tap appears completely stuck, the nuclear option is `brew untap user/contentops && brew tap user/contentops`.
+- For the formula file: ensure the `version` field is updated in every formula push. Homebrew uses the version to determine if an upgrade is available.
+- Never re-use a version tag for a different binary (re-releasing under the same tag is undetectable by Homebrew).
+
+**Warning signs:**
+- `brew upgrade contentops` reports "contentops is already installed at the latest version" after pushing a new release.
+- `brew info contentops` shows the old version even after `brew update`.
+- Formula was pushed but the `version` field was not updated (copy-paste error).
+
+**Phase to address:** Homebrew tap setup (Phase 1 of v1.2). Understand the update lifecycle before writing the automation.
+
+**Confidence:** MEDIUM — standard Homebrew behavior, confirmed by [Homebrew tap maintenance docs](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap) and community reports. Not a pitfall to "fix" but to document correctly.
+
+---
+
 ## Technical Debt Patterns
 
 Shortcuts that seem reasonable but create long-term problems.
@@ -470,6 +680,9 @@ Shortcuts that seem reasonable but create long-term problems.
 | `#[allow(dead_code)]` on `cleanup_all` | Silences warning | Masks real dead code, confuses future auditors | Remove the function or document the planned use case |
 | `which::which()` for dep checks with no version validation | Simple presence check | Silently accepts wrong versions of FFmpeg | Add version check in `doctor` command; keep simple check for fast-path commands |
 | `anyhow::bail!` mixed with `AppError` returns | Flexible error handling | Inconsistent error formatting (some get `format_error()` treatment, some don't) | Standardize on `AppError` for all user-visible errors in audit phase |
+| Universal binary in formula (avoids per-arch SHA256) | Simpler formula, single hash | 2x download size; defeats architecture-specific optimization | Never — use `on_arm`/`on_intel` blocks instead |
+| Manual README updates alongside code changes | No tooling setup needed | Inevitable drift between docs and actual flags/behavior | Acceptable short-term; automate with `--help` output extraction in v2.0 |
+| Hardcoded version in formula (not auto-updated) | Zero automation complexity | Every release requires manual formula update | Never for a regularly-released tool — automate from day one |
 
 ---
 
@@ -482,8 +695,10 @@ Common mistakes when connecting to external services.
 | FFmpeg via `Command` | Forgetting `-y` and `-nostdin` on new invocations added during pipeline work | Centralize all FFmpeg invocation through `ffmpeg.rs` helpers that add these flags unconditionally |
 | whisper-cli JSON output | Assuming JSON file is at `{wav_path}.json` — whisper-cli writes to the same directory as the WAV with `.json` appended to the full filename | Current code in `caption.rs:434` already handles this correctly; preserve this assumption when refactoring |
 | claude-cli in pipeline | Pipeline runs claude-cli for `--auto` overlay; in pipeline mode the JSON transcript is an intermediate file from the caption stage, not a user-provided path | The pipeline must wire the caption JSON output path explicitly to the overlay `--auto` input — do not rely on derived filenames |
-| GitHub Actions secrets | `GITHUB_TOKEN` is auto-provided for release uploads; no additional secrets needed for binary releases | Only add secrets if publishing to Homebrew tap; keep the initial CI simple |
-| ffprobe version parsing | `ffprobe -version` output format is identical to `ffmpeg -version` — strip the same way | Reuse the same version extraction regex for both |
+| GitHub Actions for release | Using `GITHUB_TOKEN` for cross-repo push to Homebrew tap | Create a PAT with `repo` scope, store as `HOMEBREW_TAP_TOKEN` secret, use for tap repo push only |
+| GitHub Actions + Homebrew tap | Formula-update workflow triggered by `release` event before assets finish uploading | Embed formula update as a final step in the `release` job, after `softprops/action-gh-release` completes |
+| Homebrew `sha256` field | Pasting full `shasum -a 256` output including filename | Always pipe through `awk '{print $1}'` or `cut -d' ' -f1` to extract hash only |
+| Homebrew formula URL | Pointing `url` at a raw binary without archive extension | Package binary in `.tar.gz` before uploading to GitHub Release; update release workflow accordingly |
 
 ---
 
@@ -510,6 +725,7 @@ Domain-specific security issues beyond general web security.
 | Passing user-provided file paths to `Command::new()` without validation | Path traversal in error logs written to `.contentops_error.log` | Paths are validated for existence before use (`args.input.exists()`); keep this pattern in pipeline |
 | Storing claude API key in environment and passing to subprocess | Claude CLI reads `CLAUDE_API_KEY` from env; a compromised subprocess could read it | This is inherent to the claude-cli design; note in documentation |
 | Shell injection via file paths with special characters | Spaces and special chars in filenames passed to FFmpeg as string args | All FFmpeg args are passed as `Vec<&str>` to `Command`, not via shell — no injection risk |
+| PAT with overly broad scope stored as Actions secret | Token compromise exposes all user repos to write access | Use fine-grained PAT scoped to `homebrew-contentops` repo only with `Contents: write` permission |
 
 ---
 
@@ -524,6 +740,8 @@ Common user experience mistakes in this domain.
 | `doctor` doesn't check whisper model availability | User runs pipeline, waits through cut stage, then fails at caption with "model not found" | `doctor` should accept `--model` path and validate the model file exists and is a valid GGML file |
 | No `--dry-run` on pipeline | User can't preview what pipeline will do before committing 30 minutes of processing | Pipeline should support `--dry-run` that chains `cut --dry-run` output and skips actual encoding |
 | Progress bars from multiple stages interleave badly in CI logs | CI logs are unreadable with spinner escape codes | Detect non-TTY (`atty` crate or `std::io::IsTerminal`) and suppress progress bars; current code doesn't do this |
+| README install instructions use `brew tap user/tap && brew install tool` without `brew update` | User installs stale version from cached tap | Document `brew update` as step 2; explain that `brew update` refreshes formula cache |
+| README examples use flags that were renamed after docs were written | User gets "unexpected argument" error, loses trust in documentation | Write README from `--help` output after implementation is complete; never document before finalizing CLI |
 
 ---
 
@@ -539,6 +757,11 @@ Things that appear complete but are missing critical pieces.
 - [ ] **Refactored subcommands:** Often assumed working because they compile — verify each subcommand produces identical output before and after extraction (test with the same input file, diff the output).
 - [ ] **GitHub Release:** Often missing SHA256 checksums — verify the release workflow attaches `.sha256` files alongside binaries.
 - [ ] **`doctor` non-TTY output:** Often only tested interactively — verify `contentops doctor` output is readable in `| cat` (no broken escape codes).
+- [ ] **Homebrew formula SHA256:** Often computed from sidecar file — verify hash is computed directly from the binary URL, piped through `awk '{print $1}'`.
+- [ ] **Homebrew formula URL:** Often points to raw binary — verify release assets are tarballs (`.tar.gz`), not bare binaries; verify `def install` extracts and installs correctly.
+- [ ] **Homebrew formula architecture:** Often tested only on developer's ARM Mac — verify formula installs correctly on Intel Mac (or with `arch -x86_64 brew install`).
+- [ ] **Formula auto-update:** Often assumed working from GitHub Actions logs — verify by checking the tap repo for a new commit after a release, then running `brew upgrade contentops` to confirm version advances.
+- [ ] **README flag table:** Often written from memory — verify every flag in the README matches output of `contentops <subcommand> --help` exactly (flag names, short forms, defaults).
 
 ---
 
@@ -554,6 +777,12 @@ When pitfalls occur despite prevention, how to recover.
 | `doctor` exits 1 in CI and blocks release | LOW | Add `|| true` to the CI step, or remove `contentops doctor` from CI entirely |
 | Dead code masking by `#[allow(dead_code)]` | LOW | Run `grep -r "allow(dead_code)" src/`; audit each; remove function or document intent |
 | Pipeline stage fails, no intermediate files | HIGH | No recovery without re-running from scratch; prevention (preserve on failure) is the only mitigation |
+| SHA256 mismatch in formula after release | LOW | Recompute hash with `curl -sL <URL> \| shasum -a 256 \| awk '{print $1}'`; push corrected formula; `brew update && brew install contentops` picks up fix immediately |
+| GITHUB_TOKEN rejected pushing to tap repo | LOW | Create PAT with `repo` scope; add as `HOMEBREW_TAP_TOKEN` secret; update workflow to use it |
+| Formula update raced with asset upload (404 SHA256) | LOW | Manually trigger formula-update workflow after release completes; embed update step inside release job going forward |
+| Formula class name mismatch (Ruby error on install) | LOW | Rename class to match filename per CamelCase rules; push to tap; `brew untap && brew tap` to clear cache |
+| Formula URL is raw binary (tar error on install) | MEDIUM | Update release workflow to package binaries as `.tar.gz`; republish release with tarballs; update formula URLs and SHA256 |
+| README flag drift discovered after release | LOW | Update README; push; no binary changes needed; add CI check for `--help` exit code to catch future regressions |
 
 ---
 
@@ -571,6 +800,14 @@ How roadmap phases should address these pitfalls.
 | No testable integration path (#19) | CI/CD Phase | CI installs FFmpeg and at least one integration test runs `contentops cut` end-to-end |
 | Wrong binary architecture in release (#20) | CI/CD Phase | Release artifacts are named with architecture suffix; both ARM and Intel binaries uploaded |
 | `#[allow(dead_code)]` accumulation (#21) | Audit/Cleanup Phase | `grep -r "allow(dead_code)" src/` shows 0 results after audit |
+| SHA256 mismatch in formula (#22) | v1.2 Homebrew tap setup | `brew install contentops` succeeds on fresh machine immediately after release |
+| Wrong architecture served by formula (#23) | v1.2 Homebrew tap setup | Verify ARM binary on M-series, x86_64 binary on Intel; check with `file $(which contentops)` |
+| GITHUB_TOKEN cross-repo push failure (#24) | v1.2 GitHub Actions integration | Formula-update step succeeds; tap repo shows new commit after release |
+| Formula Ruby class name mismatch (#25) | v1.2 Homebrew tap setup | `brew audit Formula/contentops.rb` passes; `brew install --formula` works locally |
+| Raw binary URL causes tar extraction failure (#26) | v1.2 Homebrew tap setup (requires release workflow change) | `brew install contentops` completes without tar error; binary is in PATH |
+| Auto-update race condition (#27) | v1.2 GitHub Actions integration | Inspect tap repo commit timing vs release asset upload completion; no SHA256 computed before assets available |
+| README flag drift (#28) | v1.2 Documentation phase | Every flag in README verified against `contentops <subcommand> --help` output; CI runs `--help` as smoke test |
+| Stale tap cache (#29) | v1.2 Homebrew tap setup (documentation) | Install instructions include `brew update`; version advances correctly after `brew upgrade contentops` |
 
 ---
 
@@ -587,6 +824,9 @@ How roadmap phases should address these pitfalls.
 | Doctor subcommand | Wrong exit code semantics (#15), brittle version parsing | Design exit code contract first; use regex for version extraction |
 | Pipeline subcommand | File collisions (#16), partial failure (#17), performance (#table) | Temp dir for intermediates; preserve on failure; clear stage failure messages |
 | CI/CD | macOS-specific paths (#18), no integration tests (#19), wrong arch (#20) | Two-job CI: ubuntu compile/unit + macos integration; matrix release build |
+| v1.2 Homebrew tap | SHA256 mismatch (#22), arch detection (#23), class name (#25), raw binary (#26) | Validate formula locally with `brew install --formula` before any automation |
+| v1.2 GitHub Actions | Cross-repo push failure (#24), race condition (#27) | PAT before automation; embed update inside release job, not as separate triggered workflow |
+| v1.2 Documentation | Flag drift (#28), install instruction gaps (#29) | Write README from live `--help` output; include `brew update` in install steps |
 
 ---
 
@@ -612,8 +852,22 @@ How roadmap phases should address these pitfalls.
 - [Rust extract method refactoring — ownership challenges (OOPSLA 2023)](https://ilyasergey.net/assets/pdf/papers/rem-oopsla23.pdf)
 - [Clippy lints reference](https://rust-lang.github.io/rust-clippy/master/index.html)
 - [clap global args issue — positional requirements and breaking changes](https://github.com/clap-rs/clap/issues/1386)
-- Direct codebase audit of contentops v1.0 source (2026-02-20)
+- [Homebrew: How to Create and Maintain a Tap](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap)
+- [Homebrew Formula Cookbook — on_arm/on_intel, Hardware::CPU.arm?, naming rules](https://docs.brew.sh/Formula-Cookbook)
+- [Homebrew SHA256 mismatch discussion](https://github.com/orgs/Homebrew/discussions/1312)
+- [Homebrew: What should sha256 be in a custom cask?](https://github.com/orgs/Homebrew/discussions/5077)
+- [Homebrew: Architecture-specific cask discussion](https://github.com/orgs/Homebrew/discussions/3096)
+- [GitHub Docs: Controlling permissions for GITHUB_TOKEN](https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/controlling-permissions-for-github_token)
+- [GitHub community: GITHUB_TOKEN cannot access other repos](https://github.com/orgs/community/discussions/46566)
+- [Automating Homebrew Tap Updates with GitHub Actions — BuiltFast](https://builtfast.dev/blog/automating-homebrew-tap-updates-with-github-actions/)
+- [Automate Homebrew formulae with GitHub Actions — josh.fail](https://josh.fail/2023/automate-updating-custom-homebrew-formulae-with-github-actions/)
+- [Distribute Open-Source Tools with Homebrew Taps — casraf.dev (Jan 2025)](https://casraf.dev/2025/01/distribute-open-source-tools-with-homebrew-taps-a-beginners-guide/)
+- [Creating Your First Homebrew Tap — kristoffer.dev](https://kristoffer.dev/blog/guide-to-creating-your-first-homebrew-tap/)
+- [sha256sum on macOS uses shasum, not sha256sum — format differs](https://github.com/sobolevn/git-secret/issues/124)
+- [Homebrew: brew install not respecting tap when formula name collides](https://github.com/Homebrew/brew/issues/16213)
+- Direct codebase audit of contentops v1.1 source (2026-02-20)
+- Direct analysis of `.github/workflows/release.yml` job structure (2026-02-20)
 
 ---
-*Pitfalls research for: Rust video processing CLI — v1.1 milestone (audit, doctor, pipeline, CI/CD)*
+*Pitfalls research for: Rust video processing CLI — v1.2 milestone (Homebrew tap, GitHub Actions auto-update, README documentation)*
 *Researched: 2026-02-20*

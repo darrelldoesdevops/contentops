@@ -1,186 +1,150 @@
 # Project Research Summary
 
-**Project:** contentops — Milestone 2 (audit tooling, doctor subcommand, pipeline subcommand, CI/CD)
-**Domain:** Rust CLI for video post-production (short-form content: TikTok/Reels/Shorts)
+**Project:** contentops v1.2 — Homebrew tap + auto-update + comprehensive README
+**Domain:** Rust CLI distribution via Homebrew personal tap with GitHub Actions automation
 **Researched:** 2026-02-20
 **Confidence:** HIGH
 
 ## Executive Summary
 
-contentops v1.0 is a complete, working Rust CLI (2,401 LOC, 3 subcommands) that replaced CapCut for a single macOS creator. The v1.1 milestone adds four capabilities: codebase audit tooling, a `doctor` subcommand, a `pipeline` subcommand, and GitHub Actions CI/CD. Critically, this milestone adds **zero new Cargo.toml runtime dependencies** — every new feature is built from existing crates (`which`, `anyhow`, `clap`, `owo-colors`), external tooling (`cargo-audit`, `cargo-deny`), and GitHub Actions YAML. The architecture is strictly additive: two new command modules (`doctor.rs`, `pipeline.rs`) plug into the established `Commands` enum and `run()` dispatch pattern without touching any existing command logic.
+This milestone is purely distribution and documentation — zero Rust source changes are required. The goal is to make `brew install contentops` work by creating a personal Homebrew tap (`darrelldoesdevops/homebrew-tap`), writing an architecture-conditional formula that distributes the pre-built binaries already produced by the v1.1 release workflow, automating formula updates on every new release, and documenting the tool with a comprehensive README. All prerequisites exist: the release workflow already produces `contentops-aarch64-apple-darwin` and `contentops-x86_64-apple-darwin` with corresponding `.sha256` sidecar files at stable URL patterns.
 
-The recommended implementation order is strict and non-negotiable based on dependency analysis: audit/cleanup first, then doctor, then pipeline, then CI/CD. Audit before pipeline because existing duplication (three identical spinner factories across `cut.rs`, `caption.rs`, `overlay.rs`) would multiply into every pipeline code path if not extracted first. Doctor before pipeline because pipeline calls the same `require_ffmpeg()`/`require_whisper()` infrastructure that doctor validates — and because the missing `require_claude()` check in `overlay --auto` must be closed before wiring overlay into the pipeline. CI/CD last because its primary value is gating on `cargo clippy -D warnings` and `cargo test`, which must be green before the workflow is useful.
+The recommended approach is a two-repo system. The main `contentops` repo gains a new `update-tap` job appended to `release.yml`, which fires after GitHub Release assets are confirmed uploaded and triggers a `workflow_dispatch` in the separate `homebrew-tap` repo. The tap repo's `bump-formula.yml` downloads the release binaries, computes SHA256, and patches the formula using sentinel-comment-anchored `sed` replacements — simpler and more robust than Python regex or brittle multi-line sed. The formula uses `on_macos do / if Hardware::CPU.arm?` conditional blocks to route each architecture to its correct binary, a pattern verified against the locally installed `loft-sh/tap/vcluster` formula. Cross-repo workflow dispatch requires a classic PAT with `repo` and `workflow` scopes; `GITHUB_TOKEN` is explicitly insufficient for this.
 
-The key implementation risks are: behavioral regressions during the audit refactor (temp file ownership semantics and spinner `finish_*` behavior are not caught by the compiler), pipeline intermediate file management (intermediates must live in a temp directory, not the working directory, to avoid collisions and working-directory pollution), and GitHub Actions runner architecture (since 2024, `macos-latest` is ARM64 — Intel builds require explicit `macos-13` runner). All three risks have concrete prevention strategies identified in the research.
+The critical risk is the SHA256 pipeline: miscomputed checksums are the most common Homebrew install failure. The formula update script must pipe binary downloads through `awk '{print $1}'` to extract only the hex hash, and the `update-tap` job must declare `needs: release` to guarantee assets exist before SHA256 is computed. A secondary risk is the bare binary format — the `bin.install "contentops-aarch64-apple-darwin" => "contentops"` rename pattern inside the `on_macos` conditional handles this correctly (verified against `loft-sh/tap`), but must be tested locally with `brew install --formula` before wiring up any automation.
 
 ## Key Findings
 
 ### Recommended Stack
 
-Zero new runtime dependencies for this milestone. All additions are tooling, configuration files, and CI YAML. The existing Cargo.toml already provides everything needed.
+The tap requires a public GitHub repo named `homebrew-tap` (the `homebrew-` prefix is mandatory for `brew tap darrelldoesdevops/tap` shorthand). The formula is Ruby DSL using `on_macos do / if Hardware::CPU.arm?` conditional blocks, a pattern verified against the locally installed `loft-sh/tap/vcluster` formula generated by GoReleaser with identical structure. `mislav/bump-homebrew-formula-action@v3` is explicitly ruled out — it cannot handle `if...else` or `Hardware::CPU` conditionals per its own README. The sentinel-comment sed approach is the recommended auto-update mechanism over Python regex, and over re-downloading the binary to recompute SHA256 (pre-computed `.sha256` sidecar files already exist in the release).
 
 **Core technologies:**
-- `which` (8.0, already in Cargo.toml): PATH lookup for doctor checks — faster than shelling to `which`, returns typed `Result<PathBuf>`
-- `clap` (4.5, already in Cargo.toml): two new `Commands` variants (`Doctor`, `Pipeline`) and their `*Args` structs via derive macros
-- `owo-colors` (4.2, already in Cargo.toml): colored `[ok]`/`[fail]`/`[warn]` output for doctor
-- `cargo-audit` (0.22.1, external): security advisory checking against RustSec database
-- `cargo-deny` (0.18.5, external): license compliance and duplicate dependency detection
-- `dtolnay/rust-toolchain@stable`: CI toolchain — actively maintained replacement for unmaintained `actions-rs/toolchain`
-- `Swatinem/rust-cache@v2`: CI build cache — reduces cold build (~3-4 min) to cached (~30s)
-- `actions-rust-lang/audit@v1`: CI security audit — actively maintained replacement for unmaintained `actions-rs/audit-check`
-- `taiki-e/upload-rust-binary-action@v1`: Release binary packaging — handles target naming, `.tar.gz` archives, SHA256 checksums
-
-**Explicitly excluded:** tokio or any async runtime (pipeline stages are sequential, no async value), `cross` crate (Docker cross-compilation unnecessary when GitHub provides native macOS runners), `cargo-make`/`just` (Cargo built-ins are sufficient), `actions-rs/*` actions (unmaintained since 2023)
+- Homebrew Ruby formula DSL (`on_macos / Hardware::CPU.arm?`): architecture-conditional binary distribution — verified pattern, no viable alternatives for this binary structure
+- GitHub Actions `workflow_dispatch`: cross-repo formula trigger — required; `on: release` events race with asset uploads and are explicitly not recommended
+- Classic PAT (`repo` + `workflow` scopes): cross-repo auth — fine-grained PATs lack `workflow` scope as of 2026-02; classic PAT required
+- Sentinel-comment `sed`: SHA256/version patching in formula — simpler and more readable than Python regex; preferred over line-number-anchored sed
 
 ### Expected Features
 
 **Must have (table stakes):**
-- Doctor: `[ok]`/`[fail]`/`[warn]` checks for ffmpeg, ffprobe, whisper-cli, claude — flutter/npm/brew-style output is the established convention
-- Doctor: per-subcommand readiness summary ("cut: ready, caption: missing whisper-cli") — flat check list without this is incomplete
-- Doctor: exit 0 by default (exit 1 only with `--strict`) — running doctor on a CI machine without FFmpeg must not break CI
-- Doctor: version minimum check for ffmpeg (>= 6.0) — filter syntax differs across major versions
-- Pipeline: single command chaining cut → caption → overlay, with intermediates in a temp directory (not working directory)
-- Pipeline: preserve temp directory on failure with printed path and recovery hint
-- Pipeline: `--dry-run` showing planned stages without executing
-- CI: `cargo fmt --check` + `cargo clippy -D warnings` + `cargo test` + `cargo audit` on push/PR
-- Release: both `aarch64-apple-darwin` (macos-latest) and `x86_64-apple-darwin` (macos-13) binaries with SHA256 checksums
+- `brew tap darrelldoesdevops/tap` + `brew install contentops` installs a working binary on ARM and Intel
+- Architecture-correct binary selection via `on_macos do / if Hardware::CPU.arm?` conditionals with separate URLs and SHA256 per arch
+- SHA256 checksum verification per architecture (Homebrew always verifies; wrong hash = hard failure for user)
+- `test do` block running `contentops --version` (expected by `brew audit`; absence triggers warning)
+- `caveats` block documenting whisper model requirement (prevents post-install confusion for caption command)
+- README: what it does, prerequisites, Homebrew + direct install, pipeline workflow example, doctor onboarding step, license
 
-**Should have (differentiators):**
-- Audit `--fix` mode: wraps `cargo clippy --fix --allow-dirty` + `cargo fmt` in one command
-- Pipeline: `--keep-intermediates` flag for debugging/stage reuse
-- Universal macOS binary (`lipo`-merged) for single-download UX
-- Colored audit summary header: "3 errors, 7 warnings" in red/yellow before details
+**Should have (competitive):**
+- Auto-update formula on release via GitHub Actions — eliminates per-release manual maintenance
+- `brew install darrelldoesdevops/tap/contentops` one-liner in README (works without prior `brew tap`)
+- Full flag reference table per subcommand in README (indexed/searchable via GitHub/Google, unlike `--help`)
+- Pipeline-first README structure (lead with `contentops pipeline`, not alphabetical subcommand list)
+- Troubleshooting section derived from actual `doctor` failure messages and `error.rs` hints
 
 **Defer (v2+):**
-- YAML/TOML pipeline config files — shell aliases cover preset combinations; one user doesn't need reproducible pipeline definitions
-- Re-entrant pipeline (resume from failed stage) — complex state tracking; manual rerun via individual commands is acceptable
-- Linux/Windows builds — hard-coded `/System/Library/Fonts/Supplemental/Impact.ttf`; no current users on other platforms
-- Homebrew formula — ongoing maintenance burden; GitHub Releases binary download is sufficient
-- crates.io publish — this is an application binary, not a library; pre-built binaries have strictly better UX
+- Homebrew bottle distribution (requires Homebrew CI infrastructure; overkill for personal tap)
+- homebrew-core submission (requires cross-platform support; contentops is macOS-only with native whisper deps)
+- README auto-generation from `clap` output (useful, but low-priority for a 5-subcommand tool)
 
 ### Architecture Approach
 
-The v1.1 architecture is minimal and additive. Two new source files and two new GitHub Actions workflows. The only changes to existing files are: making `derive_caption_output` public in `caption.rs` (one-line visibility change, prerequisite for pipeline), adding `require_claude()` to `error.rs` (closes the missing prereq check for `overlay --auto`), and registering the new modules in `commands/mod.rs`.
+The v1.2 milestone introduces a cross-repo release chain as Pattern 4 alongside the three existing patterns. The chain is strictly linear with `needs:` dependencies: `build` → `release` → `update-tap` → `bump-formula.yml` in the tap repo. The tap repo is a thin GitHub repo with three files: `Formula/contentops.rb`, `.github/workflows/bump-formula.yml`, and `.github/scripts/update-formula`. Zero changes to `src/`.
 
 **Major components:**
-1. `commands/doctor.rs` (~80 LOC) — `which::which()` checks per tool, colored pass/warn/fail output via `owo-colors`, per-subcommand readiness grouping, exits 0 by default
-2. `commands/pipeline.rs` (~70 LOC) — calls `cut::run()`, `caption::run()`, `overlay::run()` as direct Rust function calls (not subprocess calls), threads shared `TempFileRegistry` across all stages, uses temp directory for intermediates
-3. `.github/workflows/ci.yml` — fmt + clippy + test + audit on push/PR; runs on `macos-latest` to avoid macOS-specific path failures on ubuntu runners
-4. `.github/workflows/release.yml` — tag-triggered; two-runner matrix (`macos-latest` for ARM64, `macos-13` for Intel x86_64); uses `taiki-e/upload-rust-binary-action` for artifact packaging and checksums
-
-**Key architectural constraints confirmed by source audit:**
-- Pipeline must call `run()` functions directly, not shell to `contentops cut` subprocess — subprocess approach loses `TempFileRegistry`, loses typed `AppError`, requires binary on PATH during development
-- Prerequisite checks stay at each command's call site — centralized pre-dispatch checking in `main.rs` causes whisper check to fire for `cut` and claude check to fire for `caption`
-- `PipelineArgs` exposes only `input`, `model`, `lang`, `breaths`, `font` — re-exposing all flags from three commands creates 15+ fields; users needing fine control use individual commands
-
-**Build order for implementation:**
-1. `require_claude()` + overlay guard in `error.rs` (closes immediate gap, one-liner)
-2. `pub fn derive_caption_output` in `caption.rs` (prerequisite for pipeline)
-3. `DoctorArgs` + `Commands::Doctor` in `cli.rs`
-4. `commands/doctor.rs`
-5. `PipelineArgs` + `Commands::Pipeline` in `cli.rs`
-6. `commands/pipeline.rs`
-7. `.github/workflows/release.yml` (independent, can be written any time)
+1. `Formula/contentops.rb` (tap repo) — Ruby formula with `on_macos/Hardware::CPU.arm?` blocks, sentinel-commented SHA256 lines, `test do`, `caveats`
+2. `.github/workflows/bump-formula.yml` (tap repo) — `workflow_dispatch` receiver; accepts `version` input; runs update script, commits, pushes
+3. `.github/scripts/update-formula` (tap repo) — downloads `.sha256` sidecars, pipes through `awk '{print $1}'`, sed-patches formula via sentinel comments
+4. `update-tap` job (contentops `release.yml`) — appended after `release` job with `needs: release`; strips `v` prefix; fires `gh workflow run`
+5. `TAP_UPDATE_TOKEN` secret (contentops repo settings) — classic PAT; `repo` + `workflow` scopes; scoped to tap repo only
+6. `README.md` (contentops repo root) — single file, ~60-80 lines, pipeline-first, prerequisites before installation, no prose narrative
 
 ### Critical Pitfalls
 
-1. **Refactoring breaks existing subcommands without compile-time warning** — extract shared spinner/temp logic one subcommand at a time; verify each produces identical output on a real video file before touching the next. Temp file ownership semantics (`.keep()` call timing, `Drop` order) are the highest-risk silent regression.
+1. **SHA256 mismatch in formula** — always compute hash via `curl -sL <URL> | awk '{print $1}'` (or read sidecar files piped through awk); never paste raw `shasum -a 256` output which includes filename; `update-tap` must declare `needs: release` to prevent race with asset uploads (pitfall 22, 27)
 
-2. **Pipeline intermediate files pollute the working directory** — use a dedicated temp directory (`{stem}_pipeline_tmp_{timestamp}/`) for all intermediates; only the final output goes in the user's directory. On success: delete temp dir. On failure: preserve it and print the path with a recovery hint ("Run `contentops caption` on it to continue manually").
+2. **`GITHUB_TOKEN` rejected for cross-repo dispatch** — `GITHUB_TOKEN` is repo-scoped; cross-repo `workflow_dispatch` requires a classic PAT with `repo` + `workflow` scopes stored as `TAP_UPDATE_TOKEN`; fine-grained PATs lack `workflow` scope (pitfall 24)
 
-3. **`doctor` exits 1 when dependencies are missing, breaking CI** — doctor is a diagnostic tool, not a prerequisite enforcer. Default exit 0 always; reserve exit 1 for `--strict` flag. Design this contract before writing any code.
+3. **Wrong architecture served or formula detection broken** — use `on_arm do` / `on_intel do` or `on_macos do / Hardware::CPU.arm?` blocks with separate URLs and SHA256 per arch; never use universal binary in formula; test on both ARM and Intel before shipping (pitfall 23)
 
-4. **macOS-specific paths cause CI failures on ubuntu-latest** — `overlay.rs` hardcodes `/System/Library/Fonts/Supplemental/Impact.ttf`. Any CI job on ubuntu-latest that compiles and runs the binary fails with a non-Rust error. Keep CI on `macos-latest` for all jobs that exercise the binary.
+4. **Formula Ruby class name mismatch** — `contentops.rb` must contain `class Contentops < Formula`; run `brew audit Formula/contentops.rb` before pushing; `brew install --formula` locally to verify before automation (pitfall 25)
 
-5. **`macos-latest` is ARM64 since 2024 — Intel users need explicit `macos-13`** — without a two-runner matrix, releases ship ARM-only. `macos-13` is the last Intel GitHub runner. Name artifacts with architecture suffix (`contentops-aarch64-apple-darwin`, `contentops-x86_64-apple-darwin`).
+5. **README flag drift** — write README from live `--help` output after implementation is complete; every flag name in README must match `contentops <subcommand> --help` exactly; never document before finalizing CLI (pitfall 28)
 
 ## Implications for Roadmap
 
-Based on combined research, the dependency ordering is strict. Each phase unblocks the next.
+Based on research, suggested phase structure:
 
-### Phase 1: Audit and Cleanup
-**Rationale:** Three identical `make_spinner` implementations across `cut.rs`, `caption.rs`, `overlay.rs` would be called by pipeline in every stage. `#[allow(dead_code)]` on `cleanup_all` in `temp.rs` is a live example of the dead code accumulation pattern that ruins audit signal. Inconsistent `anyhow::bail!` vs `AppError` returns mean some pipeline errors get `format_error()` treatment and some don't. Clean before adding complexity.
-**Delivers:** Clippy-clean codebase (`-D warnings` passes with zero suppressions added), extracted shared spinner utility, consistent `AppError`-based error handling, zero `#[allow(dead_code)]` attributes without documented justification.
-**Addresses:** Codebase audit feature area; closes technical debt items documented in PITFALLS.md technical debt table.
-**Avoids:** Pitfall 14 (refactoring regressions) — cleanup happens before pipeline adds new call sites that depend on extracted code.
+### Phase 1: Homebrew Tap Repository + Formula
+**Rationale:** The formula is the foundational deliverable. Everything else (auto-update, README Homebrew section) depends on `brew install` working first. Cannot document or automate what doesn't exist.
+**Delivers:** Working `brew install darrelldoesdevops/tap/contentops` on ARM and Intel Macs; `brew audit` passes; `brew test contentops` passes
+**Addresses:** `brew tap` + `brew install`, architecture-correct binary selection, SHA256 verification, `test do`, `caveats` block
+**Avoids:** SHA256 mismatch (pitfall 22), architecture detection error (pitfall 23), formula class name mismatch (pitfall 25)
+**Verification gate:** `brew install --formula Formula/contentops.rb` succeeds locally on ARM; verify Intel with `arch -x86_64 brew install` or an Intel runner; `file $(which contentops)` confirms correct arch
 
-### Phase 2: Doctor Subcommand
-**Rationale:** Doctor validates the `which::which()` + `require_*()` prerequisite check infrastructure before pipeline chains all three stages together. Also closes the `require_claude()` gap in `overlay --auto` — a concrete bug that should not ship into the pipeline. Doctor is low-risk (no temp files, no FFmpeg, no state) and provides immediate user value.
-**Delivers:** `contentops doctor` with colored pass/warn/fail output, per-subcommand readiness summary, minimum FFmpeg version check, exit 0 by default.
-**Addresses:** Doctor feature area; closes `overlay --auto` missing prerequisite check.
-**Avoids:** Pitfall 15 (doctor exit code semantics) — exit contract is designed and documented before any code is written.
+### Phase 2: GitHub Actions Auto-Update
+**Rationale:** Formula exists and is verified working; now automate the maintenance burden. The update script requires a real formula file with sentinel comments in place to patch. The `TAP_UPDATE_TOKEN` PAT must be created before writing the automation job.
+**Delivers:** On every `git push v*` tag, tap formula auto-updates with new version and SHA256 values within minutes of the GitHub Release completing; zero manual steps
+**Uses:** Classic PAT, `workflow_dispatch`, sentinel-comment `sed`, `needs: release` job dependency ordering
+**Implements:** Cross-repo release chain (Pattern 4); `update-tap` job in `release.yml`; `bump-formula.yml` + `update-formula` script in tap repo
+**Avoids:** GITHUB_TOKEN cross-repo failure (pitfall 24), auto-update race condition (pitfall 27)
+**Verification gate:** Push a test tag; confirm tap repo shows new commit with correct version and SHA256; `brew update && brew upgrade contentops` installs new version
 
-### Phase 3: Pipeline Subcommand
-**Rationale:** Pipeline builds on cleaned-up subcommands (Phase 1) and validated prerequisite infrastructure (Phase 2). Requires `derive_caption_output` to be public (one-line change) and `require_claude()` to exist in `error.rs` (added in Phase 2). This is the highest user-value feature of the milestone — the three-command manual workflow becomes one command.
-**Delivers:** `contentops pipeline input.mp4 --model ggml-base.bin` replacing three manual invocations. Intermediate files managed in temp directory; final output to working directory.
-**Addresses:** Pipeline feature area; the primary workflow bottleneck identified in FEATURES.md.
-**Avoids:** Pitfall 16 (file collisions) via temp directory; Pitfall 17 (partial failure ambiguity) via intermediate preservation on failure with recovery hint.
-
-### Phase 4: GitHub Actions CI/CD
-**Rationale:** CI gates on `cargo clippy -D warnings` and `cargo test`. Setting it up before the codebase is clean (Phase 1) creates a permanently red CI that must be immediately fixed. Setting it up before new commands exist (Phases 2-3) means the first green run doesn't actually validate the milestone features. Comes last, ships green on day one.
-**Delivers:** Automated CI on push/PR; GitHub Release with ARM64 + Intel macOS binaries and SHA256 checksums on tag push.
-**Addresses:** CI/CD feature area; enables other users to install `contentops` without building from source.
-**Avoids:** Pitfall 18 (macOS paths on ubuntu CI) — CI on `macos-latest`; Pitfall 19 (no integration tests) — FFmpeg installed in CI runner; Pitfall 20 (wrong arch binary) — explicit two-runner matrix with architecture-suffixed artifact names.
+### Phase 3: Comprehensive README
+**Rationale:** README must document the Homebrew install path, requiring Phase 1 to be complete. Writing README last from live binary output prevents flag drift. README has no downstream dependencies — lowest risk, write it last.
+**Delivers:** `README.md` at contentops repo root: one-liner description, prerequisites before installation, Homebrew + direct install paths, pipeline-first usage with copy-paste example, full flag reference tables, doctor onboarding step
+**Addresses:** Pipeline-first structure, prerequisites section, flag reference tables, `contentops doctor` as onboarding, `brew update` in install instructions
+**Avoids:** Flag drift (pitfall 28), stale tap cache confusion (pitfall 29)
+**Verification gate:** Every flag in README verified against `contentops <subcommand> --help` output; no undocumented flags; no documented-but-nonexistent flags
 
 ### Phase Ordering Rationale
 
-- **Audit before pipeline:** Pipeline calls existing `run()` functions — duplication in those functions directly multiplies into pipeline's error surface. Extract first, integrate second.
-- **Doctor before pipeline:** `require_claude()` is added during doctor work; pipeline depends on it for `overlay --auto` stage. Also validates the `require_*()` pattern works correctly before pipeline chains all three stages.
-- **CI/CD last:** CI is automation of what already works. Green from day one requires the codebase to already be clean and the commands to already be implemented.
+- Phase 1 before Phase 2: auto-update script patches a formula file that must already exist with sentinel comments; cannot test automation without a working formula
+- Phase 1 before Phase 3: README Homebrew install section must reference a tap that actually exists and works; writing install instructions before the tap exists creates a broken README
+- Phase 3 last: content is derived directly from live `--help` output; zero risk if delayed, no downstream dependencies
 
 ### Research Flags
 
-Phases with standard, well-documented patterns (no additional research needed):
-- **Phase 1 (Audit):** `cargo clippy --message-format=json` is documented; Rust extraction refactoring patterns are standard.
-- **Phase 2 (Doctor):** Flutter/npm/brew doctor pattern is well-established; `which` crate already used in production code.
-- **Phase 4 (CI/CD):** All GitHub Actions used are officially documented and actively maintained; two-runner macOS matrix is a known pattern.
+All three phases use well-documented patterns with confirmed sources. No phases require `/gsd:research-phase`.
 
-Phases needing validation during implementation:
-- **Phase 3 (Pipeline):** The JSON path wiring — `derive_caption_output(input, "captioned", "json")` must produce exactly the path that `caption::run()` writes, which is then passed to `overlay::run()` as `args.auto`. This derivation chain is the highest-risk integration point and must be verified with a real video file before declaring the phase complete.
+- **Phase 1:** Homebrew DSL is authoritative and stable; pattern verified locally against `loft-sh/tap`; formula DSL has no ambiguity
+- **Phase 2:** Two-repo `workflow_dispatch` pattern confirmed from multiple community sources; PAT scope requirements confirmed from GitHub docs; sentinel-comment sed is simple and tested
+- **Phase 3:** No research needed; content is derived from `--help` output and existing `.planning/` docs
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | Zero new dependencies; all tooling verified against official docs and crates.io as of 2026-02-20. One caveat: `macos-13` runner name may change — verify at CI implementation time. |
-| Features | HIGH | Doctor pattern from flutter/npm/brew is well-established. Pipeline design is straightforward function composition. CI/CD patterns verified against taiki-e action documentation. |
-| Architecture | HIGH | Based on direct source code audit of all 12 source files (2,401 LOC). Integration points are explicit and verifiable. Findings are from actual source, not inference. |
-| Pitfalls | HIGH (existing v1.0 pitfalls) / MEDIUM (new v1.1 pitfalls) | v1.0 pitfalls verified against official Rust and FFmpeg documentation. v1.1 pitfalls grounded in codebase audit; behavioral regression risk is real but prevention is well-understood. |
+| Stack | HIGH | Formula pattern verified against locally installed tap; `mislav` action limitation confirmed from its own README; PAT scope requirement confirmed from GitHub docs; sidecar SHA256 format verified against actual v1.1.0 release assets |
+| Features | HIGH | Feature set is narrow and well-defined; table stakes derived from Homebrew's install contract; anti-features (universal binary, homebrew-core, building from source) clearly ruled out with rationale |
+| Architecture | HIGH | Two-repo data flow explicitly traced from tag push to `brew install`; all components inventoried; direct codebase audit confirms zero src/ changes needed |
+| Pitfalls | HIGH | SHA256, cross-repo token, race condition, class naming, and architecture detection pitfalls all confirmed against official sources and real community failure reports; not theoretical |
 
 **Overall confidence:** HIGH
 
 ### Gaps to Address
 
-- **`macos-13` runner longevity:** GitHub may retire the Intel runner or rename it. Verify availability at CI implementation time; document which runner is used and why.
-- **JSON path derivation chain:** `derive_caption_output` path must exactly match what `caption::run()` writes to disk. Cannot be verified without a real run. Test this before finalizing `pipeline.rs`.
-- **cargo-deny vs cargo-audit overlap:** Both check security advisories. If both run in CI, advisory hits are double-reported. Decide at implementation time whether to run cargo-deny only (superset) or both (explicit separation of concerns). Either is defensible.
-- **`doctor --strict` exit code use case:** Research recommends exit 0 by default, but the scripted use case `contentops doctor && contentops pipeline ...` requires exit 1 on failure to be useful. Validate the `--strict` flag design against actual usage before locking the CLI API.
+- **Bare binary vs tarball:** STACK.md and the locally verified `loft-sh/tap` pattern use bare binary with `bin.install "arch-name" => "contentops"` inside the conditional block. PITFALLS.md pitfall 26 notes that Homebrew may attempt tar extraction on URLs without an archive extension. Resolution: the rename pattern inside `on_macos` blocks handles this correctly per the verified example. Confirm by running `brew install --formula Formula/contentops.rb` locally before setting up any automation.
+- **Sentinel comment vs Python regex:** STACK.md recommends sentinel comments (simpler, readable); ARCHITECTURE.md shows Python as an alternative. Decision is clear — sentinel comments. Ensure the formula file includes `# ARM-SHA` and `# INTEL-SHA` sentinel comments from the initial commit so the update script can target them.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- [Clippy Configuration](https://doc.rust-lang.org/clippy/configuration.html) — clippy.toml options, pedantic group, `-D warnings` CI usage
-- [Clippy Usage/CI](https://doc.rust-lang.org/clippy/usage.html) — `--message-format=json`, `-A clippy::module_name_repetitions` rationale
-- [cargo-audit 0.22.1](https://docs.rs/crate/cargo-audit/latest) — advisory check invocation, `--deny warnings` flag
-- [which 8.0.0](https://docs.rs/which/latest/which/) — PATH lookup API used in doctor and error.rs
-- [taiki-e/upload-rust-binary-action](https://github.com/taiki-e/upload-rust-binary-action) — binary upload, checksum, target triple naming
-- [taiki-e/create-gh-release-action](https://github.com/taiki-e/create-gh-release-action) — release creation from CHANGELOG.md
-- [dtolnay/rust-toolchain](https://github.com/dtolnay/rust-toolchain) — CI toolchain action, `components: clippy,rustfmt`
-- [Swatinem/rust-cache](https://github.com/Swatinem/rust-cache) — Cargo registry + target caching
-- [actions-rust-lang/audit](https://github.com/actions-rust-lang/audit) — maintained audit action with GitHub Issues integration
-- [Rust std::process::Stdio](https://doc.rust-lang.org/std/process/struct.Stdio.html) — pipe deadlock documentation (v1.0 pitfall sourcing)
-- Direct codebase audit: all 12 source files in contentops/src/, 2026-02-20 (HIGH — actual source, not inference)
+- [Homebrew: How to Create and Maintain a Tap](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap) — naming convention, directory structure, tap mechanics
+- [Homebrew Formula Cookbook](https://docs.brew.sh/Formula-Cookbook) — `on_macos`, `on_arm`, `on_intel`, `Hardware::CPU.arm?`, `bin.install`, `test do`, `caveats`, naming rules
+- [Homebrew Taps Documentation](https://docs.brew.sh/Taps) — `brew tap` command format, `homebrew-` prefix requirement
+- [mislav/bump-homebrew-formula-action README](https://github.com/mislav/bump-homebrew-formula-action) — v3.6 documented limitation: cannot handle `if...else`/`Hardware::CPU` conditionals
+- [GitHub Docs: Controlling permissions for GITHUB_TOKEN](https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/controlling-permissions-for-github_token) — cross-repo token scope limitation
+- `brew cat loft-sh/tap/vcluster` — locally verified GoReleaser-generated bare-binary formula with identical `Hardware::CPU.arm?` pattern; HIGH confidence
+- `gh release download v1.1.0 --pattern "*.sha256"` — verified SHA256 sidecar format: `hash  filename`; awk required to extract hash only
+- `gh release view v1.1.0 --json assets` — confirmed asset names: `contentops-aarch64-apple-darwin`, `contentops-x86_64-apple-darwin` (bare binaries, not tarballs)
 
 ### Secondary (MEDIUM confidence)
-- [cargo-deny 0.18.5](https://docs.rs/crate/cargo-deny/latest) — license compliance and duplicate dependency detection
-- [ahmedjama.com cross-platform Rust CI/CD 2025](https://ahmedjama.com/blog/2025/12/cross-platform-rust-pipeline-github-actions/) — workflow matrix structure reference
-- [GitHub Actions runner images changelog](https://github.com/actions/runner-images) — `macos-latest` ARM64 change documentation
-- [cargo-machete](https://crates.io/crates/cargo-machete) — unused dependency detection, actively maintained 2025
-- [flutter doctor UX pattern](https://www.dhiwise.com/post/flutter-doctor-command-a-vital-tool-for-developers) — pass/warn/fail output conventions
-- [npm doctor](https://docs.npmjs.com/cli/v7/commands/npm-doctor/) — check categorization pattern
-
-### Tertiary (LOW confidence)
-- Select filter expression length limits — theoretical; no confirmed breakage at realistic TikTok video lengths
+- [builtfast.dev: Automating Homebrew Tap Updates with GitHub Actions](https://builtfast.dev/blog/automating-homebrew-tap-updates-with-github-actions/) — two-repo `workflow_dispatch` pattern, sed-based formula patching
+- [josh.fail: Automate updating custom Homebrew formulae](https://josh.fail/2023/automate-updating-custom-homebrew-formulae-with-github-actions/) — `workflow_dispatch` tap update approach
+- [kristoffer.dev: Creating Your First Homebrew Tap](https://kristoffer.dev/blog/guide-to-creating-your-first-homebrew-tap/) — `Hardware::CPU.arm?` pattern for pre-built binaries
+- [ivaniscoding.github.io: Rust CLI Homebrew Packaging](https://ivaniscoding.github.io/posts/rustpackaging2/) — template-based auto-update for Rust CLIs
+- [GitHub community: GITHUB_TOKEN cannot access other repos](https://github.com/orgs/community/discussions/46566) — cross-repo token limitation confirmed
 
 ---
 *Research completed: 2026-02-20*

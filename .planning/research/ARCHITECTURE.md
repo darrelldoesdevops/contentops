@@ -1,8 +1,8 @@
 # Architecture Research
 
-**Domain:** Rust CLI video post-production — v1.1 integration audit
+**Domain:** Rust CLI video post-production — v1.1 integration audit + v1.2 Homebrew tap / README
 **Researched:** 2026-02-20
-**Confidence:** HIGH (direct source code audit of all 12 files, 2,401 LOC)
+**Confidence:** HIGH (direct codebase audit + verified Homebrew/GitHub Actions sources)
 
 ## Current Architecture (v1.0 — as built)
 
@@ -340,6 +340,253 @@ jobs:
 
 `contentops-aarch64-apple-darwin` and `contentops-x86_64-apple-darwin` — users download the right one for their machine. No universal binary (lipo) needed; the two files are sufficient.
 
+---
+
+## v1.2 New Components: Homebrew Tap + README
+
+### Two-Repository System Overview
+
+```
+┌──────────────────────────────────────────┐
+│  darrelltang/contentops  (existing repo) │
+│                                          │
+│  .github/workflows/release.yml           │
+│    ↓  on: push tags v*                   │
+│    ↓  jobs: build-arm64, build-x86_64    │
+│    ↓  job: release → softprops/release   │
+│    ↓                                     │
+│    ↓  NEW: job: update-tap               │
+│       gh workflow run bump-formula.yml   │
+│       --repo darrelltang/homebrew-contentops
+│       --field version=$TAG               │
+└───────────────────┬──────────────────────┘
+                    │  cross-repo workflow_dispatch
+                    │  (PAT_TOKEN secret required)
+                    ▼
+┌──────────────────────────────────────────┐
+│  darrelltang/homebrew-contentops  (NEW)  │
+│                                          │
+│  Formula/                                │
+│    contentops.rb       ← updated here    │
+│  .github/workflows/                      │
+│    bump-formula.yml    ← triggered above │
+│  .github/scripts/                        │
+│    update-formula      ← bash script     │
+└──────────────────────────────────────────┘
+```
+
+### New Repository: `darrelltang/homebrew-contentops`
+
+**Naming:** The `homebrew-` prefix is required for the short `brew tap darrelltang/contentops` syntax. Without it, users must use `brew tap darrelltang/homebrew-contentops`.
+
+**Required structure:**
+
+```
+homebrew-contentops/
+├── Formula/
+│   └── contentops.rb          # Homebrew formula
+├── .github/
+│   ├── workflows/
+│   │   └── bump-formula.yml   # workflow_dispatch target
+│   └── scripts/
+│       └── update-formula     # bash: download + sha256 + sed
+└── README.md                  # optional but expected
+```
+
+### Formula File Structure (`Formula/contentops.rb`)
+
+The formula distributes architecture-specific pre-built binaries using `on_arm`/`on_intel` blocks with separate URLs and SHA256 values per arch:
+
+```ruby
+class Contentops < Formula
+  desc "Video post-production CLI: silence removal, captions, overlays"
+  homepage "https://github.com/darrelltang/contentops"
+  version "0.1.0"
+
+  on_arm do
+    url "https://github.com/darrelltang/contentops/releases/download/v0.1.0/contentops-aarch64-apple-darwin"
+    sha256 "PLACEHOLDER_ARM64_SHA256"
+  end
+
+  on_intel do
+    url "https://github.com/darrelltang/contentops/releases/download/v0.1.0/contentops-x86_64-apple-darwin"
+    sha256 "PLACEHOLDER_X86_SHA256"
+  end
+
+  def install
+    bin.install "contentops-aarch64-apple-darwin" => "contentops" if Hardware::CPU.arm?
+    bin.install "contentops-x86_64-apple-darwin" => "contentops" if Hardware::CPU.intel?
+  end
+
+  test do
+    system "#{bin}/contentops", "--version"
+  end
+end
+```
+
+**Note:** Homebrew bottles (the standard binary package format) require Homebrew infrastructure to build and sign. For a personal tap with pre-built Rust binaries, the `on_arm`/`on_intel` approach with direct release URLs is the correct pattern — bottles are for Homebrew/core, not personal taps.
+
+### Update Script (`.github/scripts/update-formula`)
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="${VERSION:?VERSION not set}"
+REPO="darrelltang/contentops"
+
+ARM_URL="https://github.com/${REPO}/releases/download/v${VERSION}/contentops-aarch64-apple-darwin"
+X86_URL="https://github.com/${REPO}/releases/download/v${VERSION}/contentops-x86_64-apple-darwin"
+
+ARM_SHA=$(curl -fsSL "$ARM_URL" | shasum -a 256 | awk '{print $1}')
+X86_SHA=$(curl -fsSL "$X86_URL" | shasum -a 256 | awk '{print $1}')
+
+sed -i '' "s|releases/download/v.*/contentops-aarch64|releases/download/v${VERSION}/contentops-aarch64|g" Formula/contentops.rb
+sed -i '' "s|releases/download/v.*/contentops-x86_64|releases/download/v${VERSION}/contentops-x86_64|g" Formula/contentops.rb
+sed -i '' "s/version \".*\"/version \"${VERSION}\"/" Formula/contentops.rb
+# Replace SHA lines — order matters: arm first, intel second
+# (use line-specific replacement if sed -i '' pattern conflicts)
+```
+
+**Note on SHA replacement:** `sed` replacing two SHA256 values in the same file is fragile when both look identical in pattern. A more robust approach: use Python's `re.sub` or write the formula file from a template rather than patching in place.
+
+### Tap Workflow (`.github/workflows/bump-formula.yml`)
+
+```yaml
+name: Bump Formula
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (without v prefix, e.g. 0.2.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update formula
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: bash .github/scripts/update-formula
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/contentops.rb
+          git commit -m "contentops ${{ github.event.inputs.version }}"
+          git push
+```
+
+### Modified: `release.yml` — New `update-tap` Job
+
+The existing `release` job in `contentops` repo completes successfully, then `update-tap` fires:
+
+```yaml
+  update-tap:
+    name: Update Homebrew Tap
+    needs: release          # runs after GitHub Release is published
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger tap formula update
+        env:
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"   # strip leading 'v' from tag
+          gh workflow run bump-formula.yml \
+            --repo darrelltang/homebrew-contentops \
+            --field version="${VERSION}"
+```
+
+**Why `needs: release` not `needs: [build-arm64, build-x86_64]`:** The tap script downloads binaries from the GitHub Release. The Release must exist and assets must be uploaded before the tap update downloads them to compute SHA256. The `release` job creates the release via `softprops/action-gh-release`; tap update must wait for it.
+
+### Authentication: `TAP_GITHUB_TOKEN` Secret
+
+| Requirement | Detail |
+|-------------|--------|
+| Type | Fine-grained PAT (or classic PAT) |
+| Owner | `darrelltang` account |
+| Repos | `darrelltang/homebrew-contentops` — read+write |
+| Permissions | Actions: read+write, Contents: read+write, Workflows: read+write |
+| Where stored | `contentops` repo → Settings → Secrets → `TAP_GITHUB_TOKEN` |
+
+**Do not use `GITHUB_TOKEN` for cross-repo triggers.** `GITHUB_TOKEN` is scoped to the current repo only. Cross-repo `workflow_dispatch` requires a PAT.
+
+### Data Flow: Tag Push to `brew install`
+
+```
+1. Developer: git push tag v0.2.0
+      ↓
+2. release.yml triggers (on: push tags v*)
+      ↓
+3. build-arm64 job → artifact: contentops-aarch64-apple-darwin
+   build-x86_64 job → artifact: contentops-x86_64-apple-darwin
+      ↓
+4. release job:
+   - Downloads both artifacts
+   - Creates universal binary (lipo)
+   - Generates .sha256 files
+   - Uploads 6 files to GitHub Release via softprops
+      ↓
+5. update-tap job (needs: release):
+   - Strips 'v' prefix: "v0.2.0" → "0.2.0"
+   - gh workflow run bump-formula.yml --repo darrelltang/homebrew-contentops
+      ↓
+6. bump-formula.yml in homebrew-contentops triggers:
+   - Checks out homebrew-contentops
+   - update-formula script:
+       - curl downloads contentops-aarch64-apple-darwin from GitHub Release
+       - shasum → ARM64_SHA
+       - curl downloads contentops-x86_64-apple-darwin from GitHub Release
+       - shasum → X86_SHA
+       - sed patches version + both SHA256 values in Formula/contentops.rb
+   - git commit + push → Formula/contentops.rb updated
+      ↓
+7. User: brew tap darrelltang/contentops
+          brew install contentops
+   - Homebrew reads Formula/contentops.rb
+   - Downloads arch-specific binary from GitHub Release
+   - Verifies SHA256
+   - Installs to /opt/homebrew/bin/contentops (arm64)
+             or /usr/local/bin/contentops (intel)
+```
+
+### Component Inventory: New vs Modified
+
+| Component | Status | Location | Notes |
+|-----------|--------|----------|-------|
+| `homebrew-contentops` repo | NEW | github.com/darrelltang/homebrew-contentops | Separate GitHub repo |
+| `Formula/contentops.rb` | NEW | homebrew-contentops | on_arm/on_intel binary formula |
+| `.github/workflows/bump-formula.yml` | NEW | homebrew-contentops | workflow_dispatch receiver |
+| `.github/scripts/update-formula` | NEW | homebrew-contentops | sha256 + sed script |
+| `release.yml` — `update-tap` job | MODIFIED | contentops/.github/workflows/ | Appended after existing `release` job |
+| `TAP_GITHUB_TOKEN` secret | NEW | contentops repo settings | Fine-grained PAT |
+| `README.md` | NEW | contentops repo root | Install + usage docs |
+
+**Zero src/ changes required.** This milestone is pure distribution and documentation.
+
+### README Architecture
+
+The README is a single file at the contentops repo root. It is the only documentation file needed — no docs/ directory, no wiki.
+
+```
+README.md
+├── Install (brew tap + brew install + verify)
+├── Prerequisites (ffmpeg, whisper-cli, claude)
+├── Commands reference (table: command | purpose | key flags)
+├── Usage examples (contentops cut, caption, overlay, pipeline)
+└── Uninstall
+```
+
+Target: ~60-80 lines. Scannable. No prose narrative. Commands are copy-pasteable.
+
 ## Architectural Patterns (Existing — Confirmed by Audit)
 
 ### Pattern 1: Self-Contained Command Modules
@@ -352,13 +599,17 @@ Each command module imports its own `*Args` type, calls `require_*()` guards at 
 
 Pipeline calls `commands::cut::run()`, `commands::caption::run()`, `commands::overlay::run()` directly as Rust function calls. The shared `TempFileRegistry` handles Ctrl-C cleanup across all three steps automatically.
 
-**Do not shell out to `contentops cut` as a subprocess.** This would lose the shared registry (Ctrl-C in a subprocess doesn't clean the parent's temp files), lose typed errors, and require the binary to be on PATH during development.
+**Do not shell out to `contentops cut` as a subprocess.** This would lose the shared registry (Ctrl-C in a subprocess doesn't clean the parent's temp files), lose typed errors, and require the binary on PATH during development.
 
 ### Pattern 3: Prerequisite Checks as Typed Errors
 
 `require_ffmpeg()` / `require_whisper()` return `AppError::FfmpegNotFound` / `AppError::WhisperNotFound`. The top-level error handler in main.rs catches `AppError` variants and formats them with install hints. New tools follow the same pattern.
 
 Checks are duplicated across commands that share deps. This is acceptable — `which::which` is a filesystem stat (cheap), and it keeps each command self-documenting.
+
+### Pattern 4: Cross-Repo Release Chain (NEW — v1.2)
+
+The release workflow is a linear dependency chain: build → release → tap update. Each step has an explicit `needs:` dependency. The tap update cannot run until GitHub Release assets exist (the tap script downloads them to compute SHA256). The PAT scoped to the tap repo is the authentication boundary between the two repositories.
 
 ## Anti-Patterns
 
@@ -385,6 +636,30 @@ Checks are duplicated across commands that share deps. This is acceptable — `w
 **Why it's wrong:** 15+ fields on PipelineArgs, duplicating three commands' worth of CLI surface. Users needing fine control should use individual commands.
 
 **Do this instead:** Expose only `input`, `model`, `lang`, `breaths`, `font`. Hardcode overlay defaults. Pipeline is the happy path.
+
+### Anti-Pattern 4: Tap Update Before Release Assets Exist (NEW)
+
+**What people do:** Trigger `bump-formula.yml` in parallel with or immediately after the `release` job starts, without waiting for `softprops/action-gh-release` to complete.
+
+**Why it's wrong:** The update-formula script downloads binaries from the GitHub Release to compute SHA256. If triggered too early, the Release may not exist or assets may still be uploading. The script fails with a 404 or gets a wrong SHA.
+
+**Do this instead:** `update-tap` job must declare `needs: release`. The release job does not complete until `softprops/action-gh-release` finishes uploading all 6 files.
+
+### Anti-Pattern 5: Using GITHUB_TOKEN for Cross-Repo Dispatch (NEW)
+
+**What people do:** Set `GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}` in the `update-tap` job.
+
+**Why it's wrong:** `GITHUB_TOKEN` is automatically scoped to the current repository. It cannot trigger workflows in `darrelltang/homebrew-contentops`.
+
+**Do this instead:** Create a fine-grained PAT with actions + contents + workflows write permissions on the tap repo. Store it as `TAP_GITHUB_TOKEN` in the contentops repo secrets.
+
+### Anti-Pattern 6: Patching SHA256 with Ambiguous sed (NEW)
+
+**What people do:** `sed -i '' "s/OLDSHA/NEWSHA/"` when both ARM and Intel SHA placeholders share the same pattern.
+
+**Why it's wrong:** Two SHA256 values in the formula can't be distinguished by sed if the regex matches both. First substitution may replace the wrong line.
+
+**Do this instead:** Use line-number-aware replacement, or template the formula file (write it from scratch with interpolated values) rather than patching. Python's `re.sub` with named capture groups is more reliable than multi-line sed.
 
 ## Data Flow Summary
 
@@ -422,7 +697,34 @@ User → clap parse → DoctorArgs → doctor::run() → {
 }
 ```
 
-## Build Order Recommendation
+### Release + Tap Update (NEW — v1.2)
+
+```
+git push v0.2.0 tag
+    ↓
+release.yml
+    ├── build-arm64 job  ──────────────────────────┐
+    ├── build-x86_64 job ──────────────────────────┤
+    │                                              ↓
+    ├── release job (needs: build-arm64, build-x86_64)
+    │     softprops/action-gh-release uploads 6 files
+    │                                              ↓
+    └── update-tap job (needs: release)
+          gh workflow run bump-formula.yml \
+            --repo darrelltang/homebrew-contentops \
+            --field version=0.2.0
+              ↓
+          homebrew-contentops/bump-formula.yml
+            curl arm64 binary → shasum → ARM_SHA
+            curl x86_64 binary → shasum → X86_SHA
+            patch Formula/contentops.rb
+            git push
+              ↓
+          brew install contentops  [user]
+            reads updated formula → downloads binary → verifies SHA → installs
+```
+
+## Build Order Recommendation (v1.1 + v1.2)
 
 | Order | Task | Depends On | Rationale |
 |-------|------|------------|-----------|
@@ -433,12 +735,21 @@ User → clap parse → DoctorArgs → doctor::run() → {
 | 5 | `PipelineArgs` + `Commands::Pipeline` in cli.rs | Steps 1–2 complete | Can design args only after derivation API is confirmed |
 | 6 | `commands/pipeline.rs` | Steps 1–5 complete | Integrates all three existing commands |
 | 7 | `.github/workflows/release.yml` | None — independent | Can be written any time; test with a manual tag push |
+| 8 | Create `darrelltang/homebrew-contentops` repo | Step 7 complete and tag pushed | Tap repo needs a real release to test SHA download |
+| 9 | `Formula/contentops.rb` + `bump-formula.yml` + `update-formula` script | Step 8 | Core tap infrastructure |
+| 10 | `TAP_GITHUB_TOKEN` secret + `update-tap` job in `release.yml` | Steps 8–9 | Wires cross-repo trigger; test with another tag push |
+| 11 | `README.md` in contentops repo | Steps 8–10 (brew install must work) | README install section must reference working tap |
 
 ## Sources
 
 - Direct codebase audit: all 12 source files in `/Users/darrelltang/darrelldoesdevops/contentops/src/`
-- Confidence: HIGH — findings are from actual source code, not inference or training data
+- Homebrew tap naming and structure: https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap
+- Homebrew formula on_arm/on_intel DSL: https://docs.brew.sh/Formula-Cookbook
+- Cross-repo workflow_dispatch pattern: https://builtfast.dev/blog/automating-homebrew-tap-updates-with-github-actions/
+- PAT permissions for cross-repo triggers: https://github.com/orgs/community/discussions/58868
+- Formula update automation pattern: https://josh.fail/2023/automate-updating-custom-homebrew-formulae-with-github-actions/
+- Binary formula structure: https://jonathanruiz.dev/deploy-app-homebrew-using-github-actions/
 
 ---
-*Architecture research for: contentops v1.1 — doctor, pipeline, CI/CD*
+*Architecture research for: contentops v1.1 — doctor, pipeline, CI/CD; v1.2 — Homebrew tap, README*
 *Researched: 2026-02-20*

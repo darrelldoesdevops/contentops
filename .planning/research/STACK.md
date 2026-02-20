@@ -1,375 +1,331 @@
-# Technology Stack
+# Stack Research
 
-**Project:** contentops (Milestone 2 — audit tooling, doctor subcommand, pipeline subcommand, CI/CD)
+**Domain:** Homebrew personal tap + auto-update + CLI README
 **Researched:** 2026-02-20
-**Scope:** NEW capabilities only. Existing stack (clap, serde, indicatif, owo-colors, anyhow, which, tempfile) is validated and unchanged.
+**Confidence:** HIGH — all formula patterns verified against locally installed tap formulas; workflow patterns verified against official action READMEs
 
 ---
 
 ## What This Milestone Adds
 
-| Capability | Approach | New Cargo dependency? |
-|------------|----------|-----------------------|
-| Codebase audit (clippy, fmt) | Dev tooling, not runtime | No — cargo built-in |
-| Security audit | `cargo-audit` CLI tool | No — installed separately |
-| Dependency audit | `cargo-deny` CLI tool | No — installed separately |
-| Prerequisite checking (doctor) | `which` (already in Cargo.toml) + `std::process::Command` | No |
-| Pipeline subcommand | Internal code structure in clap | No |
-| GitHub Actions CI | YAML workflow files | No |
-| GitHub Actions Releases | `taiki-e/upload-rust-binary-action@v1` | No — GitHub Action |
-
-**Zero new Cargo.toml dependencies for this milestone.** All additions are tooling, configuration files, and CI YAML.
+| Capability | Approach | New file? |
+|------------|----------|-----------|
+| Homebrew personal tap | New GitHub repo `darrelldoesdevops/homebrew-tap` | Yes — new repo |
+| Formula for pre-built binaries | Ruby `.rb` formula with `Hardware::CPU` conditionals | Yes — `Formula/contentops.rb` |
+| Auto-update formula on release | GitHub Actions workflow in `contentops` repo dispatching to tap repo | Yes — workflow in both repos |
+| Comprehensive README | Markdown in `contentops` repo root | Yes — `README.md` |
 
 ---
 
-## Codebase Audit Tooling
+## Homebrew Tap Repository
 
-### Clippy Configuration
+### Naming and Setup
 
-Use a `clippy.toml` at the project root. Clippy reads it automatically via `CARGO_MANIFEST_DIR`.
+| Requirement | Value | Why |
+|-------------|-------|-----|
+| Repo name | `homebrew-tap` | Homebrew convention: prefix `homebrew-` is mandatory for short-form tap command |
+| Install command | `brew tap darrelldoesdevops/tap` | Expands to `github.com/darrelldoesdevops/homebrew-tap` |
+| Formula location | `Formula/contentops.rb` | Standard `Formula/` subdirectory; first path Homebrew checks |
+| Visibility | Public | Required for unauthenticated `brew tap` to work |
 
-**Recommended `clippy.toml`:**
-```toml
-# Suppress false positives from the pedantic group
-avoid-breaking-exported-api = false
-msrv = "1.75.0"
-```
+Create via: `brew tap-new darrelldoesdevops/tap` (scaffolds directory with default GitHub Actions — delete the default bottle-building workflows; they apply to source builds, not pre-built binaries).
 
-**CI invocation:**
-```bash
-cargo clippy --all-targets -- -D warnings -W clippy::pedantic -A clippy::module_name_repetitions
-```
-
-Why `-D warnings`: Fails CI on any lint. Why `clippy::pedantic`: Catches common correctness issues beyond `clippy::all`. Why `-A clippy::module_name_repetitions`: This pedantic lint fires constantly in a codebase with modules named after their domain (e.g., `commands::cut::CutArgs`) and provides no value.
-
-Do NOT enable `clippy::restriction` as a group — it contains mutually contradictory lints. Cherry-pick from it only if a specific lint is needed.
-
-**Confidence: HIGH** — Verified against official Clippy documentation (doc.rust-lang.org/clippy).
-
-### rustfmt
-
-No configuration needed. `cargo fmt --check` as CI gate is sufficient. The default rustfmt style is stable and opinionated — don't fight it.
-
-```bash
-cargo fmt --check   # CI gate
-cargo fmt           # Developer workflow
-```
-
-### cargo-audit (Security Advisories)
-
-**Tool:** `cargo-audit` v0.22.1 (released 2026-02-04)
-**Install:** `cargo install cargo-audit --locked`
-**Source:** RustSec Advisory Database (rustsec.org)
-
-This is a standalone tool, not a Cargo dependency. Run it against `Cargo.lock`. It checks for known CVEs in the dependency tree.
-
-```bash
-cargo audit                    # Local check
-cargo audit --deny warnings    # CI — fail on warnings too
-```
-
-For CI, use `actions-rust-lang/audit@v1` (the actively maintained action — `actions-rs/audit-check` is unmaintained).
-
-**Confidence: HIGH** — Verified via docs.rs, crates.io.
-
-### cargo-deny (License + Duplicate Dependency Audit)
-
-**Tool:** `cargo-deny` v0.18.5
-**Install:** `cargo install cargo-deny --locked`
-
-More comprehensive than cargo-audit: checks licenses, bans specific crates, detects duplicate dependency versions, and also checks advisories. For a personal tool, this is optional but worth the `deny.toml` setup cost because it catches license issues before they matter.
-
-**Minimal `deny.toml`:**
-```toml
-[advisories]
-# Covered by cargo-audit; keep in sync
-
-[bans]
-multiple-versions = "warn"
-wildcards = "deny"
-
-[licenses]
-allow = [
-    "MIT",
-    "Apache-2.0",
-    "Apache-2.0 WITH LLVM-exception",
-    "ISC",
-    "BSD-2-Clause",
-    "BSD-3-Clause",
-    "Unicode-3.0",
-]
-```
-
-Initialize with: `cargo deny init`
-
-**Confidence: MEDIUM** — cargo-deny is optional for a personal tool. Useful if the project is distributed. Add if the GitHub Actions CI pipeline has a slot for it.
+**Confidence: HIGH** — Verified against Homebrew official tap documentation.
 
 ---
 
-## Doctor Subcommand (Runtime Prerequisite Checking)
+## Homebrew Formula Syntax
 
-The `doctor` subcommand checks that all external dependencies are installed and meet minimum version requirements. No new Cargo dependencies are needed — `which` (already in Cargo.toml at v8.0.0) handles PATH lookup, and `std::process::Command` handles version parsing.
+### Pattern: Bare Binary with Architecture Conditionals
 
-### Pattern
+The release workflow produces bare binaries (not tarballs): `contentops-aarch64-apple-darwin`, `contentops-x86_64-apple-darwin`. Homebrew supports direct binary URLs. The install block renames the arch-suffixed binary to the canonical `contentops` name.
 
-```rust
-// Check presence
-use which::which;
-which("ffmpeg").map_err(|_| anyhow!("ffmpeg not found in PATH — install with: brew install ffmpeg"))?;
+**Verified pattern** from `loft-sh/tap/vcluster` (locally installed tap, macOS-only tool with same binary structure):
 
-// Check minimum version
-let output = Command::new("ffmpeg").arg("-version").output()?;
-let stdout = String::from_utf8_lossy(&output.stdout);
-// Parse "ffmpeg version 7.1..." from first line
+```ruby
+# typed: false
+# frozen_string_literal: true
+
+class Contentops < Formula
+  desc "CLI for video post-production automation"
+  homepage "https://github.com/darrelldoesdevops/contentops"
+  version "1.1.0"
+  license "MIT"
+
+  on_macos do
+    if Hardware::CPU.arm?
+      url "https://github.com/darrelldoesdevops/contentops/releases/download/v1.1.0/contentops-aarch64-apple-darwin"
+      sha256 "ec58e2d8106c84de25ae20641a060cbf85a91bb7cab4f0f60f27577f8333f0ba"
+
+      def install
+        bin.install "contentops-aarch64-apple-darwin" => "contentops"
+      end
+    end
+    if Hardware::CPU.intel?
+      url "https://github.com/darrelldoesdevops/contentops/releases/download/v1.1.0/contentops-x86_64-apple-darwin"
+      sha256 "<X86_SHA256>"
+
+      def install
+        bin.install "contentops-x86_64-apple-darwin" => "contentops"
+      end
+    end
+  end
+
+  test do
+    assert_match "contentops", shell_output("#{bin}/contentops --help")
+  end
+end
 ```
 
-### Prerequisites to Check
+**Key syntax decisions:**
 
-| Tool | How to Check | Minimum Version | Why |
-|------|-------------|-----------------|-----|
-| `ffmpeg` | `ffmpeg -version` stdout | 6.0+ | concat filter, silencedetect, drawtext filter with timeline options |
-| `ffprobe` | `ffprobe -version` stdout | 6.0+ | Ships with FFmpeg; same version |
-| `whisper` (optional) | `which whisper` only | any | Project shells out to whisper-cli; version flexibility needed |
-| `claude` (optional) | `which claude` only | any | Claude CLI; used for overlay --auto |
+| Decision | Rationale |
+|----------|-----------|
+| `Hardware::CPU.arm?` / `.intel?` inside `on_macos do` | Verified pattern from GoReleaser-generated formulas and `loft-sh/tap`. The `on_arm do` / `on_intel do` block syntax also exists but `Hardware::CPU` inside `on_macos` is more common for tools shipping bare binaries from GitHub Releases |
+| `def install` inside each conditional | Required when using bare binary URLs with different filenames per arch; the rename `=> "contentops"` maps the arch-named file to the installed binary name |
+| No `on_linux do` block | contentops is macOS-only by design; omitting Linux blocks is correct |
+| `version` explicit field | Required when URL doesn't contain a tag path (bare binary URL lacks version in path); Homebrew cannot infer version from the URL |
+| `# frozen_string_literal: true` | Homebrew linting convention; `brew style` will warn without it |
 
-Mark optional tools as warnings, not errors. A user running only `cut` doesn't need whisper installed.
-
-**Output format:** Use `owo-colors` (already in Cargo.toml) for colored check/cross/warning symbols. Pattern: `[check] ffmpeg 7.1 (ok)` or `[cross] ffmpeg not found`.
-
-**Confidence: HIGH** — `which` crate v8.0.0 is already in Cargo.toml. Pattern is standard for CLI tools.
+**Confidence: HIGH** — Pattern verified from locally installed `loft-sh/tap/vcluster` which uses identical structure (GoReleaser-generated, bare binary, same arch conditional approach).
 
 ---
 
-## Pipeline Subcommand
+## Auto-Update: Formula Patching on Release
 
-The `pipeline` subcommand chains `cut → caption → overlay` operations sequentially on a single input. This is pure internal code — no new dependencies.
+### Tool Decision: Custom Shell Script Over `mislav/bump-homebrew-formula-action`
 
-### Design: Clap Args + Internal Dispatch
+`mislav/bump-homebrew-formula-action@v3` (latest: v3.6) **explicitly cannot** update formulas with `if...else` or `Hardware::CPU` conditionals. From its README:
 
-```rust
-// cli.rs addition
-#[derive(Subcommand)]
-enum Commands {
-    Cut(CutArgs),
-    Caption(CaptionArgs),
-    Overlay(OverlayArgs),
-    Pipeline(PipelineArgs),  // new
-    Doctor,                   // new
-}
+> Cannot bump formulae which use Ruby `if...else` conditions to determine alternate download locations at runtime
 
-#[derive(Args)]
-struct PipelineArgs {
-    pub input: PathBuf,
-    #[arg(short = 'o')]
-    pub output: Option<PathBuf>,
-    // Inline the relevant subset of each subcommand's args
-    // or use #[command(flatten)] on sub-arg structs
-    #[arg(long)] pub model: Option<PathBuf>,   // for caption stage
-    #[arg(long)] pub text: Option<String>,      // for overlay stage
-    // ...skip stages if args are absent
-}
+Since contentops requires per-architecture URLs and SHA256 values, this action is ruled out.
+
+**Recommended approach:** Custom script in the tap repo, triggered via `workflow_dispatch` from the main release workflow.
+
+### Architecture: Two-Repo Pattern
+
+```
+contentops repo (release.yml)
+    │
+    │  gh workflow run update-formula.yml \
+    │    -f version=$VERSION \
+    │    -R darrelldoesdevops/homebrew-tap
+    ▼
+homebrew-tap repo (update-formula.yml)
+    │
+    ├── Download contentops-aarch64-apple-darwin.sha256 from release
+    ├── Download contentops-x86_64-apple-darwin.sha256 from release
+    ├── Parse hash (awk '{print $1}') from "hash  filename" format
+    ├── sed replace version, ARM sha256, Intel sha256 in formula
+    └── git commit + push
 ```
 
-### Stage Skipping
+### Workflow: contentops release.yml addition
 
-If `--model` is not provided, skip caption stage. If neither `--text` nor `--auto` is provided, skip overlay stage. This keeps pipeline flexible without requiring all stages.
-
-### Intermediate Files
-
-Use `TempFileRegistry` (already exists in `src/temp.rs`) for intermediate files between stages. Stage N output is stage N+1 input. On success, move final output to destination; on failure, temp registry cleans up.
-
-**Confidence: HIGH** — All components exist. This is a composition problem, not a new technology problem.
-
----
-
-## GitHub Actions CI/CD
-
-### Workflow Structure
-
-Two separate workflow files:
-
-| File | Trigger | Purpose |
-|------|---------|---------|
-| `.github/workflows/ci.yml` | Push to any branch, PR | clippy, fmt, test, audit |
-| `.github/workflows/release.yml` | Push tag `v[0-9]+.*` | Build binaries, upload to GitHub Releases |
-
-### CI Workflow (`ci.yml`)
-
-**Actions used:**
-- `actions/checkout@v4` — standard
-- `dtolnay/rust-toolchain@stable` — preferred over deprecated `actions-rs/toolchain`; supports `components: clippy,rustfmt`
-- `Swatinem/rust-cache@v2` — caches `~/.cargo` and `target/`; keys off Cargo.lock hash; critical for CI speed
-- `actions-rust-lang/audit@v1` — actively maintained cargo-audit wrapper; creates GitHub Issues on advisory hits
+Add this step to the existing `release` job in `.github/workflows/release.yml`, after "Create GitHub Release":
 
 ```yaml
-name: CI
-on:
-  push:
-    branches: ["main"]
-  pull_request:
-jobs:
-  check:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings -W clippy::pedantic -A clippy::module_name_repetitions
-      - run: cargo test
+- name: Update Homebrew formula
+  run: |
+    gh workflow run update-formula.yml \
+      -f version=${GITHUB_REF#refs/tags/v} \
+      -R darrelldoesdevops/homebrew-tap
+  env:
+    GITHUB_TOKEN: ${{ secrets.TAP_UPDATE_TOKEN }}
+```
 
-  audit:
+`TAP_UPDATE_TOKEN` must be a classic PAT with `repo` and `workflow` scopes (cross-repo workflow dispatch requires `workflow` scope; `GITHUB_TOKEN` is scoped to the current repo only).
+
+### Workflow: homebrew-tap update-formula.yml
+
+```yaml
+name: Update Formula
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (without v prefix, e.g. 1.2.0)'
+        required: true
+        type: string
+
+jobs:
+  update:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      issues: write
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rust-lang/audit@v1
+
+      - name: Compute SHA256 values
+        id: sha
+        run: |
+          ARM_SHA=$(curl -sL \
+            "https://github.com/darrelldoesdevops/contentops/releases/download/v${{ inputs.version }}/contentops-aarch64-apple-darwin.sha256" \
+            | awk '{print $1}')
+          X86_SHA=$(curl -sL \
+            "https://github.com/darrelldoesdevops/contentops/releases/download/v${{ inputs.version }}/contentops-x86_64-apple-darwin.sha256" \
+            | awk '{print $1}')
+          echo "arm_sha=$ARM_SHA" >> $GITHUB_OUTPUT
+          echo "x86_sha=$X86_SHA" >> $GITHUB_OUTPUT
+
+      - name: Patch formula
+        env:
+          VERSION: ${{ inputs.version }}
+          ARM_SHA: ${{ steps.sha.outputs.arm_sha }}
+          X86_SHA: ${{ steps.sha.outputs.x86_sha }}
+        run: |
+          FORMULA="Formula/contentops.rb"
+          sed -i "s|version \".*\"|version \"${VERSION}\"|" "$FORMULA"
+          sed -i "s|/v[0-9.]*/contentops-aarch64-apple-darwin\"|/v${VERSION}/contentops-aarch64-apple-darwin\"|" "$FORMULA"
+          sed -i "s|/v[0-9.]*/contentops-x86_64-apple-darwin\"|/v${VERSION}/contentops-x86_64-apple-darwin\"|" "$FORMULA"
+          # Replace SHA256 values - requires stable ordering in formula file
+          # Use line-number-anchored sed or maintain unique sentinel comments
+          python3 - <<'PYEOF'
+          import re, os
+          formula = open('Formula/contentops.rb').read()
+          arm_sha = os.environ['ARM_SHA']
+          x86_sha = os.environ['X86_SHA']
+          # ARM block comes first in formula - replace first sha256 occurrence
+          formula = re.sub(
+              r'(CPU\.arm\?.*?sha256 ")([a-f0-9]{64})(")',
+              lambda m: m.group(1) + arm_sha + m.group(3),
+              formula, count=1, flags=re.DOTALL
+          )
+          formula = re.sub(
+              r'(CPU\.intel\?.*?sha256 ")([a-f0-9]{64})(")',
+              lambda m: m.group(1) + x86_sha + m.group(3),
+              formula, count=1, flags=re.DOTALL
+          )
+          open('Formula/contentops.rb', 'w').write(formula)
+          PYEOF
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/contentops.rb
+          git commit -m "contentops ${{ inputs.version }}"
+          git push
 ```
 
-**Why `macos-latest` for CI?** The project is macOS-primary. Running CI on Linux would miss macOS-specific path and linking behavior. The audit job uses ubuntu-latest because it only reads Cargo.lock — no compilation needed.
+**SHA256 file format:** The release workflow generates files with content `hash  filename` (standard `shasum -a 256` output). The `awk '{print $1}'` extracts just the hex hash. Verified against actual v1.1.0 release assets.
 
-**Confidence: HIGH** — All actions verified against GitHub Marketplace and official documentation.
+**Why Python for SHA256 replacement:** `sed` regex for matching a 64-char hex string inside a multiline conditional block is fragile and platform-specific (macOS `sed -i ''` vs GNU `sed -i`). Since the tap's update workflow runs on `ubuntu-latest`, GNU sed is available, but the multiline match requirement makes Python cleaner and more robust. Python 3 is always available on GitHub Actions runners.
 
-### Release Workflow (`release.yml`)
+**Why not re-download and compute SHA256 from the binary:** The `.sha256` files are already present in the GitHub Release (generated by the release workflow). Re-downloading the binary to re-compute the hash introduces a redundant 50-100MB download per run. Trust the pre-computed checksums.
 
-**Strategy:** Native macOS compilation (not cross-compilation via Docker/cross) because:
-- GitHub provides both `macos-latest` (aarch64) and `macos-13` (x86_64) runners
-- No cross-compilation toolchain complexity
-- Produces native binaries with correct arch-specific optimizations
+**Confidence: HIGH for workflow structure.** MEDIUM for the Python sed approach — the regex pattern depends on formula layout staying stable. An alternative is to use unique sentinel comments (`# ARM-SHA`, `# INTEL-SHA`) on the sha256 lines and sed on those, which is simpler and more brittle-proof.
 
-**Actions used:**
-- `taiki-e/create-gh-release-action@v1` — creates GitHub Release from CHANGELOG.md entry
-- `taiki-e/upload-rust-binary-action@v1` — builds `--release`, tars binary, uploads to Release
+### Alternative: Simpler Sentinel Comment Approach
 
-```yaml
-name: Release
-permissions:
-  contents: write
-on:
-  push:
-    tags:
-      - v[0-9]+.*
+If the Python regex feels over-engineered, add sentinel comments to the formula and use simple grep+sed:
 
-jobs:
-  create-release:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: taiki-e/create-gh-release-action@v1
-        with:
-          changelog: CHANGELOG.md
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-  upload-assets:
-    needs: create-release
-    strategy:
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-apple-darwin
-            os: macos-13
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/upload-rust-binary-action@v1
-        with:
-          bin: contentops
-          target: ${{ matrix.target }}
-          tar: unix
-          token: ${{ secrets.GITHUB_TOKEN }}
+```ruby
+      sha256 "ec58e2d8106c84de25ae20641a060cbf85a91bb7cab4f0f60f27577f8333f0ba" # ARM-SHA
+      ...
+      sha256 "abc123..." # INTEL-SHA
 ```
 
-**Why not universal-apple-darwin?** The universal binary target builds on a single runner and requires cross-compilation from one arch to the other. Using separate runners per target is simpler and more debuggable.
+Then in the update script:
+```bash
+sed -i "s|sha256 \"[a-f0-9]*\" # ARM-SHA|sha256 \"${ARM_SHA}\" # ARM-SHA|" Formula/contentops.rb
+sed -i "s|sha256 \"[a-f0-9]*\" # INTEL-SHA|sha256 \"${INTEL_SHA}\" # INTEL-SHA|" Formula/contentops.rb
+```
 
-**Why `macos-13` for x86_64?** GitHub changed `macos-latest` to aarch64 starting with macos-14. `macos-13` is the last Intel runner. Explicitly specifying both avoids arch ambiguity.
+This is the recommended approach — simpler, readable, no Python dependency.
 
-**Confidence: MEDIUM** — `macos-13` availability and runner availability is a GitHub infrastructure detail. Verify runner availability at implementation time; GitHub may have changed runner naming.
+**Confidence: HIGH** — Pattern used by multiple real-world taps documented in builtfast.dev article (2025) and josh.fail (2023).
+
+---
+
+## README Structure
+
+### Recommended Sections for a CLI Tool (personal, macOS, video production)
+
+| Section | Content | Notes |
+|---------|---------|-------|
+| Title + one-liner | Tool name, what it does in one sentence | No badges needed for personal tool |
+| Prerequisites | ffmpeg, whisper-cli, minimum versions | Critical UX: users hit this before install works |
+| Installation | `brew tap` + `brew install` as primary path | Direct download as fallback |
+| Subcommands reference | Table: command, purpose, key flags | Scannable over narrative |
+| Usage examples | One concrete example per subcommand | Show actual commands with real-ish filenames |
+| `contentops doctor` | Call out as the "start here if broken" command | Reduce support burden |
+| Configuration/output | Where files go, naming conventions | |
+
+### Section Order Rationale
+
+Prerequisites before Installation because Homebrew installs the binary but brew doesn't install ffmpeg/whisper. Users who install first, read docs second, will hit runtime errors from `doctor`. Frontloading prerequisites prevents confusion.
+
+### What NOT to Include
+
+| Avoid | Why |
+|-------|-----|
+| Contributing section | Personal tool, not open source project |
+| Badges (CI status, crates.io, etc.) | Adds noise, breaks if repo is private |
+| Architecture/internals documentation | Wrong audience for README; belongs in `.planning/` |
+| Changelog in README | Already generated by GitHub Releases; duplication |
+| License badge / full license text in README | Single line "MIT License" is sufficient |
+
+**Confidence: MEDIUM** — Derived from general CLI documentation best practices; no domain-specific source for video production CLI tools specifically.
 
 ---
 
 ## Alternatives Considered
 
-| Recommended | Alternative | Why Not |
-|-------------|-------------|---------|
-| `actions-rust-lang/audit@v1` | `actions-rs/audit-check@v1` | `actions-rs` org is unmaintained as of 2023; `actions-rust-lang` is the community successor |
-| `dtolnay/rust-toolchain@stable` | `actions-rs/toolchain@v1` | Same reason — `actions-rs` unmaintained |
-| Native macOS runners per arch | `cross` + Docker cross-compilation | Cross requires Docker on macOS runners; native runners are simpler and faster for macOS targets |
-| `cargo-audit` + `cargo-deny` | `cargo-audit` alone | `cargo-deny` catches license issues and duplicate dependencies that `cargo-audit` misses; small config cost |
-| `which` (already installed) + `Command::output()` | `assert_cmd` for doctor checks | `assert_cmd` is a test helper, not a runtime tool. Doctor runs in production, not tests |
+| Category | Recommended | Alternative | Why Not |
+|----------|-------------|-------------|---------|
+| Formula architecture handling | `Hardware::CPU.arm?` inside `on_macos do` | `on_arm do` / `on_intel do` top-level blocks | `on_arm`/`on_intel` blocks work but `Hardware::CPU` inside `on_macos` is the pattern used by GoReleaser-generated formulas and matches the verified `loft-sh/tap/vcluster` example; either works |
+| Auto-update action | Custom script + workflow_dispatch | `mislav/bump-homebrew-formula-action@v3` | mislav action explicitly cannot handle `if...else` or `Hardware::CPU` conditionals; documented limitation in its own README |
+| Auto-update action | Custom script | `dawidd6/action-homebrew-bump-formula` | Wraps `brew bump-formula-pr`; designed for homebrew-core PRs, not direct-push personal taps; more complexity than needed |
+| SHA256 source | Download pre-computed `.sha256` from release | Re-compute by downloading binary | Binary assets are 10-30MB each; pre-computed files already exist in the release; re-downloading wastes bandwidth and adds latency |
+| Binary format | Bare binary (current) | Tarball `.tar.gz` | Current release workflow produces bare binaries; switching to tarballs would simplify URL version-embedding but requires release workflow change; not worth it |
+| Token for cross-repo dispatch | Classic PAT with `repo`+`workflow` scopes | Fine-grained PAT | Fine-grained PATs can grant repo-specific write access, but `workflow` scope (for triggering workflows) is only on classic PATs as of 2026-02 |
 
 ---
 
-## What NOT to Add
+## Token Setup (One-Time)
 
-| Avoid | Why |
-|-------|-----|
-| `tokio` or any async runtime | Pipeline stages are sequential. No async value. Adds significant compile time and complexity |
-| `cargo-make` or `just` | Task runner for build scripts. The CI YAML and Cargo built-ins (`cargo clippy`, `cargo fmt`) are sufficient |
-| `cross` crate | Docker-based cross-compilation. Unnecessary when GitHub provides native macOS runners for both arches |
-| `actions-rs/*` actions | Unmaintained since 2023. Use `dtolnay/rust-toolchain` and `actions-rust-lang/audit` instead |
-| `cargo-watch` in CI | Dev tool only. Not CI-relevant |
-| New Cargo.toml runtime dependencies | This milestone is entirely tooling and code structure. Zero new runtime deps needed |
-
----
-
-## Cargo.toml — No Changes Required
-
-The existing Cargo.toml already has everything needed:
-
-```toml
-[dependencies]
-which = "8.0"          # doctor prerequisite checks
-anyhow = "1.0"         # error handling throughout
-clap = { version = "4.5", features = ["derive"] }  # pipeline + doctor subcommands
-owo-colors = "4.2"     # doctor output formatting
+```
+1. github.com/settings/tokens → Generate new token (classic)
+2. Scopes: repo, workflow
+3. Name: contentops-tap-update
+4. Add to contentops repo: Settings → Secrets → TAP_UPDATE_TOKEN
 ```
 
-The `which` crate (v8.0.0) is already present and provides the PATH lookup needed for doctor checks. No new dependencies.
-
 ---
 
-## Development Setup
+## Installation Commands (for README)
 
 ```bash
-# Install audit tooling (one-time, per developer machine)
-cargo install cargo-audit --locked
-cargo install cargo-deny --locked
+# Add tap (one-time)
+brew tap darrelldoesdevops/tap
 
-# Initialize deny.toml (one-time, per project)
-cargo deny init
+# Install
+brew install contentops
 
-# Audit workflow
-cargo audit                  # Check advisories
-cargo deny check             # Check licenses, bans, advisories
-cargo clippy --all-targets -- -D warnings -W clippy::pedantic -A clippy::module_name_repetitions
-cargo fmt --check
+# Upgrade
+brew upgrade contentops
 
-# Release (CI handles this; for local testing)
-cargo build --release
+# Direct install without tapping first
+brew install darrelldoesdevops/tap/contentops
 ```
 
 ---
 
 ## Sources
 
-- [cargo-audit 0.22.1](https://docs.rs/crate/cargo-audit/latest) — docs.rs, verified 2026-02-20
-- [cargo-deny 0.18.5](https://docs.rs/crate/cargo-deny/latest) — docs.rs, verified 2026-02-20
-- [Clippy Configuration](https://doc.rust-lang.org/clippy/configuration.html) — official Rust docs, verified 2026-02-20
-- [Clippy Usage/CI](https://doc.rust-lang.org/clippy/usage.html) — official Rust docs, verified 2026-02-20
-- [which 8.0.0](https://docs.rs/which/latest/which/) — docs.rs, verified 2026-02-20
-- [taiki-e/upload-rust-binary-action](https://github.com/taiki-e/upload-rust-binary-action) — GitHub, verified 2026-02-20
-- [taiki-e/create-gh-release-action](https://github.com/taiki-e/create-gh-release-action) — GitHub, verified 2026-02-20
-- [dtolnay/rust-toolchain](https://github.com/dtolnay/rust-toolchain) — GitHub, verified 2026-02-20
-- [Swatinem/rust-cache](https://github.com/Swatinem/rust-cache) — GitHub, verified 2026-02-20
-- [actions-rust-lang/audit](https://github.com/actions-rust-lang/audit) — GitHub, verified 2026-02-20
-- [EmbarkStudios/cargo-deny](https://github.com/EmbarkStudios/cargo-deny) — GitHub, verified 2026-02-20
-- [RustSec Advisory Database](https://rustsec.org/) — rustsec.org, verified 2026-02-20
+- `brew cat loft-sh/tap/vcluster` — locally installed tap formula; verified `Hardware::CPU.arm?` / `.intel?` inside `on_macos do` with `bin.install "name" => "binary"` pattern; GoReleaser-generated; HIGH confidence
+- [Homebrew How-to-Create-and-Maintain-a-Tap](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap) — official docs; naming convention, directory structure; HIGH confidence
+- [Homebrew Taps documentation](https://docs.brew.sh/Taps) — `brew tap user/repo` convention, `homebrew-` prefix requirement; HIGH confidence
+- [Homebrew Formula Cookbook](https://docs.brew.sh/Formula-Cookbook) — `on_arm`, `on_intel`, `on_macos` block syntax, `bin.install` method; HIGH confidence
+- [mislav/bump-homebrew-formula-action README](https://raw.githubusercontent.com/mislav/bump-homebrew-formula-action/main/README.md) — v3.6 (latest); documented limitation re: `if...else` conditionals; HIGH confidence
+- [builtfast.dev: Automating Homebrew Tap Updates with GitHub Actions](https://builtfast.dev/blog/automating-homebrew-tap-updates-with-github-actions/) (2025) — two-repo pattern, `gh workflow run`, bash script with sed; MEDIUM confidence
+- [josh.fail: Automate updating custom Homebrew formulae](https://josh.fail/2023/automate-updating-custom-homebrew-formulae-with-github-actions/) — `workflow_dispatch` tap update approach; MEDIUM confidence
+- `gh release download v1.1.0 --pattern "*.sha256"` — verified SHA256 file format is `hash  filename` (shasum -a 256 output); awk '{print $1}' extracts hash; HIGH confidence
+- `gh release view v1.1.0 --json assets` — verified asset names: `contentops-aarch64-apple-darwin`, `contentops-x86_64-apple-darwin`, `contentops-universal-apple-darwin` (bare binaries, not tarballs); HIGH confidence
+
+---
+*Stack research for: Homebrew tap + auto-update + CLI README (Milestone 3)*
+*Researched: 2026-02-20*
