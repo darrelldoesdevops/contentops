@@ -9,10 +9,10 @@ Requirements for milestone v1.2 Distribution & Docs. Each maps to roadmap phases
 
 ### Homebrew Tap
 
-- [ ] **BREW-01**: User can run `brew install darrelltang/tap/contentops` to install the correct architecture binary on ARM Mac
-- [ ] **BREW-02**: User can run `brew install darrelltang/tap/contentops` to install the correct architecture binary on Intel Mac
-- [ ] **BREW-03**: Formula passes `brew audit` and `brew test contentops`
-- [ ] **BREW-04**: Formula includes `caveats` block documenting whisper model and prerequisites
+- [x] **BREW-01**: User can run `brew install darrelltang/tap/contentops` to install the correct architecture binary on ARM Mac
+- [x] **BREW-02**: User can run `brew install darrelltang/tap/contentops` to install the correct architecture binary on Intel Mac
+- [x] **BREW-03**: Formula passes `brew audit` and `brew test contentops`
+- [x] **BREW-04**: Formula includes `caveats` block documenting whisper model and prerequisites
 
 ### Auto-Update
 
@@ -49,10 +49,10 @@ Requirements for milestone v1.2 Distribution & Docs. Each maps to roadmap phases
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| BREW-01 | Phase 10 | Pending |
-| BREW-02 | Phase 10 | Pending |
-| BREW-03 | Phase 10 | Pending |
-| BREW-04 | Phase 10 | Pending |
+| BREW-01 | Phase 10 | Complete |
+| BREW-02 | Phase 10 | Complete |
+| BREW-03 | Phase 10 | Complete |
+| BREW-04 | Phase 10 | Complete |
 | AUTO-01 | Phase 11 | Pending |
 | AUTO-02 | Phase 11 | Pending |
 | DOCS-01 | Phase 12 | Pending |

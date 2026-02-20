@@ -35,7 +35,7 @@ See: `.planning/milestones/v1.1-ROADMAP.md` for full details.
 
 ### v1.2 Distribution & Docs (In Progress)
 
-- [ ] **Phase 10: Homebrew Tap + Formula** - Create `darrelldoesdevops/homebrew-tap` repo with architecture-conditional formula; verify `brew install` works on ARM and Intel
+- [x] **Phase 10: Homebrew Tap + Formula** - Create `darrelldoesdevops/homebrew-tap` repo with architecture-conditional formula; verify `brew install` works on ARM and Intel (completed 2026-02-20)
 - [ ] **Phase 11: GitHub Actions Auto-Update** - Wire cross-repo `workflow_dispatch` so pushing a version tag auto-updates the tap formula within minutes
 - [ ] **Phase 12: Comprehensive README** - Write `README.md` from live `--help` output: prerequisites, Homebrew install, pipeline-first usage, flag reference tables, troubleshooting
 
@@ -51,7 +51,7 @@ See: `.planning/milestones/v1.1-ROADMAP.md` for full details.
   3. `brew audit Formula/contentops.rb` passes with no errors or warnings
   4. `brew test contentops` passes (runs `contentops --version` successfully)
   5. Post-install `brew info contentops` displays caveats documenting whisper model and prerequisites
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
 - [ ] 10-01-PLAN.md — Create homebrew-tap repo with architecture-conditional formula, verify brew install/audit/test
 
@@ -90,6 +90,6 @@ Plans:
 | 7. Doctor Subcommand | v1.1 | quick | Complete | 2026-02-20 |
 | 8. Pipeline Subcommand | v1.1 | quick | Complete | 2026-02-20 |
 | 9. CI/CD | v1.1 | quick | Complete | 2026-02-20 |
-| 10. Homebrew Tap + Formula | v1.2 | 0/1 | Planned | - |
+| 10. Homebrew Tap + Formula | 1/1 | Complete   | 2026-02-20 | - |
 | 11. GitHub Actions Auto-Update | v1.2 | 0/? | Not started | - |
 | 12. Comprehensive README | v1.2 | 0/? | Not started | - |

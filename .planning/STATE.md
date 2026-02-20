@@ -10,17 +10,17 @@ See: .planning/PROJECT.md (updated 2026-02-20)
 ## Current Position
 
 Phase: 10 of 12 (Homebrew Tap + Formula)
-Plan: --
-Status: Ready to plan
-Last activity: 2026-02-20 -- v1.2 roadmap created (3 phases, 12 requirements mapped)
+Plan: 01 complete (1/1 plans done)
+Status: Phase complete
+Last activity: 2026-02-20 -- Phase 10 complete: homebrew-tap formula created with v1.1.0 SHA256 values and sentinel comments
 
-Progress: [░░░░░░░░░░░░░░░░░░░░] 0/3 v1.2 phases complete
+Progress: [██████░░░░░░░░░░░░░░] 1/3 v1.2 phases complete
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 11 (v1.0: 8, v1.1: 3 formal + 3 quick)
-- Total execution time: 2 days
+- Total plans completed: 12 (v1.0: 8, v1.1: 3 formal + 3 quick, v1.2: 1)
+- Total execution time: 2 days + 2min
 - Milestones shipped: 2 (v1.0, v1.1)
 
 **By Milestone:**
@@ -29,7 +29,7 @@ Progress: [░░░░░░░░░░░░░░░░░░░░] 0/3 v1.
 |-----------|--------|-------|----------|
 | v1.0 MVP | 5 | 8 | 2 days |
 | v1.1 Polish & Pipeline | 4 | 3+3 quick | 1 day |
-| v1.2 Distribution & Docs | 3 | TBD | - |
+| v1.2 Distribution & Docs | 3 | 1 done | 2 min |
 
 ## Accumulated Context
 
@@ -42,6 +42,9 @@ Key decisions for v1.2:
 - mislav/bump-homebrew-formula-action ruled out (cannot handle Hardware::CPU conditionals)
 - classic PAT required for cross-repo workflow_dispatch (fine-grained PATs lack workflow scope)
 - README written last from live --help output to prevent flag drift
+- [Phase 10-homebrew-tap-formula]: on_arm do / on_intel do DSL for top-level arch; Hardware::CPU inside def install — two scopes, not redundant
+- [Phase 10-homebrew-tap-formula]: Inline sentinel comments (=== AUTO-UPDATE: FIELD ===) for sed-based Phase 11 formula patching
+- [Phase 10-homebrew-tap-formula]: GitHub API asset endpoint required for SHA256 sidecar download (direct release asset URLs returned 404)
 
 ### Pending Todos
 
@@ -54,5 +57,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-20
-Stopped at: v1.2 roadmap created, ready to plan Phase 10
+Stopped at: Completed 10-homebrew-tap-formula/10-01-PLAN.md — formula at darrelldoesdevops/homebrew-tap, pending human brew verify
 Resume file: None
