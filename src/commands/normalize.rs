@@ -1,12 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use humansize::{format_size, DECIMAL};
 use indicatif::{ProgressBar, ProgressStyle};
 
-use crate::cli::NormalizeArgs;
-use crate::commands::cut::derive_output_path;
-use crate::error::{last_n_lines, require_ffmpeg, AppError};
+use crate::error::{last_n_lines, AppError};
 use crate::ffmpeg;
 use crate::temp::{make_temp_file, TempFileRegistry};
 
@@ -191,38 +188,4 @@ pub fn normalize_to_temp(
         }
         .into()),
     }
-}
-
-pub fn run(
-    args: NormalizeArgs,
-    verbose: bool,
-    registry: &TempFileRegistry,
-) -> anyhow::Result<()> {
-    require_ffmpeg()?;
-
-    if !args.input.exists() {
-        return Err(AppError::InputNotFound(args.input).into());
-    }
-
-    let output = args
-        .output
-        .unwrap_or_else(|| derive_output_path(&args.input, "normalized"));
-
-    let temp_path = normalize_to_temp(&args.input, verbose, registry)?;
-
-    std::fs::copy(&temp_path, &output).map_err(|e| AppError::StageIo {
-        stage: "copy-output".to_string(),
-        source: e,
-    })?;
-
-    let _ = std::fs::remove_file(&temp_path);
-    registry.remove(&temp_path);
-
-    let size = std::fs::metadata(&output)
-        .map(|m| format_size(m.len(), DECIMAL))
-        .unwrap_or_else(|_| "unknown size".to_string());
-
-    eprintln!("\u{2713} Created {} ({})", output.display(), size);
-
-    Ok(())
 }
