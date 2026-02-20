@@ -1,177 +1,375 @@
 # Technology Stack
 
-**Project:** contentops
-**Researched:** 2026-02-19
-**Overall Confidence:** HIGH
+**Project:** contentops (Milestone 2 — audit tooling, doctor subcommand, pipeline subcommand, CI/CD)
+**Researched:** 2026-02-20
+**Scope:** NEW capabilities only. Existing stack (clap, serde, indicatif, owo-colors, anyhow, which, tempfile) is validated and unchanged.
 
-## Decision: FFmpeg Orchestration Strategy
+---
 
-The single most important stack decision for this project: **use `std::process::Command` directly, not an FFmpeg binding crate.**
+## What This Milestone Adds
 
-**Why not FFmpeg FFI bindings (rust-ffmpeg, rsmpeg, ffmpeg-next)?**
-These crates statically link against FFmpeg's C libraries via FFI. They require a full C toolchain alongside Rust, create compilation complexity (especially cross-platform), introduce unsafe code, and tie you to GPL licensing concerns. For a CLI that shells out to FFmpeg for discrete operations (silence detection, concatenation, encoding), FFI bindings are massive overkill.
+| Capability | Approach | New Cargo dependency? |
+|------------|----------|-----------------------|
+| Codebase audit (clippy, fmt) | Dev tooling, not runtime | No — cargo built-in |
+| Security audit | `cargo-audit` CLI tool | No — installed separately |
+| Dependency audit | `cargo-deny` CLI tool | No — installed separately |
+| Prerequisite checking (doctor) | `which` (already in Cargo.toml) + `std::process::Command` | No |
+| Pipeline subcommand | Internal code structure in clap | No |
+| GitHub Actions CI | YAML workflow files | No |
+| GitHub Actions Releases | `taiki-e/upload-rust-binary-action@v1` | No — GitHub Action |
 
-**Why not ffmpeg-sidecar?**
-ffmpeg-sidecar (v2.4.0) is well-designed and wraps the CLI binary nicely. However, contentops doesn't need its Iterator-based frame processing, automatic FFmpeg download, or progress parsing from stderr. The project runs discrete FFmpeg commands (detect silence, cut segments, concatenate) rather than streaming frames through Rust. Adding ffmpeg-sidecar would be an abstraction layer over `std::process::Command` that doesn't earn its weight for this use case.
+**Zero new Cargo.toml dependencies for this milestone.** All additions are tooling, configuration files, and CI YAML.
 
-**Why `std::process::Command`?**
-- Zero additional dependencies for FFmpeg interaction
-- Full control over argument construction -- critical when building complex filter graphs
-- Direct access to stdout/stderr for parsing silencedetect output
-- No abstraction mismatch: you're building FFmpeg command lines, so build FFmpeg command lines
-- Easy to debug: log the exact command, paste it into terminal to reproduce
+---
 
-**Confidence: HIGH** -- This matches the project context (PROJECT.md confirms `std::process::Command`), and the FFmpeg CLI approach is well-established in production tools.
+## Codebase Audit Tooling
 
-## Recommended Stack
+### Clippy Configuration
 
-### Core Framework
+Use a `clippy.toml` at the project root. Clippy reads it automatically via `CARGO_MANIFEST_DIR`.
 
-| Technology | Version | Purpose | Why | Confidence |
-|------------|---------|---------|-----|------------|
-| Rust (edition 2021) | 1.75+ | Language | Type safety, zero-cost abstractions, excellent CLI ecosystem | HIGH |
-| clap | 4.5.59 | CLI argument parsing | De facto standard, derive macros for zero-boilerplate CLI definition | HIGH |
-| serde | 1.0.228 | Serialization framework | Required for config parsing, JSON output of Whisper results | HIGH |
-| serde_json | 1.0.149 | JSON parsing | Parse FFmpeg probe output (ffprobe -print_format json), Whisper JSON output | HIGH |
+**Recommended `clippy.toml`:**
+```toml
+# Suppress false positives from the pedantic group
+avoid-breaking-exported-api = false
+msrv = "1.75.0"
+```
 
-### Error Handling
+**CI invocation:**
+```bash
+cargo clippy --all-targets -- -D warnings -W clippy::pedantic -A clippy::module_name_repetitions
+```
 
-| Technology | Version | Purpose | Why | Confidence |
-|------------|---------|---------|-----|------------|
-| anyhow | 1.0.101 | Application error handling | Personal CLI tool = application code, not a library. anyhow's context chaining (`with_context`) produces readable error messages for pipeline failures | HIGH |
+Why `-D warnings`: Fails CI on any lint. Why `clippy::pedantic`: Catches common correctness issues beyond `clippy::all`. Why `-A clippy::module_name_repetitions`: This pedantic lint fires constantly in a codebase with modules named after their domain (e.g., `commands::cut::CutArgs`) and provides no value.
 
-**Why anyhow over thiserror?** thiserror (v2.0.18) is for library code where callers match on error variants. contentops is an application -- errors get displayed to the user, not pattern-matched by consumers. anyhow's `.context("Failed to detect silence in {}")` pattern is exactly right for a pipeline tool.
+Do NOT enable `clippy::restriction` as a group — it contains mutually contradictory lints. Cherry-pick from it only if a specific lint is needed.
 
-**Why not both?** For a personal tool, the added complexity of defining error enums with thiserror and wrapping them in anyhow provides no benefit. If contentops ever becomes a library, add thiserror then.
+**Confidence: HIGH** — Verified against official Clippy documentation (doc.rust-lang.org/clippy).
 
-### Logging and Diagnostics
+### rustfmt
 
-| Technology | Version | Purpose | Why | Confidence |
-|------------|---------|---------|-----|------------|
-| tracing | 0.1.44 | Structured logging | Industry standard for Rust. Structured spans map naturally to pipeline stages (silence_detect, cut, concat) | HIGH |
-| tracing-subscriber | 0.3.22 | Log output formatting | Pairs with tracing. EnvFilter lets you do `RUST_LOG=contentops=debug` for troubleshooting | HIGH |
+No configuration needed. `cargo fmt --check` as CI gate is sufficient. The default rustfmt style is stable and opinionated — don't fight it.
 
-**Why tracing over env_logger/log?** tracing's span model maps perfectly to a video pipeline: enter span "silence_detect", log events within it, exit. This gives you structured output like `silence_detect{input="video.mp4"}: found 12 silent segments`. env_logger is flat key-value logging without this hierarchy.
+```bash
+cargo fmt --check   # CI gate
+cargo fmt           # Developer workflow
+```
 
-### File and Path Utilities
+### cargo-audit (Security Advisories)
 
-| Technology | Version | Purpose | Why | Confidence |
-|------------|---------|---------|-----|------------|
-| tempfile | 3.25.0 | Temporary file management | Secure temp file creation with automatic cleanup on drop. Critical for intermediate FFmpeg outputs (segment files, concat lists) | HIGH |
-| which | 8.0.0 | Find FFmpeg/ffprobe in PATH | Fail-fast at startup if FFmpeg isn't installed. Better error message than cryptic "No such file or directory" from Command | HIGH |
+**Tool:** `cargo-audit` v0.22.1 (released 2026-02-04)
+**Install:** `cargo install cargo-audit --locked`
+**Source:** RustSec Advisory Database (rustsec.org)
 
-### CLI UX
+This is a standalone tool, not a Cargo dependency. Run it against `Cargo.lock`. It checks for known CVEs in the dependency tree.
 
-| Technology | Version | Purpose | Why | Confidence |
-|------------|---------|---------|-----|------------|
-| indicatif | 0.18.4 | Progress bars | FFmpeg operations take seconds-to-minutes. A spinner or progress bar prevents "is it stuck?" anxiety. MultiProgress supports concurrent pipeline stages | MEDIUM |
+```bash
+cargo audit                    # Local check
+cargo audit --deny warnings    # CI — fail on warnings too
+```
 
-**Why MEDIUM confidence on indicatif?** For v0.1 with simple silence removal, a spinner may be premature. Consider adding in a later phase when processing time increases with captioning. Could start with just tracing output and add indicatif when the UX pain is felt.
+For CI, use `actions-rust-lang/audit@v1` (the actively maintained action — `actions-rs/audit-check` is unmaintained).
 
-### Testing
+**Confidence: HIGH** — Verified via docs.rs, crates.io.
 
-| Technology | Version | Purpose | Why | Confidence |
-|------------|---------|---------|-----|------------|
-| assert_cmd | 2.1.2 | CLI integration testing | Test the actual binary end-to-end: give it a video, check exit code and output | HIGH |
-| predicates | 3.1.4 | Test assertions | Pairs with assert_cmd for readable assertions on stdout/stderr content | HIGH |
+### cargo-deny (License + Duplicate Dependency Audit)
 
-### Future Phase: Captioning
+**Tool:** `cargo-deny` v0.18.5
+**Install:** `cargo install cargo-deny --locked`
 
-| Technology | Version | Purpose | When | Confidence |
-|------------|---------|---------|------|------------|
-| whisper-rs | 0.15.1 | Local speech-to-text | Phase 2+ when captioning is added | MEDIUM |
-| regex | 1.12.3 | Text parsing | Parsing FFmpeg silencedetect output, SRT/VTT timestamp parsing | HIGH |
+More comprehensive than cargo-audit: checks licenses, bans specific crates, detects duplicate dependency versions, and also checks advisories. For a personal tool, this is optional but worth the `deny.toml` setup cost because it catches license issues before they matter.
 
-**Why whisper-rs over shelling out to whisper.cpp CLI?** whisper-rs provides Rust bindings to whisper.cpp, giving type-safe access to model loading, transcription parameters, and segment timestamps. For captioning, you need structured access to word-level timestamps (not just text output), which the library API provides cleanly. The CLI would require parsing stdout which is fragile.
+**Minimal `deny.toml`:**
+```toml
+[advisories]
+# Covered by cargo-audit; keep in sync
 
-**Why MEDIUM confidence on whisper-rs?** v0.15.1 was released September 2025. The crate wraps whisper.cpp which is actively developed -- API breakage between whisper.cpp versions is a known issue. Verify compatibility with current whisper.cpp at implementation time.
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+]
+```
+
+Initialize with: `cargo deny init`
+
+**Confidence: MEDIUM** — cargo-deny is optional for a personal tool. Useful if the project is distributed. Add if the GitHub Actions CI pipeline has a slot for it.
+
+---
+
+## Doctor Subcommand (Runtime Prerequisite Checking)
+
+The `doctor` subcommand checks that all external dependencies are installed and meet minimum version requirements. No new Cargo dependencies are needed — `which` (already in Cargo.toml at v8.0.0) handles PATH lookup, and `std::process::Command` handles version parsing.
+
+### Pattern
+
+```rust
+// Check presence
+use which::which;
+which("ffmpeg").map_err(|_| anyhow!("ffmpeg not found in PATH — install with: brew install ffmpeg"))?;
+
+// Check minimum version
+let output = Command::new("ffmpeg").arg("-version").output()?;
+let stdout = String::from_utf8_lossy(&output.stdout);
+// Parse "ffmpeg version 7.1..." from first line
+```
+
+### Prerequisites to Check
+
+| Tool | How to Check | Minimum Version | Why |
+|------|-------------|-----------------|-----|
+| `ffmpeg` | `ffmpeg -version` stdout | 6.0+ | concat filter, silencedetect, drawtext filter with timeline options |
+| `ffprobe` | `ffprobe -version` stdout | 6.0+ | Ships with FFmpeg; same version |
+| `whisper` (optional) | `which whisper` only | any | Project shells out to whisper-cli; version flexibility needed |
+| `claude` (optional) | `which claude` only | any | Claude CLI; used for overlay --auto |
+
+Mark optional tools as warnings, not errors. A user running only `cut` doesn't need whisper installed.
+
+**Output format:** Use `owo-colors` (already in Cargo.toml) for colored check/cross/warning symbols. Pattern: `[check] ffmpeg 7.1 (ok)` or `[cross] ffmpeg not found`.
+
+**Confidence: HIGH** — `which` crate v8.0.0 is already in Cargo.toml. Pattern is standard for CLI tools.
+
+---
+
+## Pipeline Subcommand
+
+The `pipeline` subcommand chains `cut → caption → overlay` operations sequentially on a single input. This is pure internal code — no new dependencies.
+
+### Design: Clap Args + Internal Dispatch
+
+```rust
+// cli.rs addition
+#[derive(Subcommand)]
+enum Commands {
+    Cut(CutArgs),
+    Caption(CaptionArgs),
+    Overlay(OverlayArgs),
+    Pipeline(PipelineArgs),  // new
+    Doctor,                   // new
+}
+
+#[derive(Args)]
+struct PipelineArgs {
+    pub input: PathBuf,
+    #[arg(short = 'o')]
+    pub output: Option<PathBuf>,
+    // Inline the relevant subset of each subcommand's args
+    // or use #[command(flatten)] on sub-arg structs
+    #[arg(long)] pub model: Option<PathBuf>,   // for caption stage
+    #[arg(long)] pub text: Option<String>,      // for overlay stage
+    // ...skip stages if args are absent
+}
+```
+
+### Stage Skipping
+
+If `--model` is not provided, skip caption stage. If neither `--text` nor `--auto` is provided, skip overlay stage. This keeps pipeline flexible without requiring all stages.
+
+### Intermediate Files
+
+Use `TempFileRegistry` (already exists in `src/temp.rs`) for intermediate files between stages. Stage N output is stage N+1 input. On success, move final output to destination; on failure, temp registry cleans up.
+
+**Confidence: HIGH** — All components exist. This is a composition problem, not a new technology problem.
+
+---
+
+## GitHub Actions CI/CD
+
+### Workflow Structure
+
+Two separate workflow files:
+
+| File | Trigger | Purpose |
+|------|---------|---------|
+| `.github/workflows/ci.yml` | Push to any branch, PR | clippy, fmt, test, audit |
+| `.github/workflows/release.yml` | Push tag `v[0-9]+.*` | Build binaries, upload to GitHub Releases |
+
+### CI Workflow (`ci.yml`)
+
+**Actions used:**
+- `actions/checkout@v4` — standard
+- `dtolnay/rust-toolchain@stable` — preferred over deprecated `actions-rs/toolchain`; supports `components: clippy,rustfmt`
+- `Swatinem/rust-cache@v2` — caches `~/.cargo` and `target/`; keys off Cargo.lock hash; critical for CI speed
+- `actions-rust-lang/audit@v1` — actively maintained cargo-audit wrapper; creates GitHub Issues on advisory hits
+
+```yaml
+name: CI
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+jobs:
+  check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings -W clippy::pedantic -A clippy::module_name_repetitions
+      - run: cargo test
+
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/audit@v1
+```
+
+**Why `macos-latest` for CI?** The project is macOS-primary. Running CI on Linux would miss macOS-specific path and linking behavior. The audit job uses ubuntu-latest because it only reads Cargo.lock — no compilation needed.
+
+**Confidence: HIGH** — All actions verified against GitHub Marketplace and official documentation.
+
+### Release Workflow (`release.yml`)
+
+**Strategy:** Native macOS compilation (not cross-compilation via Docker/cross) because:
+- GitHub provides both `macos-latest` (aarch64) and `macos-13` (x86_64) runners
+- No cross-compilation toolchain complexity
+- Produces native binaries with correct arch-specific optimizations
+
+**Actions used:**
+- `taiki-e/create-gh-release-action@v1` — creates GitHub Release from CHANGELOG.md entry
+- `taiki-e/upload-rust-binary-action@v1` — builds `--release`, tars binary, uploads to Release
+
+```yaml
+name: Release
+permissions:
+  contents: write
+on:
+  push:
+    tags:
+      - v[0-9]+.*
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/create-gh-release-action@v1
+        with:
+          changelog: CHANGELOG.md
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  upload-assets:
+    needs: create-release
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-13
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: contentops
+          target: ${{ matrix.target }}
+          tar: unix
+          token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**Why not universal-apple-darwin?** The universal binary target builds on a single runner and requires cross-compilation from one arch to the other. Using separate runners per target is simpler and more debuggable.
+
+**Why `macos-13` for x86_64?** GitHub changed `macos-latest` to aarch64 starting with macos-14. `macos-13` is the last Intel runner. Explicitly specifying both avoids arch ambiguity.
+
+**Confidence: MEDIUM** — `macos-13` availability and runner availability is a GitHub infrastructure detail. Verify runner availability at implementation time; GitHub may have changed runner naming.
+
+---
 
 ## Alternatives Considered
 
-| Category | Recommended | Alternative | Why Not |
-|----------|-------------|-------------|---------|
-| FFmpeg interaction | `std::process::Command` | ffmpeg-sidecar 2.4.0 | Unnecessary abstraction for discrete command execution; adds dependency for no gain in this use case |
-| FFmpeg interaction | `std::process::Command` | rust-ffmpeg / ffmpeg-next | FFI complexity, C toolchain required, GPL concerns, overkill for CLI orchestration |
-| Error handling | anyhow | thiserror | Application code, not library code. No callers matching on error variants |
-| Error handling | anyhow | eyre + color-eyre | color-eyre provides pretty error reports, but adds complexity. anyhow is simpler and sufficient for personal tool |
-| Logging | tracing | log + env_logger | tracing's span model maps better to pipeline stages; env_logger is flat |
-| Config format | Feature flags (clap) | TOML config file | v0.1 scope -- feature flags are sufficient. TOML config deferred per PROJECT.md |
-| Console colors | None (v0.1) | owo-colors | Not needed until UX polish phase. tracing-subscriber handles log coloring |
-| Whisper | whisper-rs | Shell out to whisper CLI | Need structured word-level timestamps for captioning; CLI parsing is fragile |
+| Recommended | Alternative | Why Not |
+|-------------|-------------|---------|
+| `actions-rust-lang/audit@v1` | `actions-rs/audit-check@v1` | `actions-rs` org is unmaintained as of 2023; `actions-rust-lang` is the community successor |
+| `dtolnay/rust-toolchain@stable` | `actions-rs/toolchain@v1` | Same reason — `actions-rs` unmaintained |
+| Native macOS runners per arch | `cross` + Docker cross-compilation | Cross requires Docker on macOS runners; native runners are simpler and faster for macOS targets |
+| `cargo-audit` + `cargo-deny` | `cargo-audit` alone | `cargo-deny` catches license issues and duplicate dependencies that `cargo-audit` misses; small config cost |
+| `which` (already installed) + `Command::output()` | `assert_cmd` for doctor checks | `assert_cmd` is a test helper, not a runtime tool. Doctor runs in production, not tests |
 
-## Cargo.toml Dependencies
+---
+
+## What NOT to Add
+
+| Avoid | Why |
+|-------|-----|
+| `tokio` or any async runtime | Pipeline stages are sequential. No async value. Adds significant compile time and complexity |
+| `cargo-make` or `just` | Task runner for build scripts. The CI YAML and Cargo built-ins (`cargo clippy`, `cargo fmt`) are sufficient |
+| `cross` crate | Docker-based cross-compilation. Unnecessary when GitHub provides native macOS runners for both arches |
+| `actions-rs/*` actions | Unmaintained since 2023. Use `dtolnay/rust-toolchain` and `actions-rust-lang/audit` instead |
+| `cargo-watch` in CI | Dev tool only. Not CI-relevant |
+| New Cargo.toml runtime dependencies | This milestone is entirely tooling and code structure. Zero new runtime deps needed |
+
+---
+
+## Cargo.toml — No Changes Required
+
+The existing Cargo.toml already has everything needed:
 
 ```toml
 [dependencies]
-anyhow = "1.0"
-clap = { version = "4.5", features = ["derive"] }
-regex = "1.12"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tempfile = "3.25"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-which = "8.0"
-
-# Future: captioning phase
-# whisper-rs = "0.15"
-# indicatif = "0.18"
-
-[dev-dependencies]
-assert_cmd = "2.1"
-predicates = "3.1"
+which = "8.0"          # doctor prerequisite checks
+anyhow = "1.0"         # error handling throughout
+clap = { version = "4.5", features = ["derive"] }  # pipeline + doctor subcommands
+owo-colors = "4.2"     # doctor output formatting
 ```
 
-**Note on version pinning:** Use semver ranges (e.g., `"1.0"` not `"1.0.101"`) in Cargo.toml. Cargo.lock pins exact versions. This is standard Rust practice -- you get patch updates automatically while Cargo.lock ensures reproducible builds.
+The `which` crate (v8.0.0) is already present and provides the PATH lookup needed for doctor checks. No new dependencies.
 
-## What NOT to Install
+---
 
-| Technology | Why Not |
-|------------|---------|
-| tokio / async-std | No async needed. FFmpeg commands are sequential pipeline stages. async adds complexity with zero benefit for `Command::output().await` vs `Command::output()` |
-| ffmpeg-sidecar | Abstraction over Command that doesn't match this project's discrete-command pattern |
-| colored / owo-colors | tracing-subscriber already colors log output. Defer explicit coloring to UX polish phase |
-| toml (crate) | No config files in v0.1. Feature flags via clap are sufficient per PROJECT.md |
-| rayon | Parallelism not needed for single-video pipeline. FFmpeg itself is multi-threaded |
-
-## Build and Development
+## Development Setup
 
 ```bash
-# Prerequisites
-brew install ffmpeg          # macOS -- includes ffprobe
-rustup update stable         # Ensure recent Rust toolchain
+# Install audit tooling (one-time, per developer machine)
+cargo install cargo-audit --locked
+cargo install cargo-deny --locked
 
-# Project setup
-cargo init contentops
-cd contentops
+# Initialize deny.toml (one-time, per project)
+cargo deny init
 
-# Verify FFmpeg is available
-ffmpeg -version
-ffprobe -version
+# Audit workflow
+cargo audit                  # Check advisories
+cargo deny check             # Check licenses, bans, advisories
+cargo clippy --all-targets -- -D warnings -W clippy::pedantic -A clippy::module_name_repetitions
+cargo fmt --check
 
-# Development workflow
-cargo build                  # Debug build
-cargo test                   # Run tests (needs sample video fixtures)
-cargo run -- --help          # Test CLI
-RUST_LOG=contentops=debug cargo run -- input.mp4 --remove-silence  # Debug logging
+# Release (CI handles this; for local testing)
+cargo build --release
 ```
+
+---
 
 ## Sources
 
-- [clap 4.5.59](https://docs.rs/crate/clap/latest) -- docs.rs, verified 2026-02-19
-- [serde 1.0.228](https://docs.rs/crate/serde/latest) -- docs.rs, verified 2026-02-19
-- [serde_json 1.0.149](https://docs.rs/crate/serde_json/latest) -- docs.rs, verified 2026-02-19
-- [anyhow 1.0.101](https://docs.rs/crate/anyhow/latest) -- docs.rs, verified 2026-02-19
-- [thiserror 2.0.18](https://docs.rs/crate/thiserror/latest) -- docs.rs, verified 2026-02-19
-- [tracing 0.1.44](https://docs.rs/crate/tracing/latest) -- docs.rs, verified 2026-02-19
-- [tracing-subscriber 0.3.22](https://docs.rs/crate/tracing-subscriber/latest) -- docs.rs, verified 2026-02-19
-- [tempfile 3.25.0](https://docs.rs/crate/tempfile/latest) -- docs.rs, verified 2026-02-19
-- [which 8.0.0](https://docs.rs/crate/which/latest) -- docs.rs, verified 2026-02-19
-- [indicatif 0.18.4](https://docs.rs/crate/indicatif/latest) -- docs.rs, verified 2026-02-19
-- [whisper-rs 0.15.1](https://docs.rs/crate/whisper-rs/latest) -- docs.rs, verified 2026-02-19
-- [regex 1.12.3](https://docs.rs/crate/regex/latest) -- docs.rs, verified 2026-02-19
-- [assert_cmd 2.1.2](https://docs.rs/crate/assert_cmd/latest) -- docs.rs, verified 2026-02-19
-- [predicates 3.1.4](https://docs.rs/crate/predicates/latest) -- docs.rs, verified 2026-02-19
-- [ffmpeg-sidecar 2.4.0](https://github.com/nathanbabcock/ffmpeg-sidecar) -- GitHub, verified 2026-02-19
-- [ffmpeg-sidecar vs rust-ffmpeg discussion](https://github.com/nathanbabcock/ffmpeg-sidecar/issues/34) -- GitHub issue
-- [Rain's Rust CLI recommendations on colors](https://rust-cli-recommendations.sunshowers.io/managing-colors-in-rust.html)
+- [cargo-audit 0.22.1](https://docs.rs/crate/cargo-audit/latest) — docs.rs, verified 2026-02-20
+- [cargo-deny 0.18.5](https://docs.rs/crate/cargo-deny/latest) — docs.rs, verified 2026-02-20
+- [Clippy Configuration](https://doc.rust-lang.org/clippy/configuration.html) — official Rust docs, verified 2026-02-20
+- [Clippy Usage/CI](https://doc.rust-lang.org/clippy/usage.html) — official Rust docs, verified 2026-02-20
+- [which 8.0.0](https://docs.rs/which/latest/which/) — docs.rs, verified 2026-02-20
+- [taiki-e/upload-rust-binary-action](https://github.com/taiki-e/upload-rust-binary-action) — GitHub, verified 2026-02-20
+- [taiki-e/create-gh-release-action](https://github.com/taiki-e/create-gh-release-action) — GitHub, verified 2026-02-20
+- [dtolnay/rust-toolchain](https://github.com/dtolnay/rust-toolchain) — GitHub, verified 2026-02-20
+- [Swatinem/rust-cache](https://github.com/Swatinem/rust-cache) — GitHub, verified 2026-02-20
+- [actions-rust-lang/audit](https://github.com/actions-rust-lang/audit) — GitHub, verified 2026-02-20
+- [EmbarkStudios/cargo-deny](https://github.com/EmbarkStudios/cargo-deny) — GitHub, verified 2026-02-20
+- [RustSec Advisory Database](https://rustsec.org/) — rustsec.org, verified 2026-02-20

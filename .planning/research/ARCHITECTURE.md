@@ -1,354 +1,444 @@
-# Architecture Patterns
+# Architecture Research
 
-**Domain:** Rust CLI video processing pipeline (FFmpeg orchestration)
-**Researched:** 2026-02-19
+**Domain:** Rust CLI video post-production — v1.1 integration audit
+**Researched:** 2026-02-20
+**Confidence:** HIGH (direct source code audit of all 12 files, 2,401 LOC)
 
-## Recommended Architecture
+## Current Architecture (v1.0 — as built)
 
-A **sequential pipeline of discrete stages**, each wrapping one or more FFmpeg (or Whisper) subprocess invocations. Stages communicate through intermediate files on disk, not in-memory streams. The CLI layer parses args, constructs a pipeline configuration, then hands off to the pipeline executor which runs stages in order with fail-fast semantics.
-
-```
-CLI (clap) --> PipelineConfig --> PipelineExecutor
-                                      |
-                    +--Stage 1--+--Stage 2--+--Stage 3--+
-                    | Silence   | Caption   | Overlay   |
-                    | Removal   | (Whisper) | (drawtext)|
-                    +-----------+-----------+-----------+
-                    Each stage: input file --> FFmpeg/Whisper subprocess --> output file
-```
-
-### Why This Shape
-
-1. **FFmpeg is the bottleneck, not Rust.** The tool orchestrates subprocesses; it does not decode video frames in Rust. Simplicity beats abstraction.
-2. **Intermediate files are correct here.** Video files are large; piping raw frames between stages via stdout/stdin adds complexity (sync, buffering, error recovery) with no benefit for a personal tool processing one file at a time.
-3. **Stages are independently testable.** Each stage can be run alone, debugged with the exact FFmpeg command, and swapped without touching other stages.
-
-## Component Boundaries
-
-| Component | Responsibility | Communicates With |
-|-----------|---------------|-------------------|
-| **CLI Layer** (`main.rs`, `cli.rs`) | Arg parsing (clap), validation, entry point | PipelineConfig |
-| **PipelineConfig** (`config.rs`) | Holds stage parameters, file paths, feature flags | Pipeline Executor |
-| **Pipeline Executor** (`pipeline.rs`) | Runs stages in sequence, manages temp files, fail-fast | Individual Stages |
-| **FFmpeg Runner** (`ffmpeg.rs`) | Wraps `std::process::Command` for FFmpeg invocations. Builds args, captures stderr, checks exit code. Single abstraction for all FFmpeg calls. | Stages (used by) |
-| **Stage: Silence Removal** (`stages/silence.rs`) | Two-pass: (1) silencedetect parse, (2) trim+concat | FFmpeg Runner |
-| **Stage: Caption Generation** (`stages/caption.rs`) | Extract audio, invoke Whisper CLI, parse SRT output | FFmpeg Runner + Whisper subprocess |
-| **Stage: Text Overlay** (`stages/overlay.rs`) | Apply drawtext/subtitles filter to burn captions | FFmpeg Runner |
-| **Temp File Manager** (`tempfiles.rs`) | Create/track/cleanup intermediate files using `tempfile` crate | Pipeline Executor |
-| **Error Types** (`error.rs`) | Unified error enum with `thiserror` | All components |
-
-## Data Flow
-
-### File-Based Pipeline
+### System Overview
 
 ```
-input.mp4
-    |
-    v
-[Stage 1: Silence Removal]
-    |  Pass 1: ffmpeg -i input.mp4 -af silencedetect=n=-30dB:d=0.5 -f null -
-    |           --> parse stderr for silence_start/silence_end timestamps
-    |  Pass 2: ffmpeg -i input.mp4 -vf "select='...'" -af "aselect='...'" desilenced.mp4
-    |
-    v
-desilenced.mp4 (temp)
-    |
-    v
-[Stage 2: Caption Generation]
-    |  Step A: ffmpeg -i desilenced.mp4 -ar 16000 -ac 1 -c:a pcm_s16le audio.wav
-    |  Step B: whisper audio.wav --model medium --output_format srt
-    |           --> produces audio.srt
-    |
-    v
-audio.srt (temp) + desilenced.mp4 (temp)
-    |
-    v
-[Stage 3: Text Overlay]
-    |  ffmpeg -i desilenced.mp4 -vf "subtitles=audio.srt:force_style='...'" \
-    |         -c:v libx264 -c:a aac output.mp4
-    |
-    v
-output.mp4 (final)
-    |
-    v
-[Cleanup: remove all temp files]
+┌─────────────────────────────────────────────────────────────┐
+│                   main.rs (39 lines)                        │
+│  Cli::parse() → TempFileRegistry::new() → match Commands    │
+├──────────────┬───────────────────────────────────────────────┤
+│  cli.rs      │  Commands enum, *Args structs (clap derive)  │
+│              │  Cut | Caption | Overlay                      │
+├──────────────┴───────────────────────────────────────────────┤
+│  commands/   — Self-contained run() functions                │
+│  cut.rs      — normalize → silence-detect → concat filter   │
+│  caption.rs  — audio extract → whisper-cli → SRT/JSON/ASS   │
+│  overlay.rs  — (claude auto-title) → drawtext filter        │
+│  normalize.rs — loudnorm 2-pass (util, used only by cut)    │
+├─────────────────────────────────────────────────────────────┤
+│  Shared infrastructure                                       │
+│  ffmpeg.rs   — FFmpeg/ffprobe wrappers, progress bars       │
+│  silence.rs  — silence parsing, speech segment math         │
+│  temp.rs     — TempFileRegistry, make_temp_file, Ctrl-C     │
+│  error.rs    — AppError enum, require_ffmpeg/whisper        │
+├─────────────────────────────────────────────────────────────┤
+│  External tools (shelled via std::process::Command)         │
+│  ffmpeg / ffprobe     whisper-cli     claude (optional)     │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### Information Flow (Config --> Execution)
+### Component Responsibilities (actual, post-audit)
+
+| Component | Responsibility | LOC | Notes |
+|-----------|----------------|-----|-------|
+| `main.rs` | Parse CLI, dispatch, top-level error handler | 39 | Thin; all logic in commands |
+| `cli.rs` | Clap types: `Cli`, `Commands`, all `*Args` structs | ~109 | Single source of truth for CLI shape |
+| `commands/cut.rs` | Silence removal: normalize → detect → concat | ~231 | Owns `pub fn derive_output_path` (reused by overlay) |
+| `commands/caption.rs` | Audio extract → whisper → SRT/JSON/ASS generate | ~622 | Most complex; `derive_caption_output` is private |
+| `commands/overlay.rs` | Build drawtext filter, optional Claude auto-title | ~296 | Imports `derive_output_path` from cut |
+| `commands/normalize.rs` | Two-pass EBU R128 loudnorm to temp file | ~192 | Called only by cut; returns PathBuf |
+| `ffmpeg.rs` | `run_ffmpeg*`, `probe_duration*`, `run_silencedetect` | ~202 | All FFmpeg subprocess wrappers |
+| `silence.rs` | Parse silencedetect stderr, compute speech segments | ~? | Pure math, no I/O |
+| `temp.rs` | `TempFileRegistry`, `make_temp_file`, Ctrl-C handler | 56 | Registry is `Arc<Mutex<Vec<PathBuf>>>` |
+| `error.rs` | `AppError` thiserror enum, `require_ffmpeg/whisper`, `format_error` | 134 | Prerequisite checks live here |
+
+## v1.1 New Components
+
+### Source Tree Changes
 
 ```
-User CLI args
-    |
-    v
-clap parse --> PipelineConfig {
-    input: PathBuf,
-    output: PathBuf,
-    stages: Vec<StageConfig>,  // which stages to run, in order
-    silence_threshold: f64,     // -30dB default
-    silence_duration: f64,      // 0.5s default
-    whisper_model: String,      // "medium" default
-    caption_style: CaptionStyle,
-    overwrite: bool,
-}
-    |
-    v
-PipelineExecutor::run(config) {
-    let mut current_file = config.input.clone();
-    for stage in &config.stages {
-        let output = temp_manager.next_temp_file(".mp4");
-        stage.execute(&current_file, &output, &config)?;  // fail-fast with ?
-        current_file = output;
-    }
-    fs::rename(current_file, config.output)?;
-    temp_manager.cleanup();
-}
+src/
+├── main.rs                  MODIFIED — +2 match arms (Doctor, Pipeline)
+├── cli.rs                   MODIFIED — +2 Commands variants + DoctorArgs + PipelineArgs
+├── commands/
+│   ├── mod.rs               MODIFIED — pub mod doctor; pub mod pipeline;
+│   ├── cut.rs               NO CHANGE
+│   ├── caption.rs           MODIFIED — make derive_caption_output pub
+│   ├── overlay.rs           MODIFIED — add require_claude() call when args.auto.is_some()
+│   ├── normalize.rs         NO CHANGE
+│   ├── doctor.rs            NEW — ~80 lines
+│   └── pipeline.rs          NEW — ~70 lines
+├── error.rs                 MODIFIED — +ClaudeNotFound variant, +require_claude()
+├── ffmpeg.rs                NO CHANGE
+├── silence.rs               NO CHANGE
+└── temp.rs                  NO CHANGE
+
+.github/
+└── workflows/
+    └── release.yml          NEW — build matrix + GitHub Release upload
 ```
 
-## Core Abstractions
+## Integration Pattern: Doctor Subcommand
 
-### The Stage Trait
+### Where It Hooks In
 
-Use an **enum dispatch** rather than trait objects. With a fixed, small set of stages known at compile time, enum dispatch avoids the indirection of `dyn Trait` and plays well with feature flags.
+`error.rs` already has `require_ffmpeg()` and `require_whisper()` using `which::which()`. Doctor is an additive user-facing diagnostic wrapper around the same mechanic — it does not replace the inline guards in each command's `run()`.
+
+### Dispatch Addition (main.rs)
 
 ```rust
-#[derive(Debug)]
-pub enum Stage {
-    #[cfg(feature = "silence")]
-    SilenceRemoval(SilenceConfig),
-    #[cfg(feature = "caption")]
-    CaptionGeneration(CaptionConfig),
-    #[cfg(feature = "overlay")]
-    TextOverlay(OverlayConfig),
+Some(Commands::Doctor(args)) => commands::doctor::run(args, cli.verbose),
+```
+
+Doctor takes no `registry` argument — it creates no temp files.
+
+### DoctorArgs (cli.rs)
+
+```rust
+#[derive(Args)]
+pub struct DoctorArgs {}  // no fields — contentops doctor takes no arguments
+```
+
+### Implementation Pattern (doctor.rs)
+
+```rust
+pub fn run(_args: DoctorArgs, _verbose: bool) -> anyhow::Result<()> {
+    let mut all_ok = true;
+
+    all_ok &= check_required("ffmpeg",      "brew install ffmpeg");
+    all_ok &= check_required("ffprobe",     "brew install ffmpeg");
+    all_ok &= check_required("whisper-cli", "brew install whisper-cli");
+    check_optional("claude", "brew install claude");
+
+    if all_ok { Ok(()) } else { std::process::exit(1) }
 }
 
-impl Stage {
-    pub fn execute(
-        &self,
-        input: &Path,
-        output: &Path,
-        ffmpeg: &FfmpegRunner,
-    ) -> Result<()> {
-        match self {
-            #[cfg(feature = "silence")]
-            Stage::SilenceRemoval(cfg) => silence::execute(input, output, cfg, ffmpeg),
-            #[cfg(feature = "caption")]
-            Stage::CaptionGeneration(cfg) => caption::execute(input, output, cfg, ffmpeg),
-            #[cfg(feature = "overlay")]
-            Stage::TextOverlay(cfg) => overlay::execute(input, output, cfg, ffmpeg),
-        }
+fn check_required(tool: &str, hint: &str) -> bool {
+    match which::which(tool) {
+        Ok(path) => { eprintln!("  ok  {}  ({})", tool, path.display()); true }
+        Err(_)   => { eprintln!("  MISSING {}  hint: {}", tool, hint); false }
     }
 }
 ```
 
-### The FFmpeg Runner
+Version reporting: call `Command::new(tool).arg("--version").output()` and print the first line of stdout/stderr. ffmpeg prints version to stderr; whisper-cli prints to stdout — handle both.
 
-Centralized subprocess wrapper. Every FFmpeg call goes through this, ensuring consistent error handling, logging, and potential progress tracking.
+### Auto-Prerequisite Checks in Normal Commands
+
+**Current state:** `require_ffmpeg()` and `require_whisper()` already run at the top of each command's `run()`. This IS the auto-prerequisite check pattern.
+
+**Gap to close:** Claude CLI is not checked. `overlay --auto` shells out to `claude` but fails with a generic `StageIo` error if the binary is missing.
+
+**Fix:** Add to `error.rs`:
 
 ```rust
-pub struct FfmpegRunner {
-    ffmpeg_path: PathBuf,  // located at startup via `which ffmpeg`
-}
+#[error("claude not found on PATH\n  hint: brew install claude")]
+ClaudeNotFound,
 
-impl FfmpegRunner {
-    /// Run an FFmpeg command. Returns Ok(()) on success, Err with stderr on failure.
-    pub fn run(&self, args: &[&str]) -> Result<()> { ... }
-
-    /// Run FFmpeg and capture stdout (for probing).
-    pub fn run_capture(&self, args: &[&str]) -> Result<String> { ... }
-
-    /// Run FFmpeg and capture stderr for parsing (silencedetect output).
-    pub fn run_parse_stderr(&self, args: &[&str]) -> Result<String> { ... }
+pub fn require_claude() -> Result<PathBuf, AppError> {
+    which::which("claude").map_err(|_| AppError::ClaudeNotFound)
 }
 ```
 
-### Error Handling
-
-Use `thiserror` for the error enum (structured, matchable errors) and `anyhow` at the binary boundary (`main.rs`) for ergonomic error display. This is the standard Rust pattern for application-level CLIs.
+Add to `overlay::run()`:
 
 ```rust
-#[derive(Debug, thiserror::Error)]
-pub enum ContentOpsError {
-    #[error("FFmpeg failed (exit {exit_code}): {stderr}")]
-    FfmpegFailed { exit_code: i32, stderr: String },
-
-    #[error("Whisper failed: {0}")]
-    WhisperFailed(String),
-
-    #[error("Failed to parse silence detection output: {0}")]
-    SilenceParseError(String),
-
-    #[error("Input file not found: {0}")]
-    InputNotFound(PathBuf),
-
-    #[error("FFmpeg not found on PATH")]
-    FfmpegNotFound,
-
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
+if args.auto.is_some() {
+    require_claude()?;
 }
 ```
 
-## Feature Flags Design
+**Do not add a centralized pre-dispatch hook in main.rs.** Each command knows its own dependencies. Checking whisper before `cut` is misleading; checking claude before `caption` is wrong. Keep checks at the call site.
 
-Use Cargo features to gate stages so the binary can be built with only the stages needed.
+## Integration Pattern: Pipeline Subcommand
 
-```toml
-[features]
-default = ["silence", "caption", "overlay"]
-silence = []
-caption = []  # requires whisper CLI on PATH at runtime, not compile time
-overlay = []
+### Data Flow
+
+```
+contentops pipeline input.mp4 --model ggml-base.bin
+    ↓
+pipeline::run()
+    ├── require_ffmpeg() + require_whisper() upfront
+    │
+    ├── Step 1: cut::run(CutArgs { input, output: Some(cut_path), ... })
+    │       produces: input_cut.mp4
+    │
+    ├── Step 2: caption::run(CaptionArgs { input: cut_path, model, lang, burn: false, ... })
+    │       produces: input_cut_captioned.srt
+    │                 input_cut_captioned.json  ← needed by overlay --auto
+    │
+    └── Step 3: overlay::run(OverlayArgs { input: cut_path, auto: Some(json_path), ... })
+            produces: input_cut_overlay.mp4
+
+Final outputs:
+  input_cut_overlay.mp4       — ready to post
+  input_cut_captioned.srt     — sidecar for external editing
+  input_cut_captioned.json    — word-level timestamps (intermediate, keep for reference)
 ```
 
-Feature flags control **compilation** of stage modules. Runtime dependency checks (is `ffmpeg` on PATH? is `whisper` on PATH?) happen at startup before pipeline execution.
+Note: Step 3 takes `cut_path` (silence-removed) as input, not the caption step's video output. This is correct — captions are a sidecar. The overlay goes on the clean cut, title auto-generated from the JSON transcript.
 
-## Patterns to Follow
+### How Pipeline Reuses Existing Logic
 
-### Pattern 1: Dependency Validation at Startup
-
-Check that external tools exist before running any stages.
+Pipeline calls the existing `run()` functions directly as Rust function calls. No subprocess shelling. Shared `TempFileRegistry` spans all three steps.
 
 ```rust
-fn validate_dependencies(config: &PipelineConfig) -> Result<()> {
-    FfmpegRunner::locate()?;  // errors if ffmpeg not on PATH
-    if config.has_stage(StageKind::Caption) {
-        which::which("whisper")
-            .map_err(|_| ContentOpsError::WhisperNotFound)?;
-    }
+// src/commands/pipeline.rs
+use crate::cli::{CaptionArgs, CutArgs, OverlayArgs, PipelineArgs};
+use crate::commands::{caption, cut, overlay};
+use crate::error::{require_ffmpeg, require_whisper};
+use crate::temp::TempFileRegistry;
+
+pub fn run(args: PipelineArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow::Result<()> {
+    require_ffmpeg()?;
+    require_whisper()?;
+
+    let cut_path = cut::derive_output_path(&args.input, "cut");
+    let json_path = caption::derive_caption_output(&args.input_cut(), "captioned", "json");
+    //                                              ^^^^ see path derivation note below
+
+    cut::run(CutArgs {
+        input: args.input.clone(),
+        output: Some(cut_path.clone()),
+        dry_run: false,
+        breaths: args.breaths,
+    }, verbose, registry)?;
+
+    caption::run(CaptionArgs {
+        input: cut_path.clone(),
+        output: None,
+        model: args.model.clone(),
+        lang: args.lang.clone(),
+        burn: false,
+    }, verbose, registry)?;
+
+    overlay::run(OverlayArgs {
+        input: cut_path.clone(),
+        text: None,
+        auto: Some(json_path),
+        output: None,
+        font: args.font.clone(),
+        font_size: 44,
+        color: "black".to_string(),
+        position: "top".to_string(),
+        start: 0.3,
+        duration: 3.5,
+    }, verbose, registry)?;
+
     Ok(())
 }
 ```
 
-### Pattern 2: Structured Stderr Parsing
+### Path Derivation Dependency (Required Change)
 
-FFmpeg outputs diagnostic info to stderr. Parse it with regex for silence timestamps rather than fragile string splitting.
+`derive_output_path` in `cut.rs` is already `pub`. Pipeline can call it directly.
 
-```rust
-// Parse lines like: [silencedetect @ 0x...] silence_end: 3.504 | silence_duration: 1.204
-static SILENCE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"silence_end:\s*([\d.]+)\s*\|\s*silence_duration:\s*([\d.]+)").unwrap()
-});
-```
+`derive_caption_output` in `caption.rs` is currently `fn` (private). Pipeline needs to derive the JSON path that caption will produce. **Required change:** make it `pub fn derive_caption_output` in caption.rs.
 
-### Pattern 3: Temp File Lifecycle Tied to Pipeline
+The JSON path is: given `input_cut.mp4`, caption produces `input_cut_captioned.json` (suffix="captioned", ext="json"). Pipeline needs this path to pass as `args.auto` to overlay.
 
-Use `tempfile::TempDir` for the entire pipeline run. All intermediate files go in one temp directory. On success or failure, the directory drops and cleans up.
+### PipelineArgs (cli.rs addition)
 
 ```rust
-let work_dir = tempfile::tempdir()?;
-// All intermediate files created inside work_dir
-// Automatic cleanup on drop (success or error)
-```
+#[derive(Args)]
+pub struct PipelineArgs {
+    /// Input video file
+    pub input: PathBuf,
 
-### Pattern 4: Dry-Run Mode
+    /// Path to whisper model file
+    #[arg(long)]
+    pub model: PathBuf,
 
-Print the FFmpeg commands that would be executed without running them. Critical for debugging and trust.
+    /// Language code for transcription
+    #[arg(long, default_value = "en")]
+    pub lang: String,
 
-```rust
-if config.dry_run {
-    println!("Would run: ffmpeg {}", args.join(" "));
-    return Ok(());
+    /// Also detect and remove breaths (forwarded to cut)
+    #[arg(long)]
+    pub breaths: bool,
+
+    /// Path to .ttf font file (forwarded to overlay)
+    #[arg(long)]
+    pub font: Option<PathBuf>,
 }
 ```
 
-## Anti-Patterns to Avoid
+Overlay positioning, timing, font size, and color are hardcoded in pipeline to the same defaults as the individual command. Users who need control use individual commands.
 
-### Anti-Pattern 1: Trait Objects for a Fixed Stage Set
+### OverlayArgs Construction
 
-**What:** `Vec<Box<dyn Stage>>` with dynamic dispatch for 3 known stages.
-**Why bad:** Adds complexity (object safety constraints, lifetime headaches) with no benefit. You know all stages at compile time.
-**Instead:** Enum dispatch with `#[cfg(feature)]` gating.
+`OverlayArgs` does not derive `Default` (clap required-field validation conflicts with Default for `text`). Pipeline constructs it with all fields explicit — this is fine since pipeline has a fixed, opinionated configuration.
 
-### Anti-Pattern 2: In-Memory Frame Piping Between Stages
+## Integration Pattern: GitHub Actions CI/CD
 
-**What:** Piping raw video frames between stages via stdin/stdout.
-**Why bad:** Massive memory overhead for raw frames. Synchronization complexity. No benefit for sequential file-to-file processing.
-**Instead:** Intermediate files in a temp directory. FFmpeg handles I/O efficiently.
+### Scope
 
-### Anti-Pattern 3: FFmpeg Bindings (ffmpeg-next, rsmpeg)
+New file only: `.github/workflows/release.yml`. Zero src/ changes.
 
-**What:** Using Rust FFI bindings to libavcodec/libavformat.
-**Why bad:** Massive compilation complexity (requires system FFmpeg dev libraries). Brittle across FFmpeg versions. The CLI tool does not need frame-level access -- it orchestrates complete FFmpeg commands.
-**Instead:** `std::process::Command` wrapping the `ffmpeg` binary.
+### Trigger
 
-### Anti-Pattern 4: Async Runtime for Sequential Processing
-
-**What:** Pulling in tokio for subprocess orchestration.
-**Why bad:** This is a sequential pipeline processing one file. Async adds cognitive overhead, binary size, and compile time with zero benefit.
-**Instead:** Synchronous `std::process::Command` with blocking execution.
-
-### Anti-Pattern 5: Global Mutable State for Stage Configuration
-
-**What:** Static config or global variables.
-**Why bad:** Testing nightmare, hidden coupling.
-**Instead:** Pass `&PipelineConfig` (or stage-specific config) through function parameters.
-
-## Project Structure
-
-```
-contentops/
-  Cargo.toml
-  src/
-    main.rs              # Entry point: parse args, validate deps, run pipeline
-    cli.rs               # Clap derive structs
-    config.rs            # PipelineConfig, StageConfig types
-    error.rs             # ContentOpsError enum (thiserror)
-    pipeline.rs          # PipelineExecutor: stage sequencing, temp file management
-    ffmpeg.rs            # FfmpegRunner: subprocess wrapper
-    stages/
-      mod.rs             # Stage enum, feature-gated re-exports
-      silence.rs         # Silence detection + removal logic
-      caption.rs         # Audio extraction + Whisper invocation + SRT parsing
-      overlay.rs         # drawtext/subtitles filter application
+```yaml
+on:
+  push:
+    tags:
+      - 'v*'
 ```
 
-## Suggested Build Order
+### Build Matrix
 
-Build order follows data flow dependencies. Each phase produces a working (if incomplete) CLI.
+Two targets cover macOS deployment:
 
-| Order | Component | Depends On | Rationale |
-|-------|-----------|------------|-----------|
-| 1 | `error.rs` + `ffmpeg.rs` | Nothing | Foundation. Everything calls FFmpeg. Build the runner first. |
-| 2 | `cli.rs` + `config.rs` | Nothing | Define the interface. Can iterate on UX independently. |
-| 3 | `pipeline.rs` + temp file management | error, ffmpeg, config | The orchestrator that ties stages together. Build with a no-op stage first. |
-| 4 | `stages/silence.rs` | ffmpeg, pipeline | First real stage. Most complex (two-pass). Proves the pipeline pattern works. |
-| 5 | `stages/caption.rs` | ffmpeg, pipeline | Second stage. Introduces Whisper as external dependency. |
-| 6 | `stages/overlay.rs` | ffmpeg, pipeline, caption output | Final stage. Depends on SRT files from caption stage. |
+| Target | Runner | Notes |
+|--------|--------|-------|
+| `aarch64-apple-darwin` | `macos-latest` | Apple Silicon (M-series), default since ~2024 |
+| `x86_64-apple-darwin` | `macos-13` | Intel; macos-13 is last Intel runner in GHA |
 
-**Key dependency insight:** Silence removal is independent of captioning. Overlay depends on captioning output (SRT file). Build silence first because it exercises the full pipeline pattern (multi-pass FFmpeg) without needing Whisper installed.
+Cross-compilation (building arm64 on x86 or vice versa) is possible on macOS with `rustup target add` but same-arch builds are simpler and faster. Use the two-runner matrix.
 
-## Future Architecture Considerations
+### Workflow Structure
 
-### FFmpeg 8.0 Native Whisper Filter
+```yaml
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-13
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --target ${{ matrix.target }}
+      - run: mv target/${{ matrix.target }}/release/contentops contentops-${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: contentops-${{ matrix.target }}
+          path: contentops-${{ matrix.target }}
 
-FFmpeg 8.0 (released August 2025) includes a native `whisper` audio filter that can generate subtitles directly within an FFmpeg pipeline. This could eventually collapse the Caption + Overlay stages into a single FFmpeg invocation. However:
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: contentops-*
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: contentops-*
+```
 
-- FFmpeg 8.0 may not be widely available on macOS via Homebrew yet
-- The filter requires whisper.cpp models to be downloaded separately
-- For a personal macOS tool, the current two-step approach (external Whisper CLI + FFmpeg overlay) is more portable and debuggable
+### Caching
 
-**Recommendation:** Build with the subprocess approach now. Add an FFmpeg 8.0 native path as a future optimization behind a feature flag.
+`Swatinem/rust-cache@v2` caches the Cargo registry and target directory. On a ~2,400 LOC project: cold build ~3-4 min, cached build ~30s. Include it.
 
-### Adding New Stages
+### Binary Naming Convention
 
-The architecture supports new stages by:
-1. Adding a new file in `stages/`
-2. Adding a variant to the `Stage` enum
-3. Adding a feature flag in `Cargo.toml`
-4. Adding CLI args for the new stage in `cli.rs`
+`contentops-aarch64-apple-darwin` and `contentops-x86_64-apple-darwin` — users download the right one for their machine. No universal binary (lipo) needed; the two files are sufficient.
 
-No changes to `pipeline.rs` needed beyond stage ordering.
+## Architectural Patterns (Existing — Confirmed by Audit)
+
+### Pattern 1: Self-Contained Command Modules
+
+Each command module imports its own `*Args` type, calls `require_*()` guards at entry, manages its own temp files via the shared registry, and returns `anyhow::Result<()>`. No shared state between commands at runtime.
+
+**Doctor and Pipeline follow this same shape exactly.** Doctor skips the registry arg. Pipeline adds multi-command coordination.
+
+### Pattern 2: In-Process Command Chaining (Pipeline)
+
+Pipeline calls `commands::cut::run()`, `commands::caption::run()`, `commands::overlay::run()` directly as Rust function calls. The shared `TempFileRegistry` handles Ctrl-C cleanup across all three steps automatically.
+
+**Do not shell out to `contentops cut` as a subprocess.** This would lose the shared registry (Ctrl-C in a subprocess doesn't clean the parent's temp files), lose typed errors, and require the binary to be on PATH during development.
+
+### Pattern 3: Prerequisite Checks as Typed Errors
+
+`require_ffmpeg()` / `require_whisper()` return `AppError::FfmpegNotFound` / `AppError::WhisperNotFound`. The top-level error handler in main.rs catches `AppError` variants and formats them with install hints. New tools follow the same pattern.
+
+Checks are duplicated across commands that share deps. This is acceptable — `which::which` is a filesystem stat (cheap), and it keeps each command self-documenting.
+
+## Anti-Patterns
+
+### Anti-Pattern 1: Pipeline as a Subprocess Chain
+
+**What people do:** `Command::new("contentops").arg("cut").arg(input).output()`
+
+**Why it's wrong:** Loses TempFileRegistry. Error messages go through shell and lose typed AppError. Requires the binary on PATH during development builds.
+
+**Do this instead:** Call `commands::cut::run()` directly with constructed CutArgs.
+
+### Anti-Pattern 2: Centralized Pre-Dispatch Prerequisite Check
+
+**What people do:** Before the match arm in main.rs, check all tools for every command.
+
+**Why it's wrong:** Whisper check fires for `contentops cut` (which never uses whisper). Claude check fires for `contentops caption`. Users see confusing "tool not found" errors for tools their command doesn't need.
+
+**Do this instead:** Keep `require_*()` at the top of each command's `run()` — already the pattern.
+
+### Anti-Pattern 3: Over-Exposing Flags on Pipeline
+
+**What people do:** Re-expose every flag from cut, caption, and overlay on PipelineArgs.
+
+**Why it's wrong:** 15+ fields on PipelineArgs, duplicating three commands' worth of CLI surface. Users needing fine control should use individual commands.
+
+**Do this instead:** Expose only `input`, `model`, `lang`, `breaths`, `font`. Hardcode overlay defaults. Pipeline is the happy path.
+
+## Data Flow Summary
+
+### Normal Commands
+
+```
+User → clap parse → *Args struct → command::run(*Args, verbose, &registry) → anyhow::Result<()>
+                                        ↓
+                               require_ffmpeg/whisper()
+                                        ↓
+                               std::process::Command (ffmpeg, whisper-cli, claude)
+                                        ↓
+                               output file on disk + eprintln progress
+```
+
+### Pipeline Command
+
+```
+User → clap parse → PipelineArgs → pipeline::run() → {
+    cut::run(CutArgs) → input_cut.mp4
+    caption::run(CaptionArgs { input: input_cut.mp4 }) → input_cut_captioned.{srt,json}
+    overlay::run(OverlayArgs { auto: input_cut_captioned.json }) → input_cut_overlay.mp4
+}
+```
+
+### Doctor Command
+
+```
+User → clap parse → DoctorArgs → doctor::run() → {
+    which("ffmpeg")      → ok/MISSING
+    which("ffprobe")     → ok/MISSING
+    which("whisper-cli") → ok/MISSING
+    which("claude")      → ok/MISSING (optional)
+    exit 0 or exit 1
+}
+```
+
+## Build Order Recommendation
+
+| Order | Task | Depends On | Rationale |
+|-------|------|------------|-----------|
+| 1 | `require_claude()` + overlay guard | `error.rs` existing pattern | One-liner additions; closes the missing check gap immediately |
+| 2 | `pub fn derive_caption_output` | `caption.rs` | One-line visibility change; prerequisite for pipeline |
+| 3 | `DoctorArgs` + `Commands::Doctor` in cli.rs | Nothing new | Isolated; no dependencies on other v1.1 features |
+| 4 | `commands/doctor.rs` | Step 3 + error.rs which/require pattern | Standalone, self-contained, validates check infrastructure |
+| 5 | `PipelineArgs` + `Commands::Pipeline` in cli.rs | Steps 1–2 complete | Can design args only after derivation API is confirmed |
+| 6 | `commands/pipeline.rs` | Steps 1–5 complete | Integrates all three existing commands |
+| 7 | `.github/workflows/release.yml` | None — independent | Can be written any time; test with a manual tag push |
 
 ## Sources
 
-- [ffmpeg-sidecar crate](https://github.com/nathanbabcock/ffmpeg-sidecar) - Builder pattern reference for FFmpeg CLI wrapping
-- [FFmpeg silencedetect filter docs](https://ayosec.github.io/ffmpeg-filters-docs/7.1/Filters/Audio/silencedetect.html) - Silence detection parameters and metadata output
-- [Remsi silence removal](https://github.com/bambax/Remsi) - Two-pass silence removal architecture (detect then select/aselect)
-- [remove-silence](https://github.com/onsubmit/remove-silence) - Four-step silence removal pipeline (probe, detect, segment, concat)
-- [Rust error handling with thiserror/anyhow](https://www.shakacode.com/blog/thiserror-anyhow-or-how-i-handle-errors-in-rust-apps/) - Library vs application error pattern
-- [std::process::Command error handling](https://users.rust-lang.org/t/best-error-handing-practices-when-using-std-command/42259) - Wrapper function patterns
-- [Rust async pipeline pattern](https://github.com/alexpusch/rust-magic-patterns/blob/master/async-pipeline-pattern/Readme.md) - Pipeline stage architecture (used as counter-example: async not needed here)
-- [tempfile crate](https://docs.rs/tempfile/) - Temp directory lifecycle management
-- [FFmpeg 8.0 Whisper integration](https://gigazine.net/gsc_news/en/20250825-ffmpeg-8-0-huffman) - Native transcription filter (future consideration)
-- [Clap CLI structure](https://kbknapp.dev/cli-structure-01/) - Subcommand and modular CLI design patterns
-- [Cargo features](https://doc.rust-lang.org/cargo/reference/features.html) - Feature flag conditional compilation
+- Direct codebase audit: all 12 source files in `/Users/darrelltang/darrelldoesdevops/contentops/src/`
+- Confidence: HIGH — findings are from actual source code, not inference or training data
+
+---
+*Architecture research for: contentops v1.1 — doctor, pipeline, CI/CD*
+*Researched: 2026-02-20*
