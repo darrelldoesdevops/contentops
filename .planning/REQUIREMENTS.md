@@ -68,34 +68,34 @@ Requirements for milestone v1.1 Polish & Pipeline. Each maps to roadmap phases.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| AUDIT-01 | — | Pending |
-| AUDIT-02 | — | Pending |
-| AUDIT-03 | — | Pending |
-| AUDIT-04 | — | Pending |
-| AUDIT-05 | — | Pending |
-| DOCT-01 | — | Pending |
-| DOCT-02 | — | Pending |
-| DOCT-03 | — | Pending |
-| DOCT-04 | — | Pending |
-| DOCT-05 | — | Pending |
-| DOCT-06 | — | Pending |
-| DOCT-07 | — | Pending |
-| PIPE-01 | — | Pending |
-| PIPE-02 | — | Pending |
-| PIPE-03 | — | Pending |
-| PIPE-04 | — | Pending |
-| PIPE-05 | — | Pending |
-| CICD-01 | — | Pending |
-| CICD-02 | — | Pending |
-| CICD-03 | — | Pending |
-| CICD-04 | — | Pending |
-| CICD-05 | — | Pending |
+| AUDIT-01 | Phase 6 | Pending |
+| AUDIT-02 | Phase 6 | Pending |
+| AUDIT-03 | Phase 6 | Pending |
+| AUDIT-04 | Phase 6 | Pending |
+| AUDIT-05 | Phase 6 | Pending |
+| DOCT-01 | Phase 7 | Pending |
+| DOCT-02 | Phase 7 | Pending |
+| DOCT-03 | Phase 7 | Pending |
+| DOCT-04 | Phase 7 | Pending |
+| DOCT-05 | Phase 7 | Pending |
+| DOCT-06 | Phase 7 | Pending |
+| DOCT-07 | Phase 7 | Pending |
+| PIPE-01 | Phase 8 | Pending |
+| PIPE-02 | Phase 8 | Pending |
+| PIPE-03 | Phase 8 | Pending |
+| PIPE-04 | Phase 8 | Pending |
+| PIPE-05 | Phase 8 | Pending |
+| CICD-01 | Phase 9 | Pending |
+| CICD-02 | Phase 9 | Pending |
+| CICD-03 | Phase 9 | Pending |
+| CICD-04 | Phase 9 | Pending |
+| CICD-05 | Phase 9 | Pending |
 
 **Coverage:**
 - v1.1 requirements: 22 total
-- Mapped to phases: 0
-- Unmapped: 22
+- Mapped to phases: 22
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-20*
-*Last updated: 2026-02-20 after initial definition*
+*Last updated: 2026-02-20 after roadmap creation (phases 6-9 assigned)*
