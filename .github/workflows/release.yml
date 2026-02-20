@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: contentops
+
+permissions:
+  contents: write
+
+jobs:
+  build-arm64:
+    name: Build ARM64 macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: contentops-aarch64-apple-darwin
+          path: target/aarch64-apple-darwin/release/contentops
+
+  build-x86_64:
+    name: Build x86_64 macOS
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: contentops-x86_64-apple-darwin
+          path: target/x86_64-apple-darwin/release/contentops
+
+  release:
+    name: Create Release
+    needs: [build-arm64, build-x86_64]
+    runs-on: macos-latest
+    steps:
+      - name: Download ARM64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: contentops-aarch64-apple-darwin
+          path: arm64
+
+      - name: Download x86_64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: contentops-x86_64-apple-darwin
+          path: x86_64
+
+      - name: Prepare binaries
+        run: |
+          chmod +x arm64/contentops x86_64/contentops
+          mv arm64/contentops contentops-aarch64-apple-darwin
+          mv x86_64/contentops contentops-x86_64-apple-darwin
+
+      - name: Create universal binary
+        run: lipo -create -output contentops-universal-apple-darwin contentops-aarch64-apple-darwin contentops-x86_64-apple-darwin
+
+      - name: Generate checksums
+        run: |
+          shasum -a 256 contentops-aarch64-apple-darwin > contentops-aarch64-apple-darwin.sha256
+          shasum -a 256 contentops-x86_64-apple-darwin > contentops-x86_64-apple-darwin.sha256
+          shasum -a 256 contentops-universal-apple-darwin > contentops-universal-apple-darwin.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            contentops-aarch64-apple-darwin
+            contentops-aarch64-apple-darwin.sha256
+            contentops-x86_64-apple-darwin
+            contentops-x86_64-apple-darwin.sha256
+            contentops-universal-apple-darwin
+            contentops-universal-apple-darwin.sha256
