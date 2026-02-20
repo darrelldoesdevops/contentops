@@ -51,7 +51,9 @@ See: `.planning/milestones/v1.1-ROADMAP.md` for full details.
   3. `brew audit Formula/contentops.rb` passes with no errors or warnings
   4. `brew test contentops` passes (runs `contentops --version` successfully)
   5. Post-install `brew info contentops` displays caveats documenting whisper model and prerequisites
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 10-01-PLAN.md — Create homebrew-tap repo with architecture-conditional formula, verify brew install/audit/test
 
 ### Phase 11: GitHub Actions Auto-Update
 **Goal**: Pushing a version tag to contentops automatically updates the tap formula version and SHA256 within minutes, requiring zero manual steps
@@ -88,6 +90,6 @@ See: `.planning/milestones/v1.1-ROADMAP.md` for full details.
 | 7. Doctor Subcommand | v1.1 | quick | Complete | 2026-02-20 |
 | 8. Pipeline Subcommand | v1.1 | quick | Complete | 2026-02-20 |
 | 9. CI/CD | v1.1 | quick | Complete | 2026-02-20 |
-| 10. Homebrew Tap + Formula | v1.2 | 0/? | Not started | - |
+| 10. Homebrew Tap + Formula | v1.2 | 0/1 | Planned | - |
 | 11. GitHub Actions Auto-Update | v1.2 | 0/? | Not started | - |
 | 12. Comprehensive README | v1.2 | 0/? | Not started | - |
