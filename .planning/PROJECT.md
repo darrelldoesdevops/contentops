@@ -17,10 +17,10 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 - Animated title overlays with auto-generation via Claude CLI -- v1.0
 - Progress bars with real-time percentage tracking -- v1.0
 - TikTok-standard H.264/AAC output at CRF 14 -- v1.0
+- Codebase audit with findings report, dead code removal, spinner consolidation, consistent error handling -- v1.1 Phase 6
 
 ### Active
 
-- [ ] Codebase audit (idiomatic Rust, dead code, security, best practices) with report
 - [ ] Doctor subcommand + auto-prerequisite checks (FFmpeg, whisper-cli, Claude CLI)
 - [ ] Pipeline subcommand chaining cut → caption → overlay
 - [ ] GitHub Releases CI/CD with pre-built binaries
@@ -75,6 +75,9 @@ Heavily iterated on caption styling and overlay animation post-plan.
 | Normalize folded into cut | Automatic normalization on every cut, no separate step needed | Good |
 | Claude CLI for auto-titles | Already installed, no API key management needed | Good |
 | Impact font + slide animation | Matches existing CapCut title card aesthetic | Good |
+| Shared spinner in src/ui.rs | Eliminates 5 duplicate factories, single place to change spinner style | Good |
+| Typed AppError for all errors | Consistent colored output, compiler-enforced exhaustiveness | Good |
+| Delete cleanup_all() | Pipeline shares TempFileRegistry directly, dead code removed | Good |
 
 ---
-*Last updated: 2026-02-20 after v1.1 milestone start*
+*Last updated: 2026-02-20 after Phase 6 complete*
