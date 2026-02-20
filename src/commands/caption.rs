@@ -424,7 +424,10 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
     })?;
 
     let whisper_data: WhisperJson =
-        serde_json::from_str(&json_content).map_err(|e| anyhow::anyhow!("parsing whisper JSON: {}", e))?;
+        serde_json::from_str(&json_content).map_err(|e| AppError::ParseFailed {
+            stage: "whisper-json".into(),
+            message: e.to_string(),
+        })?;
 
     let raw_words: Vec<Word> = whisper_data
         .transcription
@@ -478,7 +481,10 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
 
         // 7. Generate JSON sidecar
         let json_content =
-            serde_json::to_string_pretty(&words).map_err(|e| anyhow::anyhow!("serializing JSON: {}", e))?;
+            serde_json::to_string_pretty(&words).map_err(|e| AppError::ParseFailed {
+                stage: "caption-json".into(),
+                message: e.to_string(),
+            })?;
         std::fs::write(&json_output, json_content).map_err(|e| AppError::StageIo {
             stage: "write-json".to_string(),
             source: e,

@@ -116,7 +116,7 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
         if let Some(pb) = spinner {
             pb.finish_and_clear();
         }
-        anyhow::bail!("No speech detected -- entire video is silence");
+        return Err(AppError::NoSpeechDetected(args.input.clone()).into());
     }
 
     let concat_filter = silence::build_concat_filter(&speeches);

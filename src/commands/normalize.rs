@@ -82,7 +82,10 @@ pub fn normalize_to_temp(
             }
 
             parse_loudnorm_stats(&ffmpeg_output.stderr).ok_or_else(|| {
-                anyhow::anyhow!("failed to parse loudnorm measurement from FFmpeg output")
+                AppError::ParseFailed {
+                    stage: "loudnorm".into(),
+                    message: "failed to parse loudnorm measurement from FFmpeg output".into(),
+                }
             })?
         }
         Ok(ffmpeg_output) => {

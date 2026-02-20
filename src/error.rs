@@ -37,6 +37,22 @@ pub enum AppError {
 
     #[error("whisper model not found: {0}\n  hint: download from https://huggingface.co/ggerganov/whisper.cpp")]
     ModelNotFound(PathBuf),
+
+    #[error("no speech detected in {0}: entire video is silence")]
+    NoSpeechDetected(PathBuf),
+
+    #[error("error in stage '{stage}': claude CLI exited with code {code}\n{stderr}")]
+    ClaudeFailed {
+        stage: String,
+        code: i32,
+        stderr: String,
+    },
+
+    #[error("error in stage '{stage}': failed to parse output\n{message}")]
+    ParseFailed {
+        stage: String,
+        message: String,
+    },
 }
 
 pub fn require_ffmpeg() -> Result<PathBuf, AppError> {
@@ -127,6 +143,39 @@ pub fn format_error(err: &AppError) -> String {
                 "error:".red().bold(),
                 path.display(),
                 "hint".bold()
+            )
+        }
+        AppError::NoSpeechDetected(path) => {
+            format!(
+                "{} no speech detected in {}: entire video is silence",
+                "error:".red().bold(),
+                path.display()
+            )
+        }
+        AppError::ClaudeFailed {
+            stage,
+            code,
+            stderr,
+        } => {
+            let indented: String = stderr
+                .lines()
+                .map(|line| format!("  {}", line))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "{} in stage '{}': claude CLI exited with code {}\n{}",
+                "error:".red().bold(),
+                stage.bold(),
+                code,
+                indented
+            )
+        }
+        AppError::ParseFailed { stage, message } => {
+            format!(
+                "{} in stage '{}': failed to parse output\n  {}",
+                "error:".red().bold(),
+                stage.bold(),
+                message
             )
         }
     }

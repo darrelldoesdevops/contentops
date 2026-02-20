@@ -23,7 +23,10 @@ fn generate_title(transcript_path: &Path, verbose: bool) -> anyhow::Result<Strin
     })?;
 
     let words: Vec<TranscriptWord> = serde_json::from_str(&json_content)
-        .map_err(|e| anyhow::anyhow!("parsing transcription JSON: {}", e))?;
+        .map_err(|e| AppError::ParseFailed {
+            stage: "overlay-json".into(),
+            message: e.to_string(),
+        })?;
 
     let transcript: String = words.iter().map(|w| w.word.as_str()).collect::<Vec<_>>().join(" ");
 
@@ -66,8 +69,13 @@ fn generate_title(transcript_path: &Path, verbose: bool) -> anyhow::Result<Strin
         if let Some(pb) = spinner {
             pb.finish_and_clear();
         }
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("claude CLI failed: {}", stderr.trim());
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(AppError::ClaudeFailed {
+            stage: "title-generation".into(),
+            code: output.status.code().unwrap_or(-1),
+            stderr,
+        }
+        .into());
     }
 
     let title = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -75,7 +83,12 @@ fn generate_title(transcript_path: &Path, verbose: bool) -> anyhow::Result<Strin
         if let Some(pb) = spinner {
             pb.finish_and_clear();
         }
-        anyhow::bail!("claude returned empty title");
+        return Err(AppError::ClaudeFailed {
+            stage: "title-generation".into(),
+            code: 0,
+            stderr: "claude returned empty title".into(),
+        }
+        .into());
     }
 
     if let Some(pb) = spinner {
@@ -179,7 +192,7 @@ pub fn run(args: OverlayArgs, verbose: bool, registry: &TempFileRegistry) -> any
 
     let title_text = if let Some(ref transcript_path) = args.auto {
         if !transcript_path.exists() {
-            anyhow::bail!("transcription file not found: {}", transcript_path.display());
+            return Err(AppError::InputNotFound(transcript_path.clone()).into());
         }
         let title = generate_title(transcript_path, verbose)?;
         eprintln!("\u{2713} Generated title: \"{}\"", title);
