@@ -27,6 +27,10 @@ fn main() {
         Some(Commands::Cut(args)) => commands::cut::run(args, cli.verbose, &registry),
         Some(Commands::Caption(args)) => commands::caption::run(args, cli.verbose, &registry),
         Some(Commands::Overlay(args)) => commands::overlay::run(args, cli.verbose, &registry),
+        Some(Commands::Doctor(args)) => {
+            let exit_code = commands::doctor::run(args.strict);
+            std::process::exit(exit_code);
+        }
     };
 
     if let Err(err) = result {

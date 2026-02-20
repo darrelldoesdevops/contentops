@@ -41,6 +41,9 @@ pub enum AppError {
     #[error("no speech detected in {0}: entire video is silence")]
     NoSpeechDetected(PathBuf),
 
+    #[error("claude not found on PATH\n  hint: install Claude Code CLI, then run `contentops doctor`")]
+    ClaudeNotFound,
+
     #[error("error in stage '{stage}': claude CLI exited with code {code}\n{stderr}")]
     ClaudeFailed {
         stage: String,
@@ -61,6 +64,10 @@ pub fn require_ffmpeg() -> Result<PathBuf, AppError> {
 
 pub fn require_whisper() -> Result<PathBuf, AppError> {
     which::which("whisper-cli").map_err(|_| AppError::WhisperNotFound)
+}
+
+pub fn require_claude() -> Result<PathBuf, AppError> {
+    which::which("claude").map_err(|_| AppError::ClaudeNotFound)
 }
 
 pub fn last_n_lines(stderr: &[u8], n: usize) -> String {
@@ -150,6 +157,13 @@ pub fn format_error(err: &AppError) -> String {
                 "{} no speech detected in {}: entire video is silence",
                 "error:".red().bold(),
                 path.display()
+            )
+        }
+        AppError::ClaudeNotFound => {
+            format!(
+                "{} claude not found on PATH\n  {}: install Claude Code CLI, then run `contentops doctor`",
+                "error:".red().bold(),
+                "hint".bold()
             )
         }
         AppError::ClaudeFailed {

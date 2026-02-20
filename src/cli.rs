@@ -23,6 +23,16 @@ pub enum Commands {
 
     /// Add text overlay to video
     Overlay(OverlayArgs),
+
+    /// Check prerequisites and environment readiness
+    Doctor(DoctorArgs),
+}
+
+#[derive(Args)]
+pub struct DoctorArgs {
+    /// Exit with code 1 if any check fails or warns
+    #[arg(long)]
+    pub strict: bool,
 }
 
 #[derive(Args)]
