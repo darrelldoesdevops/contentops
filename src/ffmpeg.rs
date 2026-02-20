@@ -70,10 +70,7 @@ pub fn run_silencedetect(
     threshold_db: f64,
     min_duration: f64,
 ) -> Result<String, std::io::Error> {
-    let af = format!(
-        "silencedetect=noise={}dB:d={}",
-        threshold_db, min_duration
-    );
+    let af = format!("silencedetect=noise={}dB:d={}", threshold_db, min_duration);
     let output = Command::new("ffmpeg")
         .arg("-nostdin")
         .arg("-i")
@@ -138,9 +135,11 @@ pub fn run_ffmpeg_with_progress(
 
     let pb = ProgressBar::new(100);
     pb.set_style(
-        ProgressStyle::with_template("{spinner:.cyan} {msg} [{bar:30.cyan/dim}] {pos}% ({elapsed})")
-            .unwrap()
-            .progress_chars("=> "),
+        ProgressStyle::with_template(
+            "{spinner:.cyan} {msg} [{bar:30.cyan/dim}] {pos}% ({elapsed})",
+        )
+        .unwrap()
+        .progress_chars("=> "),
     );
     pb.enable_steady_tick(Duration::from_millis(100));
     pb.set_message(message.to_string());

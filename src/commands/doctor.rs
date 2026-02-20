@@ -161,11 +161,7 @@ pub fn run(strict: bool) -> i32 {
             .collect();
 
         if missing.is_empty() {
-            eprintln!(
-                "  {} {}",
-                sub.name,
-                "ready".green()
-            );
+            eprintln!("  {} {}", sub.name, "ready".green());
         } else {
             any_not_ready = true;
             eprintln!(
@@ -182,20 +178,11 @@ pub fn run(strict: bool) -> i32 {
 
     eprintln!();
     if has_failures || any_not_ready {
-        eprintln!(
-            "{} some checks failed",
-            "!".yellow().bold()
-        );
+        eprintln!("{} some checks failed", "!".yellow().bold());
     } else if has_warnings {
-        eprintln!(
-            "{} all tools found (with warnings)",
-            "!".yellow().bold()
-        );
+        eprintln!("{} all tools found (with warnings)", "!".yellow().bold());
     } else {
-        eprintln!(
-            "{} all checks passed",
-            "ok:".green().bold()
-        );
+        eprintln!("{} all checks passed", "ok:".green().bold());
     }
 
     if strict && (has_failures || has_warnings) {

@@ -1,14 +1,14 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use humansize::{format_size, DECIMAL};
+use humansize::{DECIMAL, format_size};
 use serde::Deserialize;
 
 use crate::cli::OverlayArgs;
 use crate::commands::cut::derive_output_path;
-use crate::error::{last_n_lines, require_claude, require_ffmpeg, AppError};
+use crate::error::{AppError, last_n_lines, require_claude, require_ffmpeg};
 use crate::ffmpeg;
-use crate::temp::{make_temp_file, TempFileRegistry};
+use crate::temp::{TempFileRegistry, make_temp_file};
 use crate::ui;
 
 #[derive(Deserialize)]
@@ -22,13 +22,17 @@ fn generate_title(transcript_path: &Path, verbose: bool) -> anyhow::Result<Strin
         source: e,
     })?;
 
-    let words: Vec<TranscriptWord> = serde_json::from_str(&json_content)
-        .map_err(|e| AppError::ParseFailed {
+    let words: Vec<TranscriptWord> =
+        serde_json::from_str(&json_content).map_err(|e| AppError::ParseFailed {
             stage: "overlay-json".into(),
             message: e.to_string(),
         })?;
 
-    let transcript: String = words.iter().map(|w| w.word.as_str()).collect::<Vec<_>>().join(" ");
+    let transcript: String = words
+        .iter()
+        .map(|w| w.word.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
 
     let prompt = format!(
         "Generate a short, punchy title (3-8 words, max 3 lines) for this talking head video. \
@@ -159,8 +163,12 @@ fn build_title_filter(text: &str, args: &OverlayArgs) -> String {
         // phase 4: sliding out to right
         let x_expr = format!(
             "if(lt(t\\,{in_s})\\, -text_w-{bp}\\, if(lt(t\\,{in_e})\\, -text_w-{bp}+(text_w+{bp}+{fx})*(t-{in_s})/{dur}\\, if(lt(t\\,{out_s})\\, {fx}\\, {fx}+(w-{fx})*(t-{out_s})/{dur})))",
-            in_s = line_start, in_e = slide_in_end, fx = final_x, bp = box_pad,
-            dur = SLIDE_DURATION, out_s = exit_start
+            in_s = line_start,
+            in_e = slide_in_end,
+            fx = final_x,
+            bp = box_pad,
+            dur = SLIDE_DURATION,
+            out_s = exit_start
         );
 
         // white box with black text
@@ -239,11 +247,7 @@ pub fn run(args: OverlayArgs, verbose: bool, registry: &TempFileRegistry) -> any
         &temp_str,
     ];
 
-    let filename = args
-        .input
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
+    let filename = args.input.file_name().unwrap_or_default().to_string_lossy();
     let message = format!("Adding overlay to {}...", filename);
 
     let result = if verbose {

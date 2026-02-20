@@ -1,13 +1,13 @@
 use std::path::{Path, PathBuf};
 
-use humansize::{format_size, DECIMAL};
+use humansize::{DECIMAL, format_size};
 
 use crate::cli::CutArgs;
 use crate::commands::normalize;
-use crate::error::{last_n_lines, require_ffmpeg, AppError};
+use crate::error::{AppError, last_n_lines, require_ffmpeg};
 use crate::ffmpeg;
 use crate::silence;
-use crate::temp::{make_temp_file, TempFileRegistry};
+use crate::temp::{TempFileRegistry, make_temp_file};
 use crate::ui;
 
 const SILENCE_THRESHOLD_DB: f64 = -30.0;
@@ -57,22 +57,26 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
     };
 
     let spinner = if !verbose {
-        Some(ui::make_spinner(format!("Detecting {} in {}...", detect_label, filename)))
+        Some(ui::make_spinner(format!(
+            "Detecting {} in {}...",
+            detect_label, filename
+        )))
     } else {
         None
     };
 
-    let video_duration = ffmpeg::probe_duration_strict(&input_str).map_err(|e| AppError::StageIo {
-        stage: "probe-duration".to_string(),
-        source: e,
-    })?;
+    let video_duration =
+        ffmpeg::probe_duration_strict(&input_str).map_err(|e| AppError::StageIo {
+            stage: "probe-duration".to_string(),
+            source: e,
+        })?;
 
-    let stderr =
-        ffmpeg::run_silencedetect(&input_str, threshold, min_duration)
-            .map_err(|e| AppError::StageIo {
-                stage: "silence-detect".to_string(),
-                source: e,
-            })?;
+    let stderr = ffmpeg::run_silencedetect(&input_str, threshold, min_duration).map_err(|e| {
+        AppError::StageIo {
+            stage: "silence-detect".to_string(),
+            source: e,
+        }
+    })?;
 
     let silences = silence::parse_silencedetect(&stderr, video_duration);
 
@@ -92,7 +96,15 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
 
         let total = silence::total_silence_removed(&silences, SPEECH_PADDING);
 
-        eprintln!("{} detected in {}:", if args.breaths { "Silence and breaths" } else { "Silence" }, filename);
+        eprintln!(
+            "{} detected in {}:",
+            if args.breaths {
+                "Silence and breaths"
+            } else {
+                "Silence"
+            },
+            filename
+        );
         for s in &silences {
             let dur = s.end - s.start;
             eprintln!("  {:.1}s - {:.1}s ({:.1}s)", s.start, s.end, dur);

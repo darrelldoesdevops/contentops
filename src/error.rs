@@ -35,13 +35,17 @@ pub enum AppError {
         stderr: String,
     },
 
-    #[error("whisper model not found: {0}\n  hint: download from https://huggingface.co/ggerganov/whisper.cpp")]
+    #[error(
+        "whisper model not found: {0}\n  hint: download from https://huggingface.co/ggerganov/whisper.cpp"
+    )]
     ModelNotFound(PathBuf),
 
     #[error("no speech detected in {0}: entire video is silence")]
     NoSpeechDetected(PathBuf),
 
-    #[error("claude not found on PATH\n  hint: install Claude Code CLI, then run `contentops doctor`")]
+    #[error(
+        "claude not found on PATH\n  hint: install Claude Code CLI, then run `contentops doctor`"
+    )]
     ClaudeNotFound,
 
     #[error("error in stage '{stage}': claude CLI exited with code {code}\n{stderr}")]
@@ -52,10 +56,7 @@ pub enum AppError {
     },
 
     #[error("error in stage '{stage}': failed to parse output\n{message}")]
-    ParseFailed {
-        stage: String,
-        message: String,
-    },
+    ParseFailed { stage: String, message: String },
 }
 
 pub fn require_ffmpeg() -> Result<PathBuf, AppError> {

@@ -1,6 +1,6 @@
 use contentops::silence::{
-    build_concat_filter, parse_silencedetect, silence_to_speech, total_silence_removed,
-    SilenceInterval, SpeechInterval,
+    SilenceInterval, SpeechInterval, build_concat_filter, parse_silencedetect, silence_to_speech,
+    total_silence_removed,
 };
 
 // ── parse_silencedetect ──────────────────────────────────────────

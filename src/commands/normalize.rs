@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use crate::error::{last_n_lines, AppError};
+use crate::error::{AppError, last_n_lines};
 use crate::ffmpeg;
-use crate::temp::{make_temp_file, TempFileRegistry};
+use crate::temp::{TempFileRegistry, make_temp_file};
 use crate::ui;
 
 struct LoudnormMeasurement {
@@ -51,14 +51,14 @@ pub fn normalize_to_temp(
 ) -> anyhow::Result<PathBuf> {
     let parent_dir = input.parent().unwrap_or(Path::new("."));
     let input_str = input.to_string_lossy();
-    let filename = input
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
+    let filename = input.file_name().unwrap_or_default().to_string_lossy();
 
     // Pass 1: Measure loudness
     let measure_spinner = if !verbose {
-        Some(ui::make_spinner(format!("Analyzing loudness in {}...", filename)))
+        Some(ui::make_spinner(format!(
+            "Analyzing loudness in {}...",
+            filename
+        )))
     } else {
         None
     };
@@ -81,11 +81,9 @@ pub fn normalize_to_temp(
                 pb.finish_and_clear();
             }
 
-            parse_loudnorm_stats(&ffmpeg_output.stderr).ok_or_else(|| {
-                AppError::ParseFailed {
-                    stage: "loudnorm".into(),
-                    message: "failed to parse loudnorm measurement from FFmpeg output".into(),
-                }
+            parse_loudnorm_stats(&ffmpeg_output.stderr).ok_or_else(|| AppError::ParseFailed {
+                stage: "loudnorm".into(),
+                message: "failed to parse loudnorm measurement from FFmpeg output".into(),
             })?
         }
         Ok(ffmpeg_output) => {

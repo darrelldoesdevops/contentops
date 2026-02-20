@@ -10,7 +10,7 @@ use clap::{CommandFactory, Parser};
 use owo_colors::OwoColorize;
 
 use cli::{Cli, Commands};
-use error::{format_error, AppError};
+use error::{AppError, format_error};
 use temp::TempFileRegistry;
 
 fn main() {

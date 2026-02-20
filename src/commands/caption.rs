@@ -1,13 +1,13 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use humansize::{format_size, DECIMAL};
+use humansize::{DECIMAL, format_size};
 use serde::Deserialize;
 
 use crate::cli::CaptionArgs;
-use crate::error::{last_n_lines, require_ffmpeg, require_whisper, AppError};
+use crate::error::{AppError, last_n_lines, require_ffmpeg, require_whisper};
 use crate::ffmpeg;
-use crate::temp::{make_temp_file, TempFileRegistry};
+use crate::temp::{TempFileRegistry, make_temp_file};
 use crate::ui;
 
 #[derive(serde::Serialize)]
@@ -156,9 +156,7 @@ fn group_words_for_ass(words: &[Word]) -> Vec<AssGroup> {
                     end: w.end,
                 })
                 .collect();
-            groups.push(AssGroup {
-                words: ass_words,
-            });
+            groups.push(AssGroup { words: ass_words });
             current.clear();
         }
     }
@@ -172,9 +170,7 @@ fn group_words_for_ass(words: &[Word]) -> Vec<AssGroup> {
                 end: w.end,
             })
             .collect();
-        groups.push(AssGroup {
-            words: ass_words,
-        });
+        groups.push(AssGroup { words: ass_words });
     }
 
     groups
@@ -208,7 +204,9 @@ fn generate_ass(words: &[Word]) -> String {
 
     // Events
     output.push_str("[Events]\n");
-    output.push_str("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");
+    output.push_str(
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
+    );
 
     let groups = group_words_for_ass(words);
     for group in &groups {
@@ -295,24 +293,15 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
     let wav_str = temp_wav.to_string_lossy();
 
     let ffmpeg_args = [
-        "-i",
-        &input_str,
-        "-ar",
-        "16000",
-        "-ac",
-        "1",
-        "-f",
-        "wav",
-        &wav_str,
+        "-i", &input_str, "-ar", "16000", "-ac", "1", "-f", "wav", &wav_str,
     ];
 
     let spinner = if !verbose {
-        let filename = args
-            .input
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy();
-        Some(ui::make_spinner(format!("Extracting audio from {}...", filename)))
+        let filename = args.input.file_name().unwrap_or_default().to_string_lossy();
+        Some(ui::make_spinner(format!(
+            "Extracting audio from {}...",
+            filename
+        )))
     } else {
         eprintln!("Running: ffmpeg {}", ffmpeg_args.join(" "));
         None
@@ -418,10 +407,11 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
     let whisper_json_path = PathBuf::from(format!("{}.json", temp_wav.display()));
     registry.register(whisper_json_path.clone());
 
-    let json_content = std::fs::read_to_string(&whisper_json_path).map_err(|e| AppError::StageIo {
-        stage: "read-whisper-json".to_string(),
-        source: e,
-    })?;
+    let json_content =
+        std::fs::read_to_string(&whisper_json_path).map_err(|e| AppError::StageIo {
+            stage: "read-whisper-json".to_string(),
+            source: e,
+        })?;
 
     let whisper_data: WhisperJson =
         serde_json::from_str(&json_content).map_err(|e| AppError::ParseFailed {
@@ -596,16 +586,8 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
         .map(|m| format_size(m.len(), DECIMAL))
         .unwrap_or_else(|_| "unknown size".to_string());
 
-    eprintln!(
-        "\u{2713} Created {} ({})",
-        srt_output.display(),
-        srt_size
-    );
-    eprintln!(
-        "\u{2713} Created {} ({})",
-        json_output.display(),
-        json_size
-    );
+    eprintln!("\u{2713} Created {} ({})", srt_output.display(), srt_size);
+    eprintln!("\u{2713} Created {} ({})", json_output.display(), json_size);
 
     Ok(())
 }
