@@ -12,7 +12,7 @@ Requirements for milestone v1.1 Polish & Pipeline. Each maps to roadmap phases.
 - [x] **AUDIT-01**: Codebase passes `cargo clippy -D warnings` with zero warnings
 - [x] **AUDIT-02**: All dead code removed or justified with documented reason
 - [x] **AUDIT-03**: Duplicate spinner factories extracted to shared utility
-- [ ] **AUDIT-04**: Consistent AppError-based error handling across all commands
+- [x] **AUDIT-04**: Consistent AppError-based error handling across all commands
 - [x] **AUDIT-05**: Written findings report delivered before any code changes
 
 ### Doctor
@@ -71,7 +71,7 @@ Requirements for milestone v1.1 Polish & Pipeline. Each maps to roadmap phases.
 | AUDIT-01 | Phase 6 | Complete |
 | AUDIT-02 | Phase 6 | Complete |
 | AUDIT-03 | Phase 6 | Complete |
-| AUDIT-04 | Phase 6 | Pending |
+| AUDIT-04 | Phase 6 | Complete |
 | AUDIT-05 | Phase 6 | Complete |
 | DOCT-01 | Phase 7 | Pending |
 | DOCT-02 | Phase 7 | Pending |
