@@ -31,6 +31,7 @@ fn main() {
             let exit_code = commands::doctor::run(args.strict);
             std::process::exit(exit_code);
         }
+        Some(Commands::Pipeline(args)) => commands::pipeline::run(args, cli.verbose, &registry),
     };
 
     if let Err(err) = result {

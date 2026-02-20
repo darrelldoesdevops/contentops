@@ -26,6 +26,9 @@ pub enum Commands {
 
     /// Check prerequisites and environment readiness
     Doctor(DoctorArgs),
+
+    /// Run full pipeline: cut → caption → overlay
+    Pipeline(PipelineArgs),
 }
 
 #[derive(Args)]
@@ -115,4 +118,22 @@ pub struct OverlayArgs {
     /// How long overlay is visible (seconds, 0 = entire video)
     #[arg(long, default_value = "3.5")]
     pub duration: f64,
+}
+
+#[derive(Args)]
+pub struct PipelineArgs {
+    /// Input video file
+    pub input: PathBuf,
+
+    /// Output path (default: input_pipeline.mp4)
+    #[arg(short = 'o')]
+    pub output: Option<PathBuf>,
+
+    /// Path to whisper model file
+    #[arg(long)]
+    pub model: PathBuf,
+
+    /// Preview planned stages without executing
+    #[arg(long)]
+    pub dry_run: bool,
 }
