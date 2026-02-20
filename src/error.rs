@@ -81,7 +81,7 @@ pub fn format_error(err: &AppError) -> String {
     match err {
         AppError::FfmpegNotFound => {
             format!(
-                "{} ffmpeg not found on PATH\n  {}: brew install ffmpeg",
+                "{} ffmpeg not found on PATH\n  {}: brew install ffmpeg, then run `contentops doctor`",
                 "error:".red().bold(),
                 "hint".bold()
             )
@@ -121,7 +121,7 @@ pub fn format_error(err: &AppError) -> String {
         }
         AppError::WhisperNotFound => {
             format!(
-                "{} whisper-cli not found on PATH\n  {}: brew install whisper-cli",
+                "{} whisper-cli not found on PATH\n  {}: brew install whisper-cli, then run `contentops doctor`",
                 "error:".red().bold(),
                 "hint".bold()
             )
