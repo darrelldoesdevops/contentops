@@ -1,15 +1,14 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
 use humansize::{format_size, DECIMAL};
-use indicatif::{ProgressBar, ProgressStyle};
 use serde::Deserialize;
 
 use crate::cli::CaptionArgs;
 use crate::error::{last_n_lines, require_ffmpeg, require_whisper, AppError};
 use crate::ffmpeg;
 use crate::temp::{make_temp_file, TempFileRegistry};
+use crate::ui;
 
 #[derive(serde::Serialize)]
 struct Word {
@@ -261,21 +260,6 @@ fn format_srt(entries: &[SrtEntry]) -> String {
         .join("\n")
 }
 
-fn make_spinner(message: String) -> ProgressBar {
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::with_template("{spinner:.cyan} {msg}")
-            .unwrap()
-            .tick_strings(&[
-                "\u{2800}", "\u{2801}", "\u{2809}", "\u{2819}", "\u{281b}", "\u{283b}",
-                "\u{2839}", "\u{2838}", "\u{2830}", "\u{2820}", "\u{2800}", "\u{2713}",
-            ]),
-    );
-    pb.enable_steady_tick(Duration::from_millis(80));
-    pb.set_message(message);
-    pb
-}
-
 pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow::Result<()> {
     // 1. Validation
     require_ffmpeg()?;
@@ -328,7 +312,7 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
             .file_name()
             .unwrap_or_default()
             .to_string_lossy();
-        Some(make_spinner(format!("Extracting audio from {}...", filename)))
+        Some(ui::make_spinner(format!("Extracting audio from {}...", filename)))
     } else {
         eprintln!("Running: ffmpeg {}", ffmpeg_args.join(" "));
         None
@@ -373,7 +357,7 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
 
     // 4. Transcription via whisper-cli
     let spinner = if !verbose {
-        Some(make_spinner("Transcribing with Whisper...".to_string()))
+        Some(ui::make_spinner("Transcribing with Whisper..."))
     } else {
         eprintln!(
             "Running: whisper-cli -m {} -f {} --output-json --max-len 1 -l {}",
@@ -536,7 +520,7 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
         ];
 
         let spinner = if !verbose {
-            Some(make_spinner("Burning captions...".to_string()))
+            Some(ui::make_spinner("Burning captions..."))
         } else {
             eprintln!("Running: ffmpeg {}", burn_args.join(" "));
             None

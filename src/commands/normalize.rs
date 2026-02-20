@@ -1,11 +1,9 @@
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-
-use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::error::{last_n_lines, AppError};
 use crate::ffmpeg;
 use crate::temp::{make_temp_file, TempFileRegistry};
+use crate::ui;
 
 struct LoudnormMeasurement {
     input_i: String,
@@ -60,18 +58,7 @@ pub fn normalize_to_temp(
 
     // Pass 1: Measure loudness
     let measure_spinner = if !verbose {
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::with_template("{spinner:.cyan} {msg}")
-                .unwrap()
-                .tick_strings(&[
-                    "\u{2800}", "\u{2801}", "\u{2809}", "\u{2819}", "\u{281b}", "\u{283b}",
-                    "\u{2839}", "\u{2838}", "\u{2830}", "\u{2820}", "\u{2800}", "\u{2713}",
-                ]),
-        );
-        pb.enable_steady_tick(Duration::from_millis(80));
-        pb.set_message(format!("Analyzing loudness in {}...", filename));
-        Some(pb)
+        Some(ui::make_spinner(format!("Analyzing loudness in {}...", filename)))
     } else {
         None
     };

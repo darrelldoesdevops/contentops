@@ -1,9 +1,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
 use humansize::{format_size, DECIMAL};
-use indicatif::{ProgressBar, ProgressStyle};
 use serde::Deserialize;
 
 use crate::cli::OverlayArgs;
@@ -11,6 +9,7 @@ use crate::commands::cut::derive_output_path;
 use crate::error::{last_n_lines, require_ffmpeg, AppError};
 use crate::ffmpeg;
 use crate::temp::{make_temp_file, TempFileRegistry};
+use crate::ui;
 
 #[derive(Deserialize)]
 struct TranscriptWord {
@@ -39,18 +38,7 @@ fn generate_title(transcript_path: &Path, verbose: bool) -> anyhow::Result<Strin
     );
 
     let spinner = if !verbose {
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::with_template("{spinner:.cyan} {msg}")
-                .unwrap()
-                .tick_strings(&[
-                    "\u{2800}", "\u{2801}", "\u{2809}", "\u{2819}", "\u{281b}", "\u{283b}",
-                    "\u{2839}", "\u{2838}", "\u{2830}", "\u{2820}", "\u{2800}", "\u{2713}",
-                ]),
-        );
-        pb.enable_steady_tick(Duration::from_millis(80));
-        pb.set_message("Generating title with Claude...");
-        Some(pb)
+        Some(ui::make_spinner("Generating title with Claude..."))
     } else {
         eprintln!("Running: claude -p <prompt> --model haiku");
         None

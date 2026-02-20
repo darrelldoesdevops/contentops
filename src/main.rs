@@ -4,6 +4,7 @@ mod error;
 mod ffmpeg;
 pub mod silence;
 mod temp;
+mod ui;
 
 use clap::{CommandFactory, Parser};
 use owo_colors::OwoColorize;

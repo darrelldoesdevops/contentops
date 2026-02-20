@@ -22,14 +22,6 @@ impl TempFileRegistry {
         self.paths.lock().unwrap().retain(|p| p != path);
     }
 
-    #[allow(dead_code)]
-    pub fn cleanup_all(&self) {
-        let paths = self.paths.lock().unwrap();
-        for path in paths.iter() {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-
     pub fn clone_inner(&self) -> Arc<Mutex<Vec<PathBuf>>> {
         Arc::clone(&self.paths)
     }
