@@ -1,0 +1,72 @@
+# Requirements: contentops
+
+**Defined:** 2026-02-20
+**Core Value:** Take a raw video file and remove dead air automatically
+
+## v1.2 Requirements
+
+Requirements for milestone v1.2 Distribution & Docs. Each maps to roadmap phases.
+
+### Homebrew Tap
+
+- [ ] **BREW-01**: User can run `brew install darrelltang/tap/contentops` to install the correct architecture binary on ARM Mac
+- [ ] **BREW-02**: User can run `brew install darrelltang/tap/contentops` to install the correct architecture binary on Intel Mac
+- [ ] **BREW-03**: Formula passes `brew audit` and `brew test contentops`
+- [ ] **BREW-04**: Formula includes `caveats` block documenting whisper model and prerequisites
+
+### Auto-Update
+
+- [ ] **AUTO-01**: Pushing a version tag auto-updates the tap formula version and SHA256 within minutes
+- [ ] **AUTO-02**: Auto-update uses cross-repo `workflow_dispatch` with PAT stored as `TAP_UPDATE_TOKEN`
+
+### Documentation
+
+- [ ] **DOCS-01**: README includes prerequisites section (FFmpeg, whisper-cli, Claude CLI optional)
+- [ ] **DOCS-02**: README includes Homebrew install and direct download install paths
+- [ ] **DOCS-03**: README includes pipeline-first usage with copy-paste example
+- [ ] **DOCS-04**: README includes flag reference table for each subcommand
+- [ ] **DOCS-05**: README includes troubleshooting section derived from `doctor` and error hints
+- [ ] **DOCS-06**: All flags in README match `contentops <subcommand> --help` output exactly
+
+## Future Requirements
+
+### Distribution Enhancements
+
+- **BREW-05**: Homebrew bottle distribution (requires Homebrew CI infrastructure)
+- **DOCS-07**: README auto-generation from `clap` output
+
+## Out of Scope
+
+| Feature | Reason |
+|---------|--------|
+| homebrew-core submission | Requires cross-platform support; contentops is macOS-only |
+| Homebrew bottles | Requires Homebrew CI infrastructure; overkill for personal tap |
+| README auto-generation | Low priority for 5-subcommand tool; manual is sufficient |
+| crates.io publish | Application binary, not a library; pre-built binaries have better UX |
+| Linux/Windows builds | Hard-coded macOS font paths; no current users on other platforms |
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| BREW-01 | TBD | Pending |
+| BREW-02 | TBD | Pending |
+| BREW-03 | TBD | Pending |
+| BREW-04 | TBD | Pending |
+| AUTO-01 | TBD | Pending |
+| AUTO-02 | TBD | Pending |
+| DOCS-01 | TBD | Pending |
+| DOCS-02 | TBD | Pending |
+| DOCS-03 | TBD | Pending |
+| DOCS-04 | TBD | Pending |
+| DOCS-05 | TBD | Pending |
+| DOCS-06 | TBD | Pending |
+
+**Coverage:**
+- v1.2 requirements: 12 total
+- Mapped to phases: 0
+- Unmapped: 12
+
+---
+*Requirements defined: 2026-02-20*
+*Last updated: 2026-02-20 after initial definition*
