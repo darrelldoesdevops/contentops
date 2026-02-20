@@ -41,7 +41,10 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details.
   3. Duplicate spinner factories across cut.rs, caption.rs, overlay.rs are replaced by a single shared utility
   4. All commands use AppError-based error handling with no bare `anyhow::bail!` inconsistencies
   5. Dead code is either removed or has a documented justification comment
-**Plans**: TBD
+**Plans**: 3 plans
+- [ ] 06-01-PLAN.md -- Audit findings report (AUDIT-05)
+- [ ] 06-02-PLAN.md -- Dead code removal + spinner extraction (AUDIT-01, AUDIT-02, AUDIT-03)
+- [ ] 06-03-PLAN.md -- Consistent AppError error handling (AUDIT-04)
 
 ### Phase 7: Doctor Subcommand
 **Goal**: Users can verify their environment is ready to run any contentops command before attempting video processing
@@ -86,7 +89,7 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details.
 | 3. Caption Generation | v1.0 | 1/1 | Complete | 2026-02-20 |
 | 4. Caption Rendering | v1.0 | 1/1 | Complete | 2026-02-20 |
 | 5. Overlays and Polish | v1.0 | 2/2 | Complete | 2026-02-20 |
-| 6. Audit & Cleanup | v1.1 | 0/? | Not started | - |
+| 6. Audit & Cleanup | v1.1 | 0/3 | Not started | - |
 | 7. Doctor Subcommand | v1.1 | 0/? | Not started | - |
 | 8. Pipeline Subcommand | v1.1 | 0/? | Not started | - |
 | 9. CI/CD | v1.1 | 0/? | Not started | - |
