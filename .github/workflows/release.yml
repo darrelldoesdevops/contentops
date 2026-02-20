@@ -99,3 +99,16 @@ jobs:
             contentops-x86_64-apple-darwin.sha256
             contentops-universal-apple-darwin
             contentops-universal-apple-darwin.sha256
+
+  update-tap:
+    name: Update Homebrew Tap
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger tap update
+        run: |
+          gh workflow run update-tap.yml \
+            -f version="${GITHUB_REF_NAME#v}" \
+            -R darrelldoesdevops/homebrew-tap
+        env:
+          GH_TOKEN: ${{ secrets.TAP_UPDATE_TOKEN }}
