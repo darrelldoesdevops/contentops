@@ -23,3 +23,20 @@
 
 ---
 
+
+## v1.1 Polish & Pipeline (Shipped: 2026-02-20)
+
+**Phases completed:** 4 phases (6-9), 12 commits
+**Timeline:** 1 day (2026-02-20)
+**Codebase:** 2,873 lines of Rust, 198 files changed (+933/-99)
+
+**Key accomplishments:**
+- Audited codebase to zero clippy warnings, removed dead code, extracted 5 duplicate spinners to shared ui.rs
+- Converted all 8 bare anyhow calls to typed AppError variants with consistent colored error output
+- Added `contentops doctor` with colored prerequisite checks and per-subcommand readiness summary
+- Added `contentops pipeline` chaining cut, caption, and overlay in one command with temp dir management
+- GitHub Actions CI gating fmt, clippy, test, and cargo-audit on every push/PR
+- Tag-triggered releases shipping ARM64, Intel, and universal macOS binaries with SHA256 checksums
+
+---
+

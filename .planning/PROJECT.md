@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A Rust CLI tool that replaces CapCut for TikTok/short-form video post-production. Orchestrates FFmpeg and Whisper to handle silence removal, auto-captioning with word-by-word highlighting, and animated title overlays -- the repetitive editing tasks between shooting and publishing.
+A Rust CLI tool that replaces CapCut for TikTok/short-form video post-production. Orchestrates FFmpeg and Whisper to handle silence removal, auto-captioning with word-by-word highlighting, animated title overlays, and a one-command pipeline -- the repetitive editing tasks between shooting and publishing. Ships as pre-built macOS binaries via GitHub Releases.
 
 ## Core Value
 
@@ -17,13 +17,15 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 - Animated title overlays with auto-generation via Claude CLI -- v1.0
 - Progress bars with real-time percentage tracking -- v1.0
 - TikTok-standard H.264/AAC output at CRF 14 -- v1.0
-- Codebase audit with findings report, dead code removal, spinner consolidation, consistent error handling -- v1.1 Phase 6
+- Codebase audit with findings report, dead code removal, spinner consolidation, consistent error handling -- v1.1
+- Doctor subcommand with colored prerequisite checks and per-subcommand readiness -- v1.1
+- Pipeline subcommand chaining cut, caption, and overlay in one command -- v1.1
+- GitHub Actions CI with fmt, clippy, test, and cargo-audit gates -- v1.1
+- Tag-triggered releases with ARM64, Intel, and universal macOS binaries -- v1.1
 
 ### Active
 
-- [ ] Doctor subcommand + auto-prerequisite checks (FFmpeg, whisper-cli, Claude CLI)
-- [ ] Pipeline subcommand chaining cut → caption → overlay
-- [ ] GitHub Releases CI/CD with pre-built binaries
+(None -- start next milestone to define)
 
 ### Out of Scope
 
@@ -34,29 +36,21 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 - Configurable silence thresholds -- hardcoded defaults work well for spoken content
 - Pipeline config files (YAML/TOML) -- subcommands are sufficient
 - Batch processing -- single file at a time
+- Linux/Windows builds -- hard-coded macOS font paths, no current users on other platforms
+- Homebrew formula -- ongoing maintenance burden, GitHub Releases download is sufficient
+- crates.io publish -- application binary, not a library
+- Auto-installing missing tools -- surprising behavior, print hints instead
 
 ## Context
 
-## Current Milestone: v1.1 Polish & Pipeline
-
-**Goal:** Harden the codebase, add a one-command pipeline, and ship installable binaries.
-
-**Target features:**
-- Codebase audit with findings report, then fixes
-- Doctor subcommand + auto-prerequisite checks
-- Pipeline subcommand (cut → caption → overlay)
-- GitHub Actions CI/CD publishing pre-built binaries
-
-## Context
-
-Shipped v1.0 with 2,401 LOC Rust.
-Tech stack: Rust (clap, serde, indicatif, owo-colors), FFmpeg, whisper-cli.
-Three subcommands: `cut` (silence removal + normalize), `caption` (generate + burn), `overlay` (title cards).
-Heavily iterated on caption styling and overlay animation post-plan.
+Shipped v1.1 with 2,873 LOC Rust.
+Tech stack: Rust (clap, serde, indicatif, owo-colors, thiserror), FFmpeg, whisper-cli.
+Five subcommands: `cut` (silence removal + normalize), `caption` (generate + burn), `overlay` (title cards), `doctor` (prerequisite checks), `pipeline` (one-command workflow).
+CI/CD via GitHub Actions: fmt, clippy, test, audit on push; ARM64 + Intel + universal binaries on tag.
 
 ## Constraints
 
-- **Tech stack**: Rust with clap, serde, anyhow, indicatif
+- **Tech stack**: Rust with clap, serde, anyhow, indicatif, owo-colors
 - **Dependencies**: FFmpeg (external), whisper-cli (external), claude CLI (optional, for auto-titles)
 - **Platform**: macOS primary
 - **Output format**: H.264/AAC, CRF 14, preset slow
@@ -78,6 +72,9 @@ Heavily iterated on caption styling and overlay animation post-plan.
 | Shared spinner in src/ui.rs | Eliminates 5 duplicate factories, single place to change spinner style | Good |
 | Typed AppError for all errors | Consistent colored output, compiler-enforced exhaustiveness | Good |
 | Delete cleanup_all() | Pipeline shares TempFileRegistry directly, dead code removed | Good |
+| Pipeline calls run() directly | Preserves TempFileRegistry and typed errors, no subprocess overhead | Good |
+| Doctor exits 0 by default | Diagnostic tool, not prerequisite enforcer; --strict for exit 1 | Good |
+| macos-latest for x86_64 cross-compile | macos-13 deprecated; cross-compile from ARM runner works | Good |
 
 ---
-*Last updated: 2026-02-20 after Phase 6 complete*
+*Last updated: 2026-02-20 after v1.1 milestone*
