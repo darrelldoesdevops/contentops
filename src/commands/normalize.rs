@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use humansize::{format_size, DECIMAL};
@@ -49,26 +49,19 @@ fn parse_loudnorm_stats(stderr: &[u8]) -> Option<LoudnormMeasurement> {
     })
 }
 
-pub fn run(
-    args: NormalizeArgs,
+pub fn normalize_to_temp(
+    input: &Path,
     verbose: bool,
     registry: &TempFileRegistry,
-) -> anyhow::Result<()> {
-    require_ffmpeg()?;
+) -> anyhow::Result<PathBuf> {
+    let parent_dir = input.parent().unwrap_or(Path::new("."));
+    let input_str = input.to_string_lossy();
+    let filename = input
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
 
-    if !args.input.exists() {
-        return Err(AppError::InputNotFound(args.input).into());
-    }
-
-    let output = args
-        .output
-        .unwrap_or_else(|| derive_output_path(&args.input, "normalized"));
-
-    let parent_dir = args.input.parent().unwrap_or(Path::new("."));
-
-    let input_str = args.input.to_string_lossy();
-
-    // Pass 1: Measure loudness (always use spinner — fast analysis pass)
+    // Pass 1: Measure loudness
     let measure_spinner = if !verbose {
         let pb = ProgressBar::new_spinner();
         pb.set_style(
@@ -80,7 +73,7 @@ pub fn run(
                 ]),
         );
         pb.enable_steady_tick(Duration::from_millis(80));
-        pb.set_message("Analyzing loudness...");
+        pb.set_message(format!("Analyzing loudness in {}...", filename));
         Some(pb)
     } else {
         None
@@ -101,7 +94,7 @@ pub fn run(
     let measurement = match measure_result {
         Ok(ref ffmpeg_output) if ffmpeg_output.success => {
             if let Some(pb) = measure_spinner {
-                pb.finish_with_message("\u{2713} Loudness analysis complete");
+                pb.finish_and_clear();
             }
 
             parse_loudnorm_stats(&ffmpeg_output.stderr).ok_or_else(|| {
@@ -136,12 +129,13 @@ pub fn run(
         }
     };
 
-    // Pass 2: Apply normalization (with progress bar)
+    // Pass 2: Apply normalization
     let temp_file = make_temp_file(parent_dir, ".mp4")?;
     let temp_path = temp_file.path().to_path_buf();
+    temp_file.keep().map_err(|e| e.error)?;
     registry.register(temp_path.clone());
 
-    let temp_str = temp_path.to_string_lossy();
+    let temp_str = temp_path.to_string_lossy().to_string();
 
     let loudnorm_filter = format!(
         "loudnorm=I=-14:TP=-1.5:LRA=11:measured_I={}:measured_TP={}:measured_LRA={}:measured_thresh={}:offset={}:linear=true",
@@ -152,7 +146,7 @@ pub fn run(
         measurement.target_offset,
     );
 
-    let normalize_args = [
+    let normalize_args = vec![
         "-i",
         &input_str,
         "-af",
@@ -162,11 +156,6 @@ pub fn run(
         &temp_str,
     ];
 
-    let filename = args
-        .input
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
     let message = format!("Normalizing audio in {}...", filename);
 
     let result = if verbose {
@@ -178,21 +167,7 @@ pub fn run(
     };
 
     match result {
-        Ok(ffmpeg_output) if ffmpeg_output.success => {
-            std::fs::copy(&temp_path, &output).map_err(|e| AppError::StageIo {
-                stage: "copy-output".to_string(),
-                source: e,
-            })?;
-
-            let _ = std::fs::remove_file(&temp_path);
-            registry.remove(&temp_path);
-
-            let size = std::fs::metadata(&output)
-                .map(|m| format_size(m.len(), DECIMAL))
-                .unwrap_or_else(|_| "unknown size".to_string());
-
-            eprintln!("\u{2713} Created {} ({})", output.display(), size);
-        }
+        Ok(ffmpeg_output) if ffmpeg_output.success => Ok(temp_path),
         Ok(ffmpeg_output) => {
             let truncated_stderr = last_n_lines(&ffmpeg_output.stderr, 20);
             let code = ffmpeg_output.exit_code.unwrap_or(-1);
@@ -203,21 +178,51 @@ pub fn run(
                 String::from_utf8_lossy(&ffmpeg_output.stderr).as_ref(),
             );
 
-            return Err(AppError::FfmpegFailed {
+            Err(AppError::FfmpegFailed {
                 stage: "normalize".to_string(),
                 code,
                 stderr: truncated_stderr,
             }
-            .into());
+            .into())
         }
-        Err(io_err) => {
-            return Err(AppError::StageIo {
-                stage: "normalize".to_string(),
-                source: io_err,
-            }
-            .into());
+        Err(io_err) => Err(AppError::StageIo {
+            stage: "normalize".to_string(),
+            source: io_err,
         }
+        .into()),
     }
+}
+
+pub fn run(
+    args: NormalizeArgs,
+    verbose: bool,
+    registry: &TempFileRegistry,
+) -> anyhow::Result<()> {
+    require_ffmpeg()?;
+
+    if !args.input.exists() {
+        return Err(AppError::InputNotFound(args.input).into());
+    }
+
+    let output = args
+        .output
+        .unwrap_or_else(|| derive_output_path(&args.input, "normalized"));
+
+    let temp_path = normalize_to_temp(&args.input, verbose, registry)?;
+
+    std::fs::copy(&temp_path, &output).map_err(|e| AppError::StageIo {
+        stage: "copy-output".to_string(),
+        source: e,
+    })?;
+
+    let _ = std::fs::remove_file(&temp_path);
+    registry.remove(&temp_path);
+
+    let size = std::fs::metadata(&output)
+        .map(|m| format_size(m.len(), DECIMAL))
+        .unwrap_or_else(|_| "unknown size".to_string());
+
+    eprintln!("\u{2713} Created {} ({})", output.display(), size);
 
     Ok(())
 }
