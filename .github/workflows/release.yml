@@ -36,7 +36,7 @@ jobs:
 
   build-x86_64:
     name: Build x86_64 macOS
-    runs-on: macos-13
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
