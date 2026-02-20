@@ -20,7 +20,10 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 
 ### Active
 
-(None -- planning next milestone)
+- [ ] Codebase audit (idiomatic Rust, dead code, security, best practices) with report
+- [ ] Doctor subcommand + auto-prerequisite checks (FFmpeg, whisper-cli, Claude CLI)
+- [ ] Pipeline subcommand chaining cut → caption → overlay
+- [ ] GitHub Releases CI/CD with pre-built binaries
 
 ### Out of Scope
 
@@ -31,6 +34,18 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 - Configurable silence thresholds -- hardcoded defaults work well for spoken content
 - Pipeline config files (YAML/TOML) -- subcommands are sufficient
 - Batch processing -- single file at a time
+
+## Context
+
+## Current Milestone: v1.1 Polish & Pipeline
+
+**Goal:** Harden the codebase, add a one-command pipeline, and ship installable binaries.
+
+**Target features:**
+- Codebase audit with findings report, then fixes
+- Doctor subcommand + auto-prerequisite checks
+- Pipeline subcommand (cut → caption → overlay)
+- GitHub Actions CI/CD publishing pre-built binaries
 
 ## Context
 
@@ -62,4 +77,4 @@ Heavily iterated on caption styling and overlay animation post-plan.
 | Impact font + slide animation | Matches existing CapCut title card aesthetic | Good |
 
 ---
-*Last updated: 2026-02-20 after v1.0 milestone*
+*Last updated: 2026-02-20 after v1.1 milestone start*
