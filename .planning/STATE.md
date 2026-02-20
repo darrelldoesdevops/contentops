@@ -5,21 +5,21 @@
 See: .planning/PROJECT.md (updated 2026-02-20)
 
 **Core value:** Take a raw video file and remove dead air automatically
-**Current focus:** Phase 6 - Audit & Cleanup (v1.1)
+**Current focus:** Phase 7 - Doctor Subcommand (v1.1)
 
 ## Current Position
 
-Phase: 6 of 9 (Audit & Cleanup)
-Plan: 3 of 3 in current phase
-Status: Complete
-Last activity: 2026-02-20 -- Plan 06-03 complete (AppError consistency)
+Phase: 7 of 9 (Doctor Subcommand)
+Plan: 0 of ? in current phase
+Status: Ready to plan
+Last activity: 2026-02-20 -- Phase 6 complete (audit & cleanup, 3/3 plans)
 
-Progress: [██████░░░░░░░░░░░░░░] 5/9 phases complete (v1.0 shipped)
+Progress: [████████████░░░░░░░░] 6/9 phases complete
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 8 (v1.0)
+- Total plans completed: 11 (v1.0: 8, v1.1: 3)
 - Average duration: unknown
 - Total execution time: 2 days
 
@@ -41,6 +41,9 @@ Recent decisions affecting v1.1 work:
 - Normalize folded into cut (removes standalone subcommand — pipeline has no normalize stage)
 - Pipeline calls run() directly, not subprocess — preserves TempFileRegistry and typed errors
 - Doctor exits 0 by default — diagnostic tool, not prerequisite enforcer; --strict for exit 1
+- Deleted cleanup_all() — Pipeline shares TempFileRegistry directly, no standalone cleanup needed
+- All UI spinners via crate::ui::make_spinner — future commands must use this
+- All errors via typed AppError variants — no bare anyhow::bail! in command files
 
 ### Pending Todos
 
@@ -54,5 +57,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-20
-Stopped at: Completed 06-03-PLAN.md (AppError consistency) -- Phase 6 complete
+Stopped at: Phase 6 complete, ready for Phase 7 (Doctor subcommand)
 Resume file: None
