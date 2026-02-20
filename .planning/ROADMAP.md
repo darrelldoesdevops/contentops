@@ -63,7 +63,9 @@ Plans:
   1. Pushing `git push v*` tag triggers `update-tap` job in contentops `release.yml` after the release job completes
   2. Tap repo receives a commit with updated version string and correct SHA256 for both architectures within minutes of the GitHub Release completing
   3. `brew update && brew upgrade contentops` after a new release installs the new version with no manual formula edits
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 11-01-PLAN.md — Add update-tap job to release.yml, create update-tap.yml in homebrew-tap, store TAP_UPDATE_TOKEN secret
 
 ### Phase 12: Comprehensive README
 **Goal**: A user landing on the contentops repo can understand what the tool does, install it, and run their first pipeline command without consulting any other source
