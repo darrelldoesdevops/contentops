@@ -1,12 +1,101 @@
 use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use humansize::{format_size, DECIMAL};
+use indicatif::{ProgressBar, ProgressStyle};
+use serde::Deserialize;
 
 use crate::cli::OverlayArgs;
 use crate::commands::cut::derive_output_path;
 use crate::error::{last_n_lines, require_ffmpeg, AppError};
 use crate::ffmpeg;
 use crate::temp::{make_temp_file, TempFileRegistry};
+
+#[derive(Deserialize)]
+struct TranscriptWord {
+    word: String,
+}
+
+fn generate_title(transcript_path: &Path, verbose: bool) -> anyhow::Result<String> {
+    let json_content = std::fs::read_to_string(transcript_path).map_err(|e| AppError::StageIo {
+        stage: "read-transcription".to_string(),
+        source: e,
+    })?;
+
+    let words: Vec<TranscriptWord> = serde_json::from_str(&json_content)
+        .map_err(|e| anyhow::anyhow!("parsing transcription JSON: {}", e))?;
+
+    let transcript: String = words.iter().map(|w| w.word.as_str()).collect::<Vec<_>>().join(" ");
+
+    let prompt = format!(
+        "Generate a short, punchy title (3-8 words, max 3 lines) for this talking head video. \
+         The title should be a hook that grabs attention. \
+         Split across 2-3 lines for visual impact (use newlines). \
+         Keep each line to 2-4 words max. \
+         Return ONLY the title text with newlines, nothing else. No quotes, no explanation.\n\n\
+         Transcript: {}",
+        transcript
+    );
+
+    let spinner = if !verbose {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::with_template("{spinner:.cyan} {msg}")
+                .unwrap()
+                .tick_strings(&[
+                    "\u{2800}", "\u{2801}", "\u{2809}", "\u{2819}", "\u{281b}", "\u{283b}",
+                    "\u{2839}", "\u{2838}", "\u{2830}", "\u{2820}", "\u{2800}", "\u{2713}",
+                ]),
+        );
+        pb.enable_steady_tick(Duration::from_millis(80));
+        pb.set_message("Generating title with Claude...");
+        Some(pb)
+    } else {
+        eprintln!("Running: claude -p <prompt> --model haiku");
+        None
+    };
+
+    let output = Command::new("claude")
+        .arg("-p")
+        .arg(&prompt)
+        .arg("--model")
+        .arg("haiku")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(if verbose {
+            Stdio::inherit()
+        } else {
+            Stdio::piped()
+        })
+        .output()
+        .map_err(|e| AppError::StageIo {
+            stage: "title-generation".to_string(),
+            source: e,
+        })?;
+
+    if !output.status.success() {
+        if let Some(pb) = spinner {
+            pb.finish_and_clear();
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("claude CLI failed: {}", stderr.trim());
+    }
+
+    let title = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if title.is_empty() {
+        if let Some(pb) = spinner {
+            pb.finish_and_clear();
+        }
+        anyhow::bail!("claude returned empty title");
+    }
+
+    if let Some(pb) = spinner {
+        pb.finish_with_message("Title generated");
+    }
+
+    Ok(title)
+}
 
 fn escape_drawtext(text: &str) -> String {
     text.replace('\\', "\\\\")
@@ -15,32 +104,82 @@ fn escape_drawtext(text: &str) -> String {
         .replace(';', "\\;")
 }
 
-fn build_drawtext_filter(args: &OverlayArgs) -> String {
-    let escaped_text = escape_drawtext(&args.text);
+const DEFAULT_FONT: &str = "/System/Library/Fonts/Supplemental/Impact.ttf";
+const SLIDE_DURATION: f64 = 0.25;
+const STAGGER_DELAY: f64 = 0.08;
 
-    let y_expr = match args.position.as_str() {
-        "top" => "260".to_string(),
-        "bottom" => "(h-330)".to_string(),
-        _ => "((h-text_h)/2)".to_string(),
+fn build_title_filter(text: &str, args: &OverlayArgs) -> String {
+    let t_start = args.start;
+    let t_end = if args.duration > 0.0 {
+        args.start + args.duration
+    } else {
+        f64::MAX
     };
 
-    let mut filter = format!(
-        "drawtext=text='{}':fontsize={}:fontcolor={}:x=(w-text_w)/2:y={}",
-        escaped_text, args.font_size, args.color, y_expr
-    );
+    let y_base: u32 = match args.position.as_str() {
+        "bottom" => 1400,
+        "center" => 760,
+        _ => 60,
+    };
 
-    if let Some(ref font_path) = args.font {
-        filter.push_str(&format!(":fontfile='{}'", font_path.display()));
+    let font_path = args
+        .font
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| DEFAULT_FONT.to_string());
+
+    let final_x: i32 = 30;
+    let box_pad: u32 = 10;
+    let accent_w: u32 = 8;
+    let accent_x: i32 = final_x - accent_w as i32 - 4;
+
+    let lines: Vec<&str> = text.split('\n').collect();
+    let line_count = lines.len();
+    let line_height = args.font_size + box_pad * 2 + 4;
+
+    let mut parts: Vec<String> = Vec::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let escaped = escape_drawtext(line.trim());
+        let y = y_base + i as u32 * line_height;
+
+        // entrance: stagger by line index
+        let line_start = t_start + i as f64 * STAGGER_DELAY;
+        let slide_in_end = line_start + SLIDE_DURATION;
+
+        // exit: reverse stagger (last line exits first)
+        let exit_offset = (line_count - 1 - i) as f64 * STAGGER_DELAY;
+        let exit_start = t_end - SLIDE_DURATION - exit_offset;
+
+        // x expression: slide in from left, hold, slide out to right
+        // phase 1: off-screen left
+        // phase 2: sliding in
+        // phase 3: stationary
+        // phase 4: sliding out to right
+        let x_expr = format!(
+            "if(lt(t\\,{in_s})\\, -text_w-{bp}\\, if(lt(t\\,{in_e})\\, -text_w-{bp}+(text_w+{bp}+{fx})*(t-{in_s})/{dur}\\, if(lt(t\\,{out_s})\\, {fx}\\, {fx}+(w-{fx})*(t-{out_s})/{dur})))",
+            in_s = line_start, in_e = slide_in_end, fx = final_x, bp = box_pad,
+            dur = SLIDE_DURATION, out_s = exit_start
+        );
+
+        // white box with black text
+        parts.push(format!(
+            "drawtext=text='{txt}':fontsize={fs}:fontcolor=black:x='{x_expr}':y={y}:box=1:boxcolor=white@0.95:boxborderw={bp}:fontfile='{font}':enable='between(t,{line_s},{te})'",
+            txt = escaped, fs = args.font_size, y = y, bp = box_pad, font = font_path,
+            line_s = line_start, te = t_end
+        ));
+
+        // orange accent bar on the left (appears once text lands, hides on exit)
+        let bar_h = args.font_size + box_pad * 2;
+        let bar_y = y as i32 - box_pad as i32 + 2;
+        parts.push(format!(
+            "drawbox=x={ax}:y={bar_y}:w={aw}:h={bh}:color=#FF6B00:t=fill:enable='between(t,{in_e},{out_s})'",
+            ax = accent_x, bar_y = bar_y, aw = accent_w, bh = bar_h,
+            in_e = slide_in_end, out_s = exit_start
+        ));
     }
 
-    if args.duration > 0.0 {
-        let end = args.start + args.duration;
-        filter.push_str(&format!(":enable='between(t,{},{})'", args.start, end));
-    } else if args.start > 0.0 {
-        filter.push_str(&format!(":enable='gte(t,{})'", args.start));
-    }
-
-    filter
+    parts.join(",")
 }
 
 pub fn run(args: OverlayArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow::Result<()> {
@@ -49,6 +188,17 @@ pub fn run(args: OverlayArgs, verbose: bool, registry: &TempFileRegistry) -> any
     if !args.input.exists() {
         return Err(AppError::InputNotFound(args.input).into());
     }
+
+    let title_text = if let Some(ref transcript_path) = args.auto {
+        if !transcript_path.exists() {
+            anyhow::bail!("transcription file not found: {}", transcript_path.display());
+        }
+        let title = generate_title(transcript_path, verbose)?;
+        eprintln!("\u{2713} Generated title: \"{}\"", title);
+        title
+    } else {
+        args.text.clone().unwrap_or_default()
+    };
 
     let output = args
         .output
@@ -64,13 +214,21 @@ pub fn run(args: OverlayArgs, verbose: bool, registry: &TempFileRegistry) -> any
     let input_str = args.input.to_string_lossy();
     let temp_str = temp_path.to_string_lossy();
 
-    let drawtext_filter = build_drawtext_filter(&args);
+    let drawtext_filter = build_title_filter(&title_text, &args);
 
     let ffmpeg_args = [
         "-i",
         &input_str,
         "-vf",
         &drawtext_filter,
+        "-c:v",
+        "libx264",
+        "-crf",
+        "14",
+        "-preset",
+        "slow",
+        "-pix_fmt",
+        "yuv420p",
         "-c:a",
         "copy",
         &temp_str,

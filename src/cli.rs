@@ -70,9 +70,13 @@ pub struct OverlayArgs {
     /// Input video file
     pub input: PathBuf,
 
-    /// Text to overlay on video
-    #[arg(long)]
-    pub text: String,
+    /// Text to overlay (or use --auto to generate from transcription)
+    #[arg(long, required_unless_present = "auto")]
+    pub text: Option<String>,
+
+    /// Auto-generate title from transcription JSON file using Claude
+    #[arg(long, value_name = "TRANSCRIPTION_JSON")]
+    pub auto: Option<PathBuf>,
 
     /// Output path (default: input_overlay.mp4)
     #[arg(short = 'o')]
@@ -83,22 +87,22 @@ pub struct OverlayArgs {
     pub font: Option<PathBuf>,
 
     /// Font size in pixels
-    #[arg(long, default_value = "48")]
+    #[arg(long, default_value = "44")]
     pub font_size: u32,
 
     /// Font color (FFmpeg color name or hex)
-    #[arg(long, default_value = "white")]
+    #[arg(long, default_value = "black")]
     pub color: String,
 
     /// Position preset: top, center, bottom
-    #[arg(long, default_value = "center")]
+    #[arg(long, default_value = "top")]
     pub position: String,
 
     /// When overlay appears (seconds)
-    #[arg(long, default_value = "0.0")]
+    #[arg(long, default_value = "0.3")]
     pub start: f64,
 
     /// How long overlay is visible (seconds, 0 = entire video)
-    #[arg(long, default_value = "0.0")]
+    #[arg(long, default_value = "3.5")]
     pub duration: f64,
 }
