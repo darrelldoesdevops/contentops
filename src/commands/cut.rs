@@ -5,6 +5,7 @@ use humansize::{format_size, DECIMAL};
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::cli::CutArgs;
+use crate::commands::normalize;
 use crate::error::{last_n_lines, require_ffmpeg, AppError};
 use crate::ffmpeg;
 use crate::silence;
@@ -12,9 +13,9 @@ use crate::temp::{make_temp_file, TempFileRegistry};
 
 const SILENCE_THRESHOLD_DB: f64 = -30.0;
 const SILENCE_MIN_DURATION: f64 = 0.5;
-const SPEECH_PADDING: f64 = 0.2;
-const DEFAULT_FRAME_RATE: f64 = 30.0;
-
+const BREATH_THRESHOLD_DB: f64 = -24.0;
+const BREATH_MIN_DURATION: f64 = 0.15;
+const SPEECH_PADDING: f64 = 0.075;
 pub fn derive_output_path(input: &Path, suffix: &str) -> PathBuf {
     let parent = input.parent().unwrap_or(Path::new("."));
     let stem = input.file_stem().unwrap_or_default().to_string_lossy();
@@ -48,7 +49,6 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
         .unwrap_or_else(|| derive_output_path(&args.input, "cut"));
 
     let parent_dir = args.input.parent().unwrap_or(Path::new("."));
-    let input_str = args.input.to_string_lossy().to_string();
     let filename = args
         .input
         .file_name()
@@ -56,9 +56,24 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
         .to_string_lossy()
         .to_string();
 
-    // --- Phase 1: Detect silence ---
+    // --- Phase 1: Normalize audio ---
+    let normalized_path = normalize::normalize_to_temp(&args.input, verbose, registry)?;
+    let input_str = normalized_path.to_string_lossy().to_string();
+
+    // --- Phase 2: Detect silence ---
+    let (threshold, min_duration) = if args.breaths {
+        (BREATH_THRESHOLD_DB, BREATH_MIN_DURATION)
+    } else {
+        (SILENCE_THRESHOLD_DB, SILENCE_MIN_DURATION)
+    };
+    let detect_label = if args.breaths {
+        "silence and breaths"
+    } else {
+        "silence"
+    };
+
     let spinner = if !verbose {
-        Some(make_spinner(format!("Detecting silence in {}...", filename)))
+        Some(make_spinner(format!("Detecting {} in {}...", detect_label, filename)))
     } else {
         None
     };
@@ -69,7 +84,7 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
     })?;
 
     let stderr =
-        ffmpeg::run_silencedetect(&input_str, SILENCE_THRESHOLD_DB, SILENCE_MIN_DURATION)
+        ffmpeg::run_silencedetect(&input_str, threshold, min_duration)
             .map_err(|e| AppError::StageIo {
                 stage: "silence-detect".to_string(),
                 source: e,
@@ -81,11 +96,11 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
         if let Some(pb) = spinner {
             pb.finish_and_clear();
         }
-        eprintln!("No silence detected in {}", filename);
+        eprintln!("No {} detected in {}", detect_label, filename);
         return Ok(());
     }
 
-    // --- Phase 2: Dry-run branch ---
+    // --- Phase 3: Dry-run branch ---
     if args.dry_run {
         if let Some(pb) = spinner {
             pb.finish_and_clear();
@@ -93,7 +108,7 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
 
         let total = silence::total_silence_removed(&silences, SPEECH_PADDING);
 
-        eprintln!("Silence detected in {}:", filename);
+        eprintln!("{} detected in {}:", if args.breaths { "Silence and breaths" } else { "Silence" }, filename);
         for s in &silences {
             let dur = s.end - s.start;
             eprintln!("  {:.1}s - {:.1}s ({:.1}s)", s.start, s.end, dur);
@@ -107,9 +122,9 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
         return Ok(());
     }
 
-    // --- Phase 3: Remove silence ---
+    // --- Phase 4: Remove silence ---
     if let Some(pb) = &spinner {
-        pb.set_message("Removing silence...".to_string());
+        pb.set_message(format!("Removing {}...", detect_label));
     }
 
     let speeches = silence::silence_to_speech(&silences, video_duration, SPEECH_PADDING);
@@ -120,8 +135,7 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
         anyhow::bail!("No speech detected -- entire video is silence");
     }
 
-    let select_filter = silence::build_select_filter(&speeches, DEFAULT_FRAME_RATE);
-    let aselect_filter = silence::build_aselect_filter(&speeches);
+    let concat_filter = silence::build_concat_filter(&speeches);
 
     let temp_file = make_temp_file(parent_dir, ".mp4")?;
     let temp_path = temp_file.path().to_path_buf();
@@ -131,14 +145,18 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
     let ffmpeg_args = vec![
         "-i",
         &input_str,
-        "-vf",
-        &select_filter,
-        "-af",
-        &aselect_filter,
+        "-filter_complex",
+        &concat_filter,
+        "-map",
+        "[outv]",
+        "-map",
+        "[outa]",
         "-c:v",
         "libx264",
         "-crf",
-        "23",
+        "14",
+        "-preset",
+        "slow",
         "-pix_fmt",
         "yuv420p",
         "-c:a",
@@ -152,7 +170,7 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
         pb.finish_and_clear();
     }
 
-    let message = format!("Removing silence from {}...", filename);
+    let message = format!("Removing {} from {}...", detect_label, filename);
 
     let result = if verbose {
         eprintln!("Running: ffmpeg {}", ffmpeg_args.join(" "));
@@ -171,6 +189,8 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
 
             let _ = std::fs::remove_file(&temp_path);
             registry.remove(&temp_path);
+            let _ = std::fs::remove_file(&normalized_path);
+            registry.remove(&normalized_path);
 
             let size = std::fs::metadata(&output)
                 .map(|m| format_size(m.len(), DECIMAL))
@@ -178,7 +198,7 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
 
             let silence_total = silence::total_silence_removed(&silences, SPEECH_PADDING);
             eprintln!("\u{2713} Created {} ({})", output.display(), size);
-            eprintln!("Removed {:.1}s of silence", silence_total);
+            eprintln!("Removed {:.1}s of {}", silence_total, detect_label);
         }
         Ok(ffmpeg_output) => {
             let truncated_stderr = last_n_lines(&ffmpeg_output.stderr, 20);

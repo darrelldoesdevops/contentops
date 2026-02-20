@@ -40,6 +40,10 @@ pub struct CutArgs {
     /// Preview what would be cut without producing output
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Also detect and remove breaths (raises threshold, lowers min duration)
+    #[arg(long)]
+    pub breaths: bool,
 }
 
 #[derive(Args)]

@@ -111,37 +111,29 @@ pub fn silence_to_speech(
     merged
 }
 
-fn format_between(speeches: &[SpeechInterval]) -> String {
-    speeches
-        .iter()
-        .map(|s| format!("between(t,{:.3},{:.3})", s.start, s.end))
-        .collect::<Vec<_>>()
-        .join("+")
-}
-
-pub fn build_select_filter(speeches: &[SpeechInterval], frame_rate: f64) -> String {
+pub fn build_concat_filter(speeches: &[SpeechInterval]) -> String {
     if speeches.is_empty() {
         return String::new();
     }
-    let betweens = format_between(speeches);
-    let rate = if rate_is_integer(frame_rate) {
-        format!("{}", frame_rate as i64)
-    } else {
-        format!("{}", frame_rate)
-    };
-    format!("select='{}',setpts=N/{}/TB", betweens, rate)
-}
 
-pub fn build_aselect_filter(speeches: &[SpeechInterval]) -> String {
-    if speeches.is_empty() {
-        return String::new();
+    let n = speeches.len();
+    let mut parts = Vec::new();
+
+    for (i, s) in speeches.iter().enumerate() {
+        parts.push(format!(
+            "[0:v]trim=start={:.3}:end={:.3},setpts=PTS-STARTPTS[v{i}]",
+            s.start, s.end
+        ));
+        parts.push(format!(
+            "[0:a]atrim=start={:.3}:end={:.3},asetpts=PTS-STARTPTS[a{i}]",
+            s.start, s.end
+        ));
     }
-    let betweens = format_between(speeches);
-    format!("aselect='{}',asetpts=N/SR/TB", betweens)
-}
 
-fn rate_is_integer(rate: f64) -> bool {
-    (rate - rate.round()).abs() < 1e-9
+    let stream_labels: String = (0..n).map(|i| format!("[v{i}][a{i}]")).collect();
+    parts.push(format!("{stream_labels}concat=n={n}:v=1:a=1[outv][outa]"));
+
+    parts.join(";")
 }
 
 pub fn total_silence_removed(silences: &[SilenceInterval], padding: f64) -> f64 {

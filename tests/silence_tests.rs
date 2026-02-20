@@ -1,6 +1,6 @@
 use contentops::silence::{
-    build_aselect_filter, build_select_filter, parse_silencedetect, silence_to_speech,
-    total_silence_removed, SilenceInterval, SpeechInterval,
+    build_concat_filter, parse_silencedetect, silence_to_speech, total_silence_removed,
+    SilenceInterval, SpeechInterval,
 };
 
 // ── parse_silencedetect ──────────────────────────────────────────
@@ -281,23 +281,25 @@ fn speech_multiple_silences() {
     );
 }
 
-// ── build_select_filter ──────────────────────────────────────────
+// ── build_concat_filter ──────────────────────────────────────────
 
 #[test]
-fn select_filter_single_segment() {
+fn concat_filter_single_segment() {
     let speeches = vec![SpeechInterval {
         start: 0.0,
         end: 5.2,
     }];
-    let result = build_select_filter(&speeches, 30.0);
+    let result = build_concat_filter(&speeches);
     assert_eq!(
         result,
-        "select='between(t,0.000,5.200)',setpts=N/30/TB"
+        "[0:v]trim=start=0.000:end=5.200,setpts=PTS-STARTPTS[v0];\
+         [0:a]atrim=start=0.000:end=5.200,asetpts=PTS-STARTPTS[a0];\
+         [v0][a0]concat=n=1:v=1:a=1[outv][outa]"
     );
 }
 
 #[test]
-fn select_filter_multiple_segments() {
+fn concat_filter_multiple_segments() {
     let speeches = vec![
         SpeechInterval {
             start: 0.0,
@@ -308,56 +310,20 @@ fn select_filter_multiple_segments() {
             end: 60.0,
         },
     ];
-    let result = build_select_filter(&speeches, 30.0);
+    let result = build_concat_filter(&speeches);
     assert_eq!(
         result,
-        "select='between(t,0.000,5.200)+between(t,7.800,60.000)',setpts=N/30/TB"
+        "[0:v]trim=start=0.000:end=5.200,setpts=PTS-STARTPTS[v0];\
+         [0:a]atrim=start=0.000:end=5.200,asetpts=PTS-STARTPTS[a0];\
+         [0:v]trim=start=7.800:end=60.000,setpts=PTS-STARTPTS[v1];\
+         [0:a]atrim=start=7.800:end=60.000,asetpts=PTS-STARTPTS[a1];\
+         [v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]"
     );
 }
 
 #[test]
-fn select_filter_empty_speeches() {
-    let result = build_select_filter(&[], 30.0);
-    assert_eq!(result, "");
-}
-
-// ── build_aselect_filter ─────────────────────────────────────────
-
-#[test]
-fn aselect_filter_single_segment() {
-    let speeches = vec![SpeechInterval {
-        start: 0.0,
-        end: 5.2,
-    }];
-    let result = build_aselect_filter(&speeches);
-    assert_eq!(
-        result,
-        "aselect='between(t,0.000,5.200)',asetpts=N/SR/TB"
-    );
-}
-
-#[test]
-fn aselect_filter_multiple_segments() {
-    let speeches = vec![
-        SpeechInterval {
-            start: 0.0,
-            end: 5.2,
-        },
-        SpeechInterval {
-            start: 7.8,
-            end: 60.0,
-        },
-    ];
-    let result = build_aselect_filter(&speeches);
-    assert_eq!(
-        result,
-        "aselect='between(t,0.000,5.200)+between(t,7.800,60.000)',asetpts=N/SR/TB"
-    );
-}
-
-#[test]
-fn aselect_filter_empty_speeches() {
-    let result = build_aselect_filter(&[]);
+fn concat_filter_empty_speeches() {
+    let result = build_concat_filter(&[]);
     assert_eq!(result, "");
 }
 
