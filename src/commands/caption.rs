@@ -125,14 +125,15 @@ fn group_words_into_srt(words: &[Word]) -> Vec<SrtEntry> {
 }
 
 struct AssGroup {
-    start: f64,
-    end: f64,
     words: Vec<AssWord>,
 }
 
+const HIGHLIGHT_COLOR: &str = "&HFFFF00&";
+
 struct AssWord {
     text: String,
-    duration_cs: u32,
+    start: f64,
+    end: f64,
 }
 
 fn group_words_for_ass(words: &[Word]) -> Vec<AssGroup> {
@@ -148,18 +149,15 @@ fn group_words_for_ass(words: &[Word]) -> Vec<AssGroup> {
             || word.word.ends_with(',');
 
         if current.len() >= 5 || (current.len() >= 3 && ends_with_punctuation) {
-            let start = current[0].start;
-            let end = current.last().unwrap().end;
             let ass_words = current
                 .iter()
                 .map(|w| AssWord {
                     text: w.word.clone(),
-                    duration_cs: ((w.end - w.start) * 100.0).round() as u32,
+                    start: w.start,
+                    end: w.end,
                 })
                 .collect();
             groups.push(AssGroup {
-                start,
-                end,
                 words: ass_words,
             });
             current.clear();
@@ -167,18 +165,15 @@ fn group_words_for_ass(words: &[Word]) -> Vec<AssGroup> {
     }
 
     if !current.is_empty() {
-        let start = current[0].start;
-        let end = current.last().unwrap().end;
         let ass_words = current
             .iter()
             .map(|w| AssWord {
                 text: w.word.clone(),
-                duration_cs: ((w.end - w.start) * 100.0).round() as u32,
+                start: w.start,
+                end: w.end,
             })
             .collect();
         groups.push(AssGroup {
-            start,
-            end,
             words: ass_words,
         });
     }
@@ -209,7 +204,7 @@ fn generate_ass(words: &[Word]) -> String {
     // V4+ Styles
     output.push_str("[V4+ Styles]\n");
     output.push_str("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n");
-    output.push_str("Style: Default,Arial,48,&H00FFFFFF,&H0000FFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,3,2,0,2,40,40,320,1\n");
+    output.push_str("Style: Default,Arial,58,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,40,40,480,1\n");
     output.push('\n');
 
     // Events
@@ -218,21 +213,33 @@ fn generate_ass(words: &[Word]) -> String {
 
     let groups = group_words_for_ass(words);
     for group in &groups {
-        let start = format_ass_time(group.start);
-        let end = format_ass_time(group.end);
+        for (active_idx, _) in group.words.iter().enumerate() {
+            let start = format_ass_time(group.words[active_idx].start);
+            let end = if active_idx + 1 < group.words.len() {
+                format_ass_time(group.words[active_idx + 1].start)
+            } else {
+                format_ass_time(group.words[active_idx].end)
+            };
 
-        let mut text = String::new();
-        for (i, w) in group.words.iter().enumerate() {
-            text.push_str(&format!("{{\\kf{}}}{}", w.duration_cs, w.text));
-            if i < group.words.len() - 1 {
-                text.push(' ');
+            let mut text = String::new();
+            for (i, w) in group.words.iter().enumerate() {
+                if i == active_idx {
+                    text.push_str(&format!("{{\\c{}}}", HIGHLIGHT_COLOR));
+                    text.push_str(&w.text.to_uppercase());
+                    text.push_str("{\\c&H00FFFFFF&}");
+                } else {
+                    text.push_str(&w.text.to_uppercase());
+                }
+                if i < group.words.len() - 1 {
+                    text.push(' ');
+                }
             }
-        }
 
-        output.push_str(&format!(
-            "Dialogue: 0,{},{},Default,,0,0,0,,{}\n",
-            start, end, text
-        ));
+            output.push_str(&format!(
+                "Dialogue: 0,{},{},Default,,0,0,0,,{}\n",
+                start, end, text
+            ));
+        }
     }
 
     output
@@ -364,12 +371,12 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
         }
     }
 
-    // 4. Transcription via whisper-cpp
+    // 4. Transcription via whisper-cli
     let spinner = if !verbose {
         Some(make_spinner("Transcribing with Whisper...".to_string()))
     } else {
         eprintln!(
-            "Running: whisper-cpp -m {} -f {} --output-json --max-len 1 -l {}",
+            "Running: whisper-cli -m {} -f {} --output-json --max-len 1 -l {}",
             args.model.display(),
             wav_str,
             args.lang
@@ -377,7 +384,7 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
         None
     };
 
-    let whisper_output = Command::new("whisper-cpp")
+    let whisper_output = Command::new("whisper-cli")
         .arg("-m")
         .arg(&args.model)
         .arg("-f")
@@ -385,6 +392,7 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
         .arg("--output-json")
         .arg("--max-len")
         .arg("1")
+        .arg("--split-on-word")
         .arg("-l")
         .arg(&args.lang)
         .stdin(Stdio::null())
@@ -422,7 +430,7 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
         pb.finish_with_message("Transcription complete");
     }
 
-    // 5. Parse whisper-cpp JSON output
+    // 5. Parse whisper-cli JSON output
     let whisper_json_path = PathBuf::from(format!("{}.json", temp_wav.display()));
     registry.register(whisper_json_path.clone());
 
@@ -434,11 +442,14 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
     let whisper_data: WhisperJson =
         serde_json::from_str(&json_content).map_err(|e| anyhow::anyhow!("parsing whisper JSON: {}", e))?;
 
-    let words: Vec<Word> = whisper_data
+    let raw_words: Vec<Word> = whisper_data
         .transcription
         .iter()
         .map(|seg| {
-            let text = seg.text.trim().to_string();
+            let text = seg
+                .text
+                .trim()
+                .replace(|c: char| c.is_ascii_punctuation() && c != '\'', "");
             let start = parse_timestamp(&seg.timestamps.from);
             let end = parse_timestamp(&seg.timestamps.to);
             Word {
@@ -449,6 +460,18 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
         })
         .filter(|w| !w.word.is_empty())
         .collect();
+
+    let mut words: Vec<Word> = Vec::with_capacity(raw_words.len());
+    for w in raw_words {
+        let should_merge = !words.is_empty() && w.word.starts_with('\'');
+        if should_merge {
+            let prev = words.last_mut().unwrap();
+            prev.word.push_str(&w.word);
+            prev.end = w.end;
+        } else {
+            words.push(w);
+        }
+    }
 
     if words.is_empty() {
         eprintln!("Warning: No speech detected in video");
@@ -502,9 +525,9 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
             "-c:v",
             "libx264",
             "-crf",
-            "23",
+            "14",
             "-preset",
-            "medium",
+            "slow",
             "-pix_fmt",
             "yuv420p",
             "-c:a",
