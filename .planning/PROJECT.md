@@ -25,7 +25,8 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 
 ### Active
 
-(None -- start next milestone to define)
+- [ ] Personal Homebrew tap with auto-updating formula on release
+- [ ] Full README with install, usage, flags, output examples, troubleshooting
 
 ### Out of Scope
 
@@ -37,9 +38,17 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 - Pipeline config files (YAML/TOML) -- subcommands are sufficient
 - Batch processing -- single file at a time
 - Linux/Windows builds -- hard-coded macOS font paths, no current users on other platforms
-- Homebrew formula -- ongoing maintenance burden, GitHub Releases download is sufficient
+- Homebrew formula in homebrew-core -- review overhead, personal tap is sufficient
 - crates.io publish -- application binary, not a library
 - Auto-installing missing tools -- surprising behavior, print hints instead
+
+## Current Milestone: v1.2 Distribution & Docs
+
+**Goal:** Make contentops installable via Homebrew and fully documented.
+
+**Target features:**
+- Personal Homebrew tap with auto-updating formula on release
+- Full README with install, usage, all flags/options, output examples, troubleshooting
 
 ## Context
 
@@ -77,4 +86,4 @@ CI/CD via GitHub Actions: fmt, clippy, test, audit on push; ARM64 + Intel + univ
 | macos-latest for x86_64 cross-compile | macos-13 deprecated; cross-compile from ARM runner works | Good |
 
 ---
-*Last updated: 2026-02-20 after v1.1 milestone*
+*Last updated: 2026-02-20 after v1.2 milestone start*

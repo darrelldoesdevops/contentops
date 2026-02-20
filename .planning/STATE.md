@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-20)
 
 **Core value:** Take a raw video file and remove dead air automatically
-**Current focus:** Planning next milestone
+**Current focus:** v1.2 Distribution & Docs
 
 ## Current Position
 
-Phase: 9 of 9 (all complete)
-Plan: N/A
-Status: Milestone v1.1 shipped
-Last activity: 2026-02-20 -- v1.1 milestone complete
+Phase: Not started (defining requirements)
+Plan: --
+Status: Defining requirements
+Last activity: 2026-02-20 -- Milestone v1.2 started
 
-Progress: [████████████████████] 9/9 phases complete
+Progress: [░░░░░░░░░░░░░░░░░░░░] 0/? phases complete
 
 ## Performance Metrics
 
