@@ -27,6 +27,7 @@ fn main() {
         Some(Commands::Cut(args)) => commands::cut::run(args, cli.verbose, &registry),
         Some(Commands::Caption(args)) => commands::caption::run(args, cli.verbose, &registry),
         Some(Commands::Overlay(args)) => commands::overlay::run(args, cli.verbose, &registry),
+        Some(Commands::Pipeline(args)) => commands::pipeline::run(args, cli.verbose, &registry),
     };
 
     if let Err(err) = result {
