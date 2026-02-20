@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::cli::OverlayArgs;
 use crate::commands::cut::derive_output_path;
-use crate::error::{last_n_lines, require_ffmpeg, AppError};
+use crate::error::{last_n_lines, require_claude, require_ffmpeg, AppError};
 use crate::ffmpeg;
 use crate::temp::{make_temp_file, TempFileRegistry};
 use crate::ui;
@@ -188,6 +188,10 @@ pub fn run(args: OverlayArgs, verbose: bool, registry: &TempFileRegistry) -> any
 
     if !args.input.exists() {
         return Err(AppError::InputNotFound(args.input).into());
+    }
+
+    if args.auto.is_some() {
+        require_claude()?;
     }
 
     let title_text = if let Some(ref transcript_path) = args.auto {
