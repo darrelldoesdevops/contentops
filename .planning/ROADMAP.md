@@ -5,6 +5,7 @@
 - **v1.0 MVP** -- Phases 1-5 (shipped 2026-02-20)
 - **v1.1 Polish & Pipeline** -- Phases 6-9 (shipped 2026-02-20)
 - **v1.2 Distribution & Docs** -- Phases 10-12 (shipped 2026-02-21)
+- **v1.3 Cross-Platform** -- Phases 13-15 (planned)
 
 ## Phases
 
@@ -43,6 +44,47 @@ See: `.planning/milestones/v1.1-ROADMAP.md` for full details.
 See: `.planning/milestones/v1.2-ROADMAP.md` for full details.
 
 </details>
+
+### v1.3 Cross-Platform (Planned)
+
+- [ ] **Phase 13: Platform-Portable Code** - Fix macOS-specific code paths: platform-conditional default font, Windows `/dev/null` → `NUL`, platform-aware error hints
+- [ ] **Phase 14: Linux & Windows CI/Release** - Add `ubuntu-latest` and `windows-latest` build matrix to release.yml, produce Linux and Windows binaries alongside macOS
+- [ ] **Phase 15: Cross-Platform Docs & Install** - Update README with Linux/Windows install paths, platform-specific prerequisites, update doctor hints
+
+## Phase Details
+
+### Phase 13: Platform-Portable Code
+**Goal**: contentops compiles and runs correctly on Linux and Windows without `--font` workaround
+**Depends on**: Nothing (first phase of v1.3)
+**Requirements**: XPLAT-01, XPLAT-02, XPLAT-03
+**Success Criteria** (what must be TRUE):
+  1. `cargo build` succeeds on `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc` targets
+  2. Default font path resolves to a valid system font on Linux, Windows, and macOS
+  3. `normalize` command uses platform-appropriate null device (`/dev/null` on Unix, `NUL` on Windows)
+  4. Error hints show platform-appropriate install commands (brew on macOS, apt/choco on Linux/Windows)
+**Plans:** 1 plan
+Plans:
+- [ ] 13-01-PLAN.md -- Platform-conditional font, null muxer, error hints
+
+### Phase 14: Linux & Windows CI/Release
+**Goal**: Tag push produces downloadable binaries for Linux and Windows alongside existing macOS binaries
+**Depends on**: Phase 13 (code must compile cross-platform before building release binaries)
+**Requirements**: XPLAT-04, XPLAT-05
+**Success Criteria** (what must be TRUE):
+  1. `release.yml` build matrix includes `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc`
+  2. GitHub Release contains Linux and Windows binaries alongside existing macOS binaries
+  3. CI runs tests on all three platforms
+**Plans**: TBD
+
+### Phase 15: Cross-Platform Docs & Install
+**Goal**: README covers Linux and Windows users with install instructions and platform-specific prerequisites
+**Depends on**: Phase 13 (portable code), Phase 14 (binaries available)
+**Requirements**: XPLAT-06
+**Success Criteria** (what must be TRUE):
+  1. README includes Linux and Windows install paths (direct download curl/Invoke-WebRequest one-liners)
+  2. Prerequisites section shows platform-specific install commands (apt, choco alongside brew)
+  3. Doctor subcommand hints are platform-aware
+**Plans**: TBD
 
 ## Progress
 
