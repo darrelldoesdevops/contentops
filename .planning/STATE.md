@@ -10,17 +10,17 @@ See: .planning/PROJECT.md (updated 2026-02-20)
 ## Current Position
 
 Phase: 12 of 12 (Comprehensive README)
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-02-21 -- Phase 11 complete, transitioning to Phase 12
+Plan: 01 complete (1/1 plans done)
+Status: Phase complete
+Last activity: 2026-02-21 -- Phase 12 complete: README.md written with hero example, flag tables, troubleshooting
 
-Progress: [████████████░░░░░░░░] 2/3 v1.2 phases complete
+Progress: [████████████████████] 3/3 v1.2 phases complete
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 13 (v1.0: 8, v1.1: 3 formal + 3 quick, v1.2: 2)
-- Total execution time: 2 days + 4min
+- Total plans completed: 14 (v1.0: 8, v1.1: 3 formal + 3 quick, v1.2: 3)
+- Total execution time: 2 days + 5min
 - Milestones shipped: 2 (v1.0, v1.1)
 
 **By Milestone:**
@@ -29,7 +29,7 @@ Progress: [████████████░░░░░░░░] 2/3 v1.
 |-----------|--------|-------|----------|
 | v1.0 MVP | 5 | 8 | 2 days |
 | v1.1 Polish & Pipeline | 4 | 3+3 quick | 1 day |
-| v1.2 Distribution & Docs | 3 | 2 done | 4 min |
+| v1.2 Distribution & Docs | 3 | 3 done | 5 min |
 
 ## Accumulated Context
 
@@ -46,6 +46,7 @@ Key decisions for v1.2:
 - [Phase 10-homebrew-tap-formula]: Inline sentinel comments (=== AUTO-UPDATE: FIELD ===) for sed-based Phase 11 formula patching
 - [Phase 10-homebrew-tap-formula]: GitHub API asset endpoint required for SHA256 sidecar download (direct release asset URLs returned 404)
 - [Phase 11-github-actions-auto-update]: asset.digest for SHA256 instead of sidecar download; verify step catches incomplete patches; git diff --cached --quiet for idempotent re-runs
+- [Phase 12-comprehensive-readme]: README from live --help output; flag tables match CLI exactly; troubleshooting from error.rs hints
 
 ### Pending Todos
 
@@ -58,5 +59,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-21
-Stopped at: Phase 12 context gathered
-Resume file: .planning/phases/12-comprehensive-readme/12-CONTEXT.md
+Stopped at: Phase 12 complete -- v1.2 milestone complete
+Resume file: None

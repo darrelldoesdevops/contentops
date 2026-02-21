@@ -37,7 +37,7 @@ See: `.planning/milestones/v1.1-ROADMAP.md` for full details.
 
 - [x] **Phase 10: Homebrew Tap + Formula** - Create `darrelldoesdevops/homebrew-tap` repo with architecture-conditional formula; verify `brew install` works on ARM and Intel (completed 2026-02-20)
 - [x] **Phase 11: GitHub Actions Auto-Update** - Wire cross-repo `workflow_dispatch` so pushing a version tag auto-updates the tap formula within minutes (completed 2026-02-21)
-- [ ] **Phase 12: Comprehensive README** - Write `README.md` from live `--help` output: prerequisites, Homebrew install, pipeline-first usage, flag reference tables, troubleshooting
+- [x] **Phase 12: Comprehensive README** - Write `README.md` from live `--help` output: prerequisites, Homebrew install, pipeline-first usage, flag reference tables, troubleshooting (completed 2026-02-21)
 
 ## Phase Details
 
@@ -94,4 +94,4 @@ Plans:
 | 9. CI/CD | v1.1 | quick | Complete | 2026-02-20 |
 | 10. Homebrew Tap + Formula | 1/1 | Complete    | 2026-02-20 | - |
 | 11. GitHub Actions Auto-Update | 1/1 | Complete    | 2026-02-21 | - |
-| 12. Comprehensive README | 0/1 | Planned    |  | - |
+| 12. Comprehensive README | 1/1 | Complete   | 2026-02-21 | - |

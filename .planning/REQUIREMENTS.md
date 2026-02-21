@@ -21,12 +21,12 @@ Requirements for milestone v1.2 Distribution & Docs. Each maps to roadmap phases
 
 ### Documentation
 
-- [ ] **DOCS-01**: README includes prerequisites section (FFmpeg, whisper-cli, Claude CLI optional)
-- [ ] **DOCS-02**: README includes Homebrew install and direct download install paths
-- [ ] **DOCS-03**: README includes pipeline-first usage with copy-paste example
-- [ ] **DOCS-04**: README includes flag reference table for each subcommand
-- [ ] **DOCS-05**: README includes troubleshooting section derived from `doctor` and error hints
-- [ ] **DOCS-06**: All flags in README match `contentops <subcommand> --help` output exactly
+- [x] **DOCS-01**: README includes prerequisites section (FFmpeg, whisper-cli, Claude CLI optional)
+- [x] **DOCS-02**: README includes Homebrew install and direct download install paths
+- [x] **DOCS-03**: README includes pipeline-first usage with copy-paste example
+- [x] **DOCS-04**: README includes flag reference table for each subcommand
+- [x] **DOCS-05**: README includes troubleshooting section derived from `doctor` and error hints
+- [x] **DOCS-06**: All flags in README match `contentops <subcommand> --help` output exactly
 
 ## Future Requirements
 
@@ -55,12 +55,12 @@ Requirements for milestone v1.2 Distribution & Docs. Each maps to roadmap phases
 | BREW-04 | Phase 10 | Complete |
 | AUTO-01 | Phase 11 | Complete |
 | AUTO-02 | Phase 11 | Complete |
-| DOCS-01 | Phase 12 | Pending |
-| DOCS-02 | Phase 12 | Pending |
-| DOCS-03 | Phase 12 | Pending |
-| DOCS-04 | Phase 12 | Pending |
-| DOCS-05 | Phase 12 | Pending |
-| DOCS-06 | Phase 12 | Pending |
+| DOCS-01 | Phase 12 | Complete |
+| DOCS-02 | Phase 12 | Complete |
+| DOCS-03 | Phase 12 | Complete |
+| DOCS-04 | Phase 12 | Complete |
+| DOCS-05 | Phase 12 | Complete |
+| DOCS-06 | Phase 12 | Complete |
 
 **Coverage:**
 - v1.2 requirements: 12 total
