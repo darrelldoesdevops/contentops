@@ -11,8 +11,11 @@ env:
 
 jobs:
   check:
-    name: Check
-    runs-on: macos-latest
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
