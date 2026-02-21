@@ -6,7 +6,7 @@
     "commit_docs": true
   },
   "workflow": {
-    "auto_advance": true,
+    "auto_advance": false,
     "research": true
   }
 }

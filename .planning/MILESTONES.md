@@ -40,3 +40,18 @@
 
 ---
 
+
+## v1.2 Distribution & Docs (Shipped: 2026-02-21)
+
+**Phases completed:** 3 phases (10-12), 3 plans
+**Timeline:** 2 days (2026-02-20 -> 2026-02-21)
+**Codebase:** 785 lines of Rust, 2 non-planning files changed (+163 insertions)
+
+**Key accomplishments:**
+- Homebrew tap with architecture-conditional formula distributing ARM64 and Intel binaries via `brew install darrelldoesdevops/tap/contentops`
+- Cross-repo GitHub Actions automation: version tag push auto-updates tap formula version and SHA256 via workflow_dispatch
+- TAP_UPDATE_TOKEN classic PAT for cross-repo dispatch authentication
+- 150-line README with pipeline hero example, prerequisites, dual install paths, flag reference tables for all 5 subcommands, and error-to-fix troubleshooting
+
+---
+

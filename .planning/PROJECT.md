@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A Rust CLI tool that replaces CapCut for TikTok/short-form video post-production. Orchestrates FFmpeg and Whisper to handle silence removal, auto-captioning with word-by-word highlighting, animated title overlays, and a one-command pipeline -- the repetitive editing tasks between shooting and publishing. Ships as pre-built macOS binaries via GitHub Releases.
+A Rust CLI tool that replaces CapCut for TikTok/short-form video post-production. Orchestrates FFmpeg and Whisper to handle silence removal, auto-captioning with word-by-word highlighting, animated title overlays, and a one-command pipeline -- the repetitive editing tasks between shooting and publishing. Installable via Homebrew (`brew install darrelldoesdevops/tap/contentops`) with auto-updating formula on each release.
 
 ## Core Value
 
@@ -22,11 +22,12 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 - Pipeline subcommand chaining cut, caption, and overlay in one command -- v1.1
 - GitHub Actions CI with fmt, clippy, test, and cargo-audit gates -- v1.1
 - Tag-triggered releases with ARM64, Intel, and universal macOS binaries -- v1.1
+- Homebrew tap with architecture-conditional formula and cross-repo auto-update on release -- v1.2
+- Comprehensive README with hero example, flag reference tables, and troubleshooting -- v1.2
 
 ### Active
 
-- [ ] Personal Homebrew tap with auto-updating formula on release
-- [ ] Full README with install, usage, flags, output examples, troubleshooting
+(None -- planning next milestone)
 
 ### Out of Scope
 
@@ -42,20 +43,13 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 - crates.io publish -- application binary, not a library
 - Auto-installing missing tools -- surprising behavior, print hints instead
 
-## Current Milestone: v1.2 Distribution & Docs
-
-**Goal:** Make contentops installable via Homebrew and fully documented.
-
-**Target features:**
-- Personal Homebrew tap with auto-updating formula on release
-- Full README with install, usage, all flags/options, output examples, troubleshooting
-
 ## Context
 
-Shipped v1.1 with 2,873 LOC Rust.
+Shipped v1.2 with 785 LOC Rust.
 Tech stack: Rust (clap, serde, indicatif, owo-colors, thiserror), FFmpeg, whisper-cli.
 Five subcommands: `cut` (silence removal + normalize), `caption` (generate + burn), `overlay` (title cards), `doctor` (prerequisite checks), `pipeline` (one-command workflow).
-CI/CD via GitHub Actions: fmt, clippy, test, audit on push; ARM64 + Intel + universal binaries on tag.
+Distribution: Homebrew tap (`darrelldoesdevops/tap/contentops`) with auto-updating formula, plus direct download curl one-liners.
+CI/CD via GitHub Actions: fmt, clippy, test, audit on push; ARM64 + Intel + universal binaries on tag; cross-repo workflow_dispatch updates tap formula on release.
 
 ## Constraints
 
@@ -84,6 +78,11 @@ CI/CD via GitHub Actions: fmt, clippy, test, audit on push; ARM64 + Intel + univ
 | Pipeline calls run() directly | Preserves TempFileRegistry and typed errors, no subprocess overhead | Good |
 | Doctor exits 0 by default | Diagnostic tool, not prerequisite enforcer; --strict for exit 1 | Good |
 | macos-latest for x86_64 cross-compile | macos-13 deprecated; cross-compile from ARM runner works | Good |
+| on_arm/on_intel DSL + Hardware::CPU in install | Two scopes: DSL for top-level url/sha256, Hardware::CPU for runtime binary rename | Good |
+| Sentinel comments for sed patching | Inline `# === AUTO-UPDATE: FIELD ===` enables simple sed-based formula updates | Good |
+| asset.digest for SHA256 | No binary download needed; gh api returns digest directly | Good |
+| Cross-repo workflow_dispatch | Classic PAT with repo+workflow scopes triggers tap update from release.yml | Good |
+| README from live --help output | Flag tables match CLI exactly; prevents documentation drift | Good |
 
 ---
-*Last updated: 2026-02-20 after v1.2 milestone start*
+*Last updated: 2026-02-21 after v1.2 milestone*
