@@ -10,11 +10,11 @@ contentops pipeline --model ~/models/ggml-base.en.bin raw-video.mp4
 
 ## Prerequisites
 
-| Tool | Install | Used by |
-|------|---------|---------|
-| FFmpeg | `brew install ffmpeg` | All commands |
-| whisper-cli | `brew install whisper-cli` | `caption`, `pipeline` |
-| Claude CLI | [claude.com/claude-code](https://claude.com/claude-code) | `overlay --auto` (optional) |
+| Tool | macOS | Linux | Windows | Used by |
+|------|-------|-------|---------|---------|
+| FFmpeg | `brew install ffmpeg` | `apt install ffmpeg` | `choco install ffmpeg` | All commands |
+| whisper-cli | `brew install whisper-cli` | [Build from source](https://github.com/ggerganov/whisper.cpp) | [Build from source](https://github.com/ggerganov/whisper.cpp) | `caption`, `pipeline` |
+| Claude CLI | [claude.com/claude-code](https://claude.com/claude-code) | [claude.com/claude-code](https://claude.com/claude-code) | [claude.com/claude-code](https://claude.com/claude-code) | `overlay --auto` (optional) |
 
 Download a Whisper model for transcription:
 
@@ -39,13 +39,29 @@ curl -L -o /usr/local/bin/contentops \
   && chmod +x /usr/local/bin/contentops
 ```
 
-**Direct download (Intel):**
+**Direct download (Intel Mac):**
 
 ```bash
 curl -L -o /usr/local/bin/contentops \
   https://github.com/darrelldoesdevops/contentops/releases/latest/download/contentops-x86_64-apple-darwin \
   && chmod +x /usr/local/bin/contentops
 ```
+
+**Direct download (Linux x86_64):**
+
+```bash
+curl -L -o /usr/local/bin/contentops \
+  https://github.com/darrelldoesdevops/contentops/releases/latest/download/contentops-x86_64-unknown-linux-gnu \
+  && chmod +x /usr/local/bin/contentops
+```
+
+**Direct download (Windows x86_64):**
+
+```powershell
+Invoke-WebRequest -Uri https://github.com/darrelldoesdevops/contentops/releases/latest/download/contentops-x86_64-pc-windows-msvc.exe -OutFile contentops.exe
+```
+
+Move `contentops.exe` to a directory on your PATH.
 
 Verify: `contentops doctor`
 
@@ -139,8 +155,8 @@ contentops doctor
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| `ffmpeg not found on PATH` | FFmpeg not installed | `brew install ffmpeg` |
-| `whisper-cli not found on PATH` | whisper-cli not installed | `brew install whisper-cli` |
+| `ffmpeg not found on PATH` | FFmpeg not installed | `brew install ffmpeg` (macOS), `apt install ffmpeg` (Linux), `choco install ffmpeg` (Windows) |
+| `whisper-cli not found on PATH` | whisper-cli not installed | `brew install whisper-cli` (macOS), [build from source](https://github.com/ggerganov/whisper.cpp) (Linux/Windows) |
 | `whisper model not found: <path>` | Model file missing or wrong path | Download from [huggingface.co/ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp) |
 | `claude not found on PATH` | Claude CLI not installed (only needed for `overlay --auto`) | Install [Claude Code CLI](https://claude.com/claude-code) |
 | `input file not found: <path>` | File path is wrong | Check the path and try again |
