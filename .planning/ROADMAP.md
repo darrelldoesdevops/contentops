@@ -94,4 +94,4 @@ Plans:
 | 9. CI/CD | v1.1 | quick | Complete | 2026-02-20 |
 | 10. Homebrew Tap + Formula | 1/1 | Complete    | 2026-02-20 | - |
 | 11. GitHub Actions Auto-Update | 1/1 | Complete    | 2026-02-21 | - |
-| 12. Comprehensive README | v1.2 | 0/? | Not started | - |
+| 12. Comprehensive README | 0/1 | Planned    |  | - |
