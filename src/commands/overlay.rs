@@ -109,7 +109,32 @@ fn escape_drawtext(text: &str) -> String {
         .replace(';', "\\;")
 }
 
+#[cfg(target_os = "macos")]
 const DEFAULT_FONT: &str = "/System/Library/Fonts/Supplemental/Impact.ttf";
+
+#[cfg(target_os = "windows")]
+const DEFAULT_FONT: &str = "C:\\Windows\\Fonts\\impact.ttf";
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const FONT_CANDIDATES: &[&str] = &[
+    "/usr/share/fonts/truetype/msttcorefonts/Impact.ttf",
+    "/usr/share/fonts/msttcorefonts/Impact.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+];
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn resolve_default_font() -> String {
+    for path in FONT_CANDIDATES {
+        if std::path::Path::new(path).exists() {
+            return path.to_string();
+        }
+    }
+    FONT_CANDIDATES[0].to_string()
+}
+
 const SLIDE_DURATION: f64 = 0.25;
 const STAGGER_DELAY: f64 = 0.08;
 
@@ -131,7 +156,12 @@ fn build_title_filter(text: &str, args: &OverlayArgs) -> String {
         .font
         .as_ref()
         .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| DEFAULT_FONT.to_string());
+        .unwrap_or_else(|| {
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            { DEFAULT_FONT.to_string() }
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            { resolve_default_font() }
+        });
 
     let final_x: i32 = 30;
     let box_pad: u32 = 10;

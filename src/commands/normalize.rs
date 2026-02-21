@@ -70,7 +70,7 @@ pub fn normalize_to_temp(
         "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json",
         "-f",
         "null",
-        "/dev/null",
+        "-",
     ];
 
     let measure_result = ffmpeg::run_ffmpeg(&measure_args);
