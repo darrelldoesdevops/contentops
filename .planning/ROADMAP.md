@@ -49,7 +49,7 @@ See: `.planning/milestones/v1.2-ROADMAP.md` for full details.
 
 - [x] **Phase 13: Platform-Portable Code** - Fix macOS-specific code paths: platform-conditional default font, Windows `/dev/null` → `NUL`, platform-aware error hints (completed 2026-02-21)
 - [x] **Phase 14: Linux & Windows CI/Release** - Add `ubuntu-latest` and `windows-latest` build matrix to release.yml, produce Linux and Windows binaries alongside macOS (completed 2026-02-21)
-- [ ] **Phase 15: Cross-Platform Docs & Install** - Update README with Linux/Windows install paths, platform-specific prerequisites, update doctor hints
+- [x] **Phase 15: Cross-Platform Docs & Install** - Update README with Linux/Windows install paths, platform-specific prerequisites, update doctor hints (completed 2026-02-21)
 
 ## Phase Details
 
