@@ -47,7 +47,7 @@ See: `.planning/milestones/v1.2-ROADMAP.md` for full details.
 
 ### v1.3 Cross-Platform (Planned)
 
-- [ ] **Phase 13: Platform-Portable Code** - Fix macOS-specific code paths: platform-conditional default font, Windows `/dev/null` → `NUL`, platform-aware error hints
+- [x] **Phase 13: Platform-Portable Code** - Fix macOS-specific code paths: platform-conditional default font, Windows `/dev/null` → `NUL`, platform-aware error hints (completed 2026-02-21)
 - [ ] **Phase 14: Linux & Windows CI/Release** - Add `ubuntu-latest` and `windows-latest` build matrix to release.yml, produce Linux and Windows binaries alongside macOS
 - [ ] **Phase 15: Cross-Platform Docs & Install** - Update README with Linux/Windows install paths, platform-specific prerequisites, update doctor hints
 
@@ -62,7 +62,7 @@ See: `.planning/milestones/v1.2-ROADMAP.md` for full details.
   2. Default font path resolves to a valid system font on Linux, Windows, and macOS
   3. `normalize` command uses platform-appropriate null device (`/dev/null` on Unix, `NUL` on Windows)
   4. Error hints show platform-appropriate install commands (brew on macOS, apt/choco on Linux/Windows)
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
 - [ ] 13-01-PLAN.md -- Platform-conditional font, null muxer, error hints
 
