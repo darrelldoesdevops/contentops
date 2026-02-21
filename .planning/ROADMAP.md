@@ -36,7 +36,7 @@ See: `.planning/milestones/v1.1-ROADMAP.md` for full details.
 ### v1.2 Distribution & Docs (In Progress)
 
 - [x] **Phase 10: Homebrew Tap + Formula** - Create `darrelldoesdevops/homebrew-tap` repo with architecture-conditional formula; verify `brew install` works on ARM and Intel (completed 2026-02-20)
-- [ ] **Phase 11: GitHub Actions Auto-Update** - Wire cross-repo `workflow_dispatch` so pushing a version tag auto-updates the tap formula within minutes
+- [x] **Phase 11: GitHub Actions Auto-Update** - Wire cross-repo `workflow_dispatch` so pushing a version tag auto-updates the tap formula within minutes (completed 2026-02-21)
 - [ ] **Phase 12: Comprehensive README** - Write `README.md` from live `--help` output: prerequisites, Homebrew install, pipeline-first usage, flag reference tables, troubleshooting
 
 ## Phase Details
@@ -63,7 +63,7 @@ Plans:
   1. Pushing `git push v*` tag triggers `update-tap` job in contentops `release.yml` after the release job completes
   2. Tap repo receives a commit with updated version string and correct SHA256 for both architectures within minutes of the GitHub Release completing
   3. `brew update && brew upgrade contentops` after a new release installs the new version with no manual formula edits
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
 - [ ] 11-01-PLAN.md — Add update-tap job to release.yml, create update-tap.yml in homebrew-tap, store TAP_UPDATE_TOKEN secret
 
@@ -93,5 +93,5 @@ Plans:
 | 8. Pipeline Subcommand | v1.1 | quick | Complete | 2026-02-20 |
 | 9. CI/CD | v1.1 | quick | Complete | 2026-02-20 |
 | 10. Homebrew Tap + Formula | 1/1 | Complete    | 2026-02-20 | - |
-| 11. GitHub Actions Auto-Update | v1.2 | 0/? | Not started | - |
+| 11. GitHub Actions Auto-Update | 1/1 | Complete   | 2026-02-21 | - |
 | 12. Comprehensive README | v1.2 | 0/? | Not started | - |

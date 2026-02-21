@@ -16,8 +16,8 @@ Requirements for milestone v1.2 Distribution & Docs. Each maps to roadmap phases
 
 ### Auto-Update
 
-- [ ] **AUTO-01**: Pushing a version tag auto-updates the tap formula version and SHA256 within minutes
-- [ ] **AUTO-02**: Auto-update uses cross-repo `workflow_dispatch` with PAT stored as `TAP_UPDATE_TOKEN`
+- [x] **AUTO-01**: Pushing a version tag auto-updates the tap formula version and SHA256 within minutes
+- [x] **AUTO-02**: Auto-update uses cross-repo `workflow_dispatch` with PAT stored as `TAP_UPDATE_TOKEN`
 
 ### Documentation
 
@@ -53,8 +53,8 @@ Requirements for milestone v1.2 Distribution & Docs. Each maps to roadmap phases
 | BREW-02 | Phase 10 | Complete |
 | BREW-03 | Phase 10 | Complete |
 | BREW-04 | Phase 10 | Complete |
-| AUTO-01 | Phase 11 | Pending |
-| AUTO-02 | Phase 11 | Pending |
+| AUTO-01 | Phase 11 | Complete |
+| AUTO-02 | Phase 11 | Complete |
 | DOCS-01 | Phase 12 | Pending |
 | DOCS-02 | Phase 12 | Pending |
 | DOCS-03 | Phase 12 | Pending |
