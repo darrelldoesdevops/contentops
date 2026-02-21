@@ -27,18 +27,24 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 
 ### Active
 
-(None -- planning next milestone)
+- Linux and Windows binary support (v1.3)
+- Cross-platform CI/release matrix
+- Cross-platform docs and install paths
+
+### Recently Validated
+
+- Platform-conditional font paths (macOS/Windows const, Linux runtime probe) -- Phase 13
+- Cross-platform null muxer (`-f null -` instead of `/dev/null`) -- Phase 13
+- Platform-aware error hints (brew/apt/choco) -- Phase 13
 
 ### Out of Scope
 
 - GUI or web interface -- CLI-only personal tool
 - Cloud/API transcription -- local Whisper only for privacy and cost
 - Resolution/aspect ratio conversion -- TikTok standard only
-- Cross-platform testing -- macOS primary
 - Configurable silence thresholds -- hardcoded defaults work well for spoken content
 - Pipeline config files (YAML/TOML) -- subcommands are sufficient
 - Batch processing -- single file at a time
-- Linux/Windows builds -- hard-coded macOS font paths, no current users on other platforms
 - Homebrew formula in homebrew-core -- review overhead, personal tap is sufficient
 - crates.io publish -- application binary, not a library
 - Auto-installing missing tools -- surprising behavior, print hints instead
@@ -55,7 +61,7 @@ CI/CD via GitHub Actions: fmt, clippy, test, audit on push; ARM64 + Intel + univ
 
 - **Tech stack**: Rust with clap, serde, anyhow, indicatif, owo-colors
 - **Dependencies**: FFmpeg (external), whisper-cli (external), claude CLI (optional, for auto-titles)
-- **Platform**: macOS primary
+- **Platform**: macOS primary, Linux/Windows portable (Phase 13+)
 - **Output format**: H.264/AAC, CRF 14, preset slow
 
 ## Key Decisions
@@ -83,6 +89,9 @@ CI/CD via GitHub Actions: fmt, clippy, test, audit on push; ARM64 + Intel + univ
 | asset.digest for SHA256 | No binary download needed; gh api returns digest directly | Good |
 | Cross-repo workflow_dispatch | Classic PAT with repo+workflow scopes triggers tap update from release.yml | Good |
 | README from live --help output | Flag tables match CLI exactly; prevents documentation drift | Good |
+| #[cfg(target_os)] for font constants | Compile-time branching avoids runtime overhead on macOS/Windows; Linux probes at runtime | Good |
+| `-f null -` over `/dev/null` | FFmpeg cross-platform null muxer, no cfg needed | Good |
+| whisper non-macOS hint links to source | No canonical apt/choco package for whisper-cli | Good |
 
 ---
-*Last updated: 2026-02-21 after v1.2 milestone*
+*Last updated: 2026-02-21 after Phase 13*
