@@ -3,9 +3,27 @@ use std::path::PathBuf;
 use owo_colors::OwoColorize;
 use thiserror::Error;
 
+fn ffmpeg_install_hint() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "brew install ffmpeg"
+    } else if cfg!(target_os = "windows") {
+        "choco install ffmpeg"
+    } else {
+        "apt install ffmpeg"
+    }
+}
+
+fn whisper_install_hint() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "brew install whisper-cli"
+    } else {
+        "build from source: https://github.com/ggerganov/whisper.cpp"
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum AppError {
-    #[error("ffmpeg not found on PATH\n  hint: brew install ffmpeg")]
+    #[error("ffmpeg not found on PATH")]
     FfmpegNotFound,
 
     #[error("error in stage '{stage}': ffmpeg exited with code {code}\n{stderr}")]
@@ -25,7 +43,7 @@ pub enum AppError {
     #[error("input file not found: {0}")]
     InputNotFound(PathBuf),
 
-    #[error("whisper-cli not found on PATH\n  hint: brew install whisper-cli")]
+    #[error("whisper-cli not found on PATH")]
     WhisperNotFound,
 
     #[error("error in stage '{stage}': whisper-cli exited with code {code}\n{stderr}")]
@@ -82,9 +100,10 @@ pub fn format_error(err: &AppError) -> String {
     match err {
         AppError::FfmpegNotFound => {
             format!(
-                "{} ffmpeg not found on PATH\n  {}: brew install ffmpeg, then run `contentops doctor`",
+                "{} ffmpeg not found on PATH\n  {}: {}, then run `contentops doctor`",
                 "error:".red().bold(),
-                "hint".bold()
+                "hint".bold(),
+                ffmpeg_install_hint()
             )
         }
         AppError::FfmpegFailed {
@@ -122,9 +141,10 @@ pub fn format_error(err: &AppError) -> String {
         }
         AppError::WhisperNotFound => {
             format!(
-                "{} whisper-cli not found on PATH\n  {}: brew install whisper-cli, then run `contentops doctor`",
+                "{} whisper-cli not found on PATH\n  {}: {}, then run `contentops doctor`",
                 "error:".red().bold(),
-                "hint".bold()
+                "hint".bold(),
+                whisper_install_hint()
             )
         }
         AppError::WhisperFailed {
