@@ -48,7 +48,7 @@ See: `.planning/milestones/v1.2-ROADMAP.md` for full details.
 ### v1.3 Cross-Platform (Planned)
 
 - [x] **Phase 13: Platform-Portable Code** - Fix macOS-specific code paths: platform-conditional default font, Windows `/dev/null` → `NUL`, platform-aware error hints (completed 2026-02-21)
-- [ ] **Phase 14: Linux & Windows CI/Release** - Add `ubuntu-latest` and `windows-latest` build matrix to release.yml, produce Linux and Windows binaries alongside macOS
+- [x] **Phase 14: Linux & Windows CI/Release** - Add `ubuntu-latest` and `windows-latest` build matrix to release.yml, produce Linux and Windows binaries alongside macOS (completed 2026-02-21)
 - [ ] **Phase 15: Cross-Platform Docs & Install** - Update README with Linux/Windows install paths, platform-specific prerequisites, update doctor hints
 
 ## Phase Details
@@ -74,7 +74,7 @@ Plans:
   1. `release.yml` build matrix includes `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc`
   2. GitHub Release contains Linux and Windows binaries alongside existing macOS binaries
   3. CI runs tests on all three platforms
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
 - [ ] 14-01-PLAN.md -- Linux/Windows build jobs in release.yml + three-platform CI matrix
 
