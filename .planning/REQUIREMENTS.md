@@ -1,0 +1,42 @@
+# Requirements: contentops
+
+**Defined:** 2026-02-21
+**Core Value:** Take a raw video file and remove dead air automatically
+
+## v1.3 Requirements
+
+Requirements for milestone v1.3 Cross-Platform. Each maps to roadmap phases.
+
+### Platform-Portable Code
+
+- [ ] **XPLAT-01**: Default font path resolves to a valid system font on macOS, Linux, and Windows without requiring `--font`
+- [ ] **XPLAT-02**: Null device uses `/dev/null` on Unix and `NUL` on Windows
+- [ ] **XPLAT-03**: Error hints show platform-appropriate install commands (brew on macOS, apt on Linux, choco on Windows)
+
+### CI/Release
+
+- [ ] **XPLAT-04**: Release workflow builds binaries for Linux (`x86_64-unknown-linux-gnu`) and Windows (`x86_64-pc-windows-msvc`) alongside macOS
+- [ ] **XPLAT-05**: CI runs tests on macOS, Linux, and Windows
+
+### Documentation
+
+- [ ] **XPLAT-06**: README includes Linux and Windows install paths and platform-specific prerequisites
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| XPLAT-01 | Phase 13 | Pending |
+| XPLAT-02 | Phase 13 | Pending |
+| XPLAT-03 | Phase 13 | Pending |
+| XPLAT-04 | Phase 14 | Pending |
+| XPLAT-05 | Phase 14 | Pending |
+| XPLAT-06 | Phase 15 | Pending |
+
+**Coverage:**
+- v1.3 requirements: 6 total
+- Mapped to phases: 6
+- Unmapped: 0
+
+---
+*Requirements defined: 2026-02-21*
