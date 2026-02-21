@@ -158,9 +158,13 @@ fn build_title_filter(text: &str, args: &OverlayArgs) -> String {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
-            { DEFAULT_FONT.to_string() }
+            {
+                DEFAULT_FONT.to_string()
+            }
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-            { resolve_default_font() }
+            {
+                resolve_default_font()
+            }
         });
 
     let final_x: i32 = 30;
