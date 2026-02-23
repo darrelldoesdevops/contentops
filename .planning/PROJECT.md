@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A Rust CLI tool that replaces CapCut for TikTok/short-form video post-production. Orchestrates FFmpeg and Whisper to handle silence removal, auto-captioning with word-by-word highlighting, animated title overlays, and a one-command pipeline -- the repetitive editing tasks between shooting and publishing. Installable via Homebrew (`brew install darrelldoesdevops/tap/contentops`) with auto-updating formula on each release.
+A Rust CLI tool that replaces CapCut for TikTok/short-form video post-production. Orchestrates FFmpeg and Whisper to handle silence removal, auto-captioning with word-by-word highlighting, animated title overlays, and a one-command pipeline -- the repetitive editing tasks between shooting and publishing. Runs on macOS, Linux, and Windows. Installable via Homebrew (`brew install darrelldoesdevops/tap/contentops`) with auto-updating formula, or direct binary download.
 
 ## Core Value
 
@@ -25,17 +25,13 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 - Homebrew tap with architecture-conditional formula and cross-repo auto-update on release -- v1.2
 - Comprehensive README with hero example, flag reference tables, and troubleshooting -- v1.2
 
+- Platform-conditional font paths, cross-platform null muxer, OS-aware error hints -- v1.3
+- Linux and Windows binaries in GitHub Releases with three-platform CI -- v1.3
+- Cross-platform README with Linux/Windows install paths and prerequisites -- v1.3
+
 ### Active
 
-- Linux and Windows binary support (v1.3)
-- Cross-platform CI/release matrix
-- Cross-platform docs and install paths
-
-### Recently Validated
-
-- Platform-conditional font paths (macOS/Windows const, Linux runtime probe) -- Phase 13
-- Cross-platform null muxer (`-f null -` instead of `/dev/null`) -- Phase 13
-- Platform-aware error hints (brew/apt/choco) -- Phase 13
+(None -- planning next milestone)
 
 ### Out of Scope
 
@@ -51,17 +47,18 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 
 ## Context
 
-Shipped v1.2 with 785 LOC Rust.
+Shipped v1.3 with ~850 LOC Rust.
 Tech stack: Rust (clap, serde, indicatif, owo-colors, thiserror), FFmpeg, whisper-cli.
 Five subcommands: `cut` (silence removal + normalize), `caption` (generate + burn), `overlay` (title cards), `doctor` (prerequisite checks), `pipeline` (one-command workflow).
-Distribution: Homebrew tap (`darrelldoesdevops/tap/contentops`) with auto-updating formula, plus direct download curl one-liners.
-CI/CD via GitHub Actions: fmt, clippy, test, audit on push; ARM64 + Intel + universal binaries on tag; cross-repo workflow_dispatch updates tap formula on release.
+Platforms: macOS (ARM64 + Intel + universal), Linux (x86_64), Windows (x86_64).
+Distribution: Homebrew tap (`darrelldoesdevops/tap/contentops`) with auto-updating formula, plus direct download one-liners for all platforms.
+CI/CD via GitHub Actions: fmt, clippy, test, audit on macOS/Linux/Windows; five architecture binaries on tag; cross-repo workflow_dispatch updates tap formula on release.
 
 ## Constraints
 
 - **Tech stack**: Rust with clap, serde, anyhow, indicatif, owo-colors
 - **Dependencies**: FFmpeg (external), whisper-cli (external), claude CLI (optional, for auto-titles)
-- **Platform**: macOS primary, Linux/Windows portable (Phase 13+)
+- **Platform**: macOS, Linux, Windows
 - **Output format**: H.264/AAC, CRF 14, preset slow
 
 ## Key Decisions
@@ -92,6 +89,8 @@ CI/CD via GitHub Actions: fmt, clippy, test, audit on push; ARM64 + Intel + univ
 | #[cfg(target_os)] for font constants | Compile-time branching avoids runtime overhead on macOS/Windows; Linux probes at runtime | Good |
 | `-f null -` over `/dev/null` | FFmpeg cross-platform null muxer, no cfg needed | Good |
 | whisper non-macOS hint links to source | No canonical apt/choco package for whisper-cli | Good |
+| Per-architecture release jobs over matrix | Less risk to working macOS flow; release job stays on macos-latest for lipo | Good |
+| Three-column prerequisites table in README | Side-by-side macOS/Linux/Windows install commands at a glance | Good |
 
 ---
-*Last updated: 2026-02-21 after Phase 13*
+*Last updated: 2026-02-23 after v1.3 milestone*

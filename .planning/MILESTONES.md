@@ -55,3 +55,19 @@
 
 ---
 
+
+## v1.3 Cross-Platform (Shipped: 2026-02-23)
+
+**Phases completed:** 3 phases (13-15), 3 plans, 5 tasks
+**Timeline:** 2 days (2026-02-21 → 2026-02-23)
+
+**Key accomplishments:**
+- Platform-conditional font paths (#[cfg] for macOS/Windows, runtime probe with DejaVu fallback on Linux)
+- Cross-platform null muxer (`-f null -`) replacing macOS-only `/dev/null`
+- Platform-aware error hints (brew on macOS, apt on Linux, choco on Windows)
+- Linux and Windows build jobs in release.yml with SHA256 checksums
+- Three-platform CI matrix (macOS, Linux, Windows)
+- README with Linux curl and Windows PowerShell install one-liners, three-column prerequisites table
+
+---
+
