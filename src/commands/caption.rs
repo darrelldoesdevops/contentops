@@ -310,12 +310,28 @@ fn fix_transcription(words: &mut [Word], verbose: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let corrected: Vec<Word> = match serde_json::from_str(&stdout) {
+    let raw_stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // Strip markdown fences if present
+    let stdout = if raw_stdout.starts_with("```") {
+        raw_stdout
+            .strip_prefix("```json")
+            .or_else(|| raw_stdout.strip_prefix("```"))
+            .unwrap_or(&raw_stdout)
+            .strip_suffix("```")
+            .unwrap_or(&raw_stdout)
+            .trim()
+    } else {
+        &raw_stdout
+    };
+    let corrected: Vec<Word> = match serde_json::from_str(stdout) {
         Ok(v) => v,
-        Err(_) => {
+        Err(e) => {
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
+            }
+            if verbose {
+                eprintln!("LLM response parse error: {}", e);
+                eprintln!("Raw response:\n{}", &raw_stdout[..raw_stdout.len().min(500)]);
             }
             eprintln!("Warning: could not parse LLM response, using original words");
             return Ok(());
