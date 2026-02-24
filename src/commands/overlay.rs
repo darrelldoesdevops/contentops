@@ -138,7 +138,17 @@ fn resolve_default_font() -> String {
 const SLIDE_DURATION: f64 = 0.25;
 const STAGGER_DELAY: f64 = 0.08;
 
-fn build_title_filter(text: &str, args: &OverlayArgs) -> String {
+const REF_HEIGHT: f64 = 1920.0;
+
+fn scale(value: u32, video_height: u32) -> u32 {
+    ((value as f64 * video_height as f64 / REF_HEIGHT) + 0.5) as u32
+}
+
+fn scale_i32(value: i32, video_height: u32) -> i32 {
+    (value as f64 * video_height as f64 / REF_HEIGHT + 0.5) as i32
+}
+
+fn build_title_filter(text: &str, args: &OverlayArgs, video_height: u32) -> String {
     let t_start = args.start;
     let t_end = if args.duration > 0.0 {
         args.start + args.duration
@@ -147,9 +157,9 @@ fn build_title_filter(text: &str, args: &OverlayArgs) -> String {
     };
 
     let y_base: u32 = match args.position.as_str() {
-        "bottom" => 1400,
-        "center" => 760,
-        _ => 60,
+        "bottom" => scale(1400, video_height),
+        "center" => scale(760, video_height),
+        _ => scale(60, video_height),
     };
 
     let font_path = args
@@ -167,14 +177,15 @@ fn build_title_filter(text: &str, args: &OverlayArgs) -> String {
             }
         });
 
-    let final_x: i32 = 30;
-    let box_pad: u32 = 10;
-    let accent_w: u32 = 8;
-    let accent_x: i32 = final_x - accent_w as i32 - 4;
+    let font_size = scale(args.font_size, video_height);
+    let final_x: i32 = scale_i32(30, video_height);
+    let box_pad: u32 = scale(10, video_height);
+    let accent_w: u32 = scale(8, video_height);
+    let accent_x: i32 = final_x - accent_w as i32 - scale_i32(4, video_height);
 
     let lines: Vec<&str> = text.split('\n').collect();
     let line_count = lines.len();
-    let line_height = args.font_size + box_pad * 2 + 4;
+    let line_height = font_size + box_pad * 2 + scale(4, video_height);
 
     let mut parts: Vec<String> = Vec::new();
 
@@ -191,10 +202,6 @@ fn build_title_filter(text: &str, args: &OverlayArgs) -> String {
         let exit_start = t_end - SLIDE_DURATION - exit_offset;
 
         // x expression: slide in from left, hold, slide out to right
-        // phase 1: off-screen left
-        // phase 2: sliding in
-        // phase 3: stationary
-        // phase 4: sliding out to right
         let x_expr = format!(
             "if(lt(t\\,{in_s})\\, -text_w-{bp}\\, if(lt(t\\,{in_e})\\, -text_w-{bp}+(text_w+{bp}+{fx})*(t-{in_s})/{dur}\\, if(lt(t\\,{out_s})\\, {fx}\\, {fx}+(w-{fx})*(t-{out_s})/{dur})))",
             in_s = line_start,
@@ -208,13 +215,13 @@ fn build_title_filter(text: &str, args: &OverlayArgs) -> String {
         // white box with black text
         parts.push(format!(
             "drawtext=text='{txt}':fontsize={fs}:fontcolor=black:x='{x_expr}':y={y}:box=1:boxcolor=white@0.95:boxborderw={bp}:fontfile='{font}':enable='between(t,{line_s},{te})'",
-            txt = escaped, fs = args.font_size, y = y, bp = box_pad, font = font_path,
+            txt = escaped, fs = font_size, y = y, bp = box_pad, font = font_path,
             line_s = line_start, te = t_end
         ));
 
         // orange accent bar on the left (appears once text lands, hides on exit)
-        let bar_h = args.font_size + box_pad * 2;
-        let bar_y = y as i32 - box_pad as i32 + 2;
+        let bar_h = font_size + box_pad * 2;
+        let bar_y = y as i32 - box_pad as i32 + scale_i32(2, video_height);
         parts.push(format!(
             "drawbox=x={ax}:y={bar_y}:w={aw}:h={bh}:color=#FF6B00:t=fill:enable='between(t,{in_e},{out_s})'",
             ax = accent_x, bar_y = bar_y, aw = accent_w, bh = bar_h,
@@ -261,7 +268,10 @@ pub fn run(args: OverlayArgs, verbose: bool, registry: &TempFileRegistry) -> any
     let input_str = args.input.to_string_lossy();
     let temp_str = temp_path.to_string_lossy();
 
-    let drawtext_filter = build_title_filter(&title_text, &args);
+    let video_height = ffmpeg::probe_dimensions(&input_str)
+        .map(|(_, h)| h)
+        .unwrap_or(1920);
+    let drawtext_filter = build_title_filter(&title_text, &args, video_height);
 
     let ffmpeg_args = [
         "-i",

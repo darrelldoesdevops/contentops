@@ -101,6 +101,47 @@ fn version_at_least(version: &str, major: u32, minor: u32) -> bool {
     }
 }
 
+fn check_ffmpeg_libass() -> CheckResult {
+    let output = Command::new("ffmpeg")
+        .arg("-filters")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+
+    match output {
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            if stdout
+                .lines()
+                .any(|l| l.contains("ass") && l.contains("->") && l.contains("Render ASS"))
+            {
+                CheckResult {
+                    name: "ffmpeg libass".to_string(),
+                    status: Status::Ok,
+                    detail: "(ass filter available)".to_string(),
+                }
+            } else {
+                let hint = if cfg!(target_os = "macos") {
+                    "brew install libass && brew reinstall ffmpeg"
+                } else {
+                    "apt install libass-dev && apt install ffmpeg"
+                };
+                CheckResult {
+                    name: "ffmpeg libass".to_string(),
+                    status: Status::Fail,
+                    detail: format!("(ass filter missing, needed for caption burn — {})", hint),
+                }
+            }
+        }
+        Err(_) => CheckResult {
+            name: "ffmpeg libass".to_string(),
+            status: Status::Fail,
+            detail: "could not run ffmpeg -filters".to_string(),
+        },
+    }
+}
+
 struct SubcommandReadiness {
     name: &'static str,
     required: &'static [&'static str],
@@ -132,6 +173,7 @@ pub fn run(strict: bool) -> i32 {
     let checks = vec![
         check_on_path("ffmpeg"),
         check_ffmpeg_version(),
+        check_ffmpeg_libass(),
         check_on_path("ffprobe"),
         check_on_path("whisper-cli"),
         check_on_path("claude"),

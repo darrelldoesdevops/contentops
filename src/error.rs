@@ -75,10 +75,37 @@ pub enum AppError {
 
     #[error("error in stage '{stage}': failed to parse output\n{message}")]
     ParseFailed { stage: String, message: String },
+
+    #[error("ffmpeg was built without libass (no 'ass' filter)")]
+    LibassNotFound,
 }
 
 pub fn require_ffmpeg() -> Result<PathBuf, AppError> {
     which::which("ffmpeg").map_err(|_| AppError::FfmpegNotFound)
+}
+
+pub fn require_ffmpeg_libass() -> Result<(), AppError> {
+    let output = std::process::Command::new("ffmpeg")
+        .args(["-filters"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output();
+
+    match output {
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            if stdout.lines().any(|l| {
+                let trimmed = l.trim();
+                trimmed.contains("ass") && trimmed.contains("->") && trimmed.contains("Render ASS")
+            }) {
+                Ok(())
+            } else {
+                Err(AppError::LibassNotFound)
+            }
+        }
+        Err(_) => Err(AppError::FfmpegNotFound),
+    }
 }
 
 pub fn require_whisper() -> Result<PathBuf, AppError> {
@@ -211,6 +238,19 @@ pub fn format_error(err: &AppError) -> String {
                 "error:".red().bold(),
                 stage.bold(),
                 message
+            )
+        }
+        AppError::LibassNotFound => {
+            let reinstall_hint = if cfg!(target_os = "macos") {
+                "brew install libass && brew reinstall ffmpeg"
+            } else {
+                "apt install libass-dev && apt install ffmpeg"
+            };
+            format!(
+                "{} ffmpeg was built without libass (caption burn requires the 'ass' filter)\n  {}: {}",
+                "error:".red().bold(),
+                "hint".bold(),
+                reinstall_hint
             )
         }
     }

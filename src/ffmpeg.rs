@@ -31,6 +31,36 @@ pub fn probe_duration(input: &str) -> Option<f64> {
     stdout.trim().parse::<f64>().ok()
 }
 
+pub fn probe_dimensions(input: &str) -> Option<(u32, u32)> {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=s=x:p=0",
+            input,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parts: Vec<&str> = stdout.trim().split('x').collect();
+    if parts.len() == 2 {
+        let w = parts[0].parse().ok()?;
+        let h = parts[1].parse().ok()?;
+        Some((w, h))
+    } else {
+        None
+    }
+}
+
 pub fn run_ffmpeg(args: &[&str]) -> Result<FfmpegOutput, std::io::Error> {
     let output = Command::new("ffmpeg")
         .args(args)

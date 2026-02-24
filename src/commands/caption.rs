@@ -5,7 +5,7 @@ use humansize::{DECIMAL, format_size};
 use serde::Deserialize;
 
 use crate::cli::CaptionArgs;
-use crate::error::{AppError, last_n_lines, require_ffmpeg, require_whisper};
+use crate::error::{AppError, last_n_lines, require_ffmpeg, require_ffmpeg_libass, require_whisper};
 use crate::ffmpeg;
 use crate::temp::{TempFileRegistry, make_temp_file};
 use crate::ui;
@@ -483,6 +483,7 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
 
     // 8. Burn captions into video (if --burn flag passed)
     if args.burn && !words.is_empty() {
+        require_ffmpeg_libass()?;
         let video_output = derive_caption_output(&args.input, "captioned", "mp4");
 
         let ass_content = generate_ass(&words);
