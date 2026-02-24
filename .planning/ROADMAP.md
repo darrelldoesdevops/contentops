@@ -120,6 +120,6 @@ Plans:
 | 13. Platform-Portable Code | v1.3 | 1/1 | Complete | 2026-02-21 |
 | 14. Linux & Windows CI/Release | v1.3 | 1/1 | Complete | 2026-02-21 |
 | 15. Cross-Platform Docs & Install | v1.3 | 1/1 | Complete | 2026-02-21 |
-| 16. Build & CI Verification | 1/1 | Complete   | 2026-02-24 | - |
+| 16. Build & CI Verification | 1/1 | Complete    | 2026-02-24 | - |
 | 17. Core VAD Integration | v1.4 | 0/TBD | Not started | - |
 | 18. Tuning Flags & Cleanup | v1.4 | 0/TBD | Not started | - |
