@@ -5,14 +5,17 @@
 See: .planning/PROJECT.md (updated 2026-02-24)
 
 **Core value:** Take a raw video file and remove dead air automatically
-**Current focus:** v1.4 Silero VAD
+**Current focus:** v1.4 Silero VAD -- Phase 16: Build & CI Verification
 
 ## Current Position
 
 Milestone: v1.4 Silero VAD
-Phase: Not started (defining requirements)
-Status: Defining requirements
-Last activity: 2026-02-24 -- Milestone v1.4 started
+Phase: 16 of 18 (Build & CI Verification)
+Plan: 0 of TBD in current phase
+Status: Ready to plan
+Last activity: 2026-02-24 -- v1.4 roadmap created, Phase 16 ready to plan
+
+Progress: [░░░░░░░░░░] 0% (v1.4)
 
 ## Performance Metrics
 
@@ -36,17 +39,23 @@ Last activity: 2026-02-24 -- Milestone v1.4 started
 
 All decisions logged in PROJECT.md Key Decisions table.
 
+Recent v1.4 decisions:
+- Use voice_activity_detector 0.2.1 (bundles Silero V5 ONNX, pins ort =2.0.0-rc.10 -- never upgrade ort independently)
+- Bundle ONNX model in binary (zero user setup; 1.8MB increase acceptable)
+- Remove --breaths flag (VAD detects all non-speech inherently)
+
 ### Pending Todos
 
 None.
 
 ### Blockers/Concerns
 
-- silero-vad-rust crate uses `ort` (ONNX Runtime) which adds native binary dependency -- verify cross-platform CI builds work
-- Bundling 1.8MB ONNX model in binary increases release size
+- Phase 16: Verify Windows CI ort cache path (%LOCALAPPDATA%\pyke\ort) works with standard Cargo cache action -- test on cold runner
+- Phase 17: voice_activity_detector does not expose get_speech_timestamps(); must implement chunk accumulation loop -- verify exact iterator API from docs.rs before coding
+- Phase 17: Audio format must be 16kHz mono f32le before VAD or inference returns garbage -- assert format at VAD boundary
 
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Milestone v1.4 started, defining requirements
+Stopped at: v1.4 roadmap created -- ready to plan Phase 16
 Resume file: None
