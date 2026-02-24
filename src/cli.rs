@@ -99,8 +99,8 @@ pub struct OverlayArgs {
     #[arg(long)]
     pub font: Option<PathBuf>,
 
-    /// Font size in pixels
-    #[arg(long, default_value = "44")]
+    /// Font size in pixels (scaled to video resolution)
+    #[arg(long, default_value = "144")]
     pub font_size: u32,
 
     /// Font color (FFmpeg color name or hex)
@@ -132,6 +132,18 @@ pub struct PipelineArgs {
     /// Path to whisper model file
     #[arg(long)]
     pub model: PathBuf,
+
+    /// Also detect and remove breaths (disable with --no-breaths)
+    #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
+    pub breaths: bool,
+
+    /// Title text for overlay (skips Claude auto-generation)
+    #[arg(long)]
+    pub text: Option<String>,
+
+    /// Font size in pixels for title overlay
+    #[arg(long)]
+    pub font_size: Option<u32>,
 
     /// Preview planned stages without executing
     #[arg(long)]

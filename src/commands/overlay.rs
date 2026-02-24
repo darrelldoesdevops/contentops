@@ -159,7 +159,7 @@ fn build_title_filter(text: &str, args: &OverlayArgs, video_height: u32) -> Stri
     let y_base: u32 = match args.position.as_str() {
         "bottom" => scale(1400, video_height),
         "center" => scale(760, video_height),
-        _ => scale(60, video_height),
+        _ => scale(200, video_height),
     };
 
     let font_path = args

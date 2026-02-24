@@ -47,6 +47,9 @@ pub fn run(args: PipelineArgs, verbose: bool, registry: &TempFileRegistry) -> an
         &args.input,
         &args.model,
         &output,
+        args.text.as_deref(),
+        args.font_size,
+        args.breaths,
         verbose,
         registry,
     );
@@ -75,6 +78,9 @@ fn run_stages(
     input: &Path,
     model: &Path,
     output: &Path,
+    text: Option<&str>,
+    font_size: Option<u32>,
+    breaths: bool,
     verbose: bool,
     registry: &TempFileRegistry,
 ) -> anyhow::Result<()> {
@@ -86,7 +92,7 @@ fn run_stages(
             input: input.to_path_buf(),
             output: Some(cut_output.clone()),
             dry_run: false,
-            breaths: false,
+            breaths,
         },
         verbose,
         registry,
@@ -112,16 +118,21 @@ fn run_stages(
     let captioned_video = temp_dir.join("cut_captioned.mp4");
     let caption_json = temp_dir.join("captioned.json");
 
-    // Stage 3: Overlay (auto-generate title from transcript)
+    // Stage 3: Overlay
     eprintln!("\n{}", "Stage 3/3: overlay".bold());
+    let (overlay_text, overlay_auto) = if let Some(t) = text {
+        (Some(t.to_string()), None)
+    } else {
+        (None, Some(caption_json))
+    };
     overlay::run(
         OverlayArgs {
             input: captioned_video,
-            text: None,
-            auto: Some(caption_json),
+            text: overlay_text,
+            auto: overlay_auto,
             output: Some(output.to_path_buf()),
             font: None,
-            font_size: 44,
+            font_size: font_size.unwrap_or(144),
             color: "black".to_string(),
             position: "top".to_string(),
             start: 0.3,
