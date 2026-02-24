@@ -7,6 +7,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: contentops
+  ORT_CACHE_DIR: ~/.ort-cache
 
 permissions:
   contents: write
@@ -24,6 +25,8 @@ jobs:
           targets: aarch64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-directories: ~/.ort-cache
 
       - name: Build
         run: cargo build --release --target aarch64-apple-darwin
@@ -46,6 +49,8 @@ jobs:
           targets: x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-directories: ~/.ort-cache
 
       - name: Build
         run: cargo build --release --target x86_64-apple-darwin
@@ -68,6 +73,8 @@ jobs:
           targets: x86_64-unknown-linux-gnu
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-directories: ~/.ort-cache
 
       - name: Build
         run: cargo build --release --target x86_64-unknown-linux-gnu
@@ -90,6 +97,8 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-directories: ~/.ort-cache
 
       - name: Build
         run: cargo build --release --target x86_64-pc-windows-msvc
