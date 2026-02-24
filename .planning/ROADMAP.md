@@ -88,7 +88,10 @@ Plans:
   2. `contentops pipeline input.mp4 output.mp4` completes end-to-end with VAD-based silence removal
   3. The 16kHz mono WAV extraction helper is shared between VAD inference and Whisper transcription (no duplication in ffmpeg.rs)
   4. VAD produces correct speech intervals on a real talking-head video (no over-cutting of quiet speech, no under-cutting of breaths)
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 17-01-PLAN.md -- VAD module, shared WAV helper, wire into cut command
+- [ ] 17-02-PLAN.md -- Wire VAD into pipeline, update transcribe() for WAV sharing
 
 ### Phase 18: Tuning Flags & Cleanup
 **Goal**: Users can tune VAD sensitivity via CLI flags, and the codebase contains no dead amplitude-based detection code or the obsolete --breaths flag
