@@ -1,6 +1,7 @@
 use std::process::{Command, Stdio};
 
 use owo_colors::OwoColorize;
+use voice_activity_detector::VoiceActivityDetector;
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 enum Status {
@@ -142,6 +143,25 @@ fn check_ffmpeg_libass() -> CheckResult {
     }
 }
 
+fn check_vad() -> CheckResult {
+    match VoiceActivityDetector::builder()
+        .sample_rate(16000i64)
+        .chunk_size(512usize)
+        .build()
+    {
+        Ok(_) => CheckResult {
+            name: "VAD (Silero V5)".to_string(),
+            status: Status::Ok,
+            detail: String::new(),
+        },
+        Err(e) => CheckResult {
+            name: "VAD (Silero V5)".to_string(),
+            status: Status::Fail,
+            detail: format!("({})", e),
+        },
+    }
+}
+
 struct SubcommandReadiness {
     name: &'static str,
     required: &'static [&'static str],
@@ -177,6 +197,7 @@ pub fn run(strict: bool) -> i32 {
         check_on_path("ffprobe"),
         check_on_path("whisper-cli"),
         check_on_path("claude"),
+        check_vad(),
     ];
 
     eprintln!("{}:", "Prerequisites".bold());

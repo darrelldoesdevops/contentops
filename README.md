@@ -80,6 +80,8 @@ contentops pipeline --model ~/models/ggml-base.en.bin input.mp4
 | `<INPUT>` | Input video file | required |
 | `-o <OUTPUT>` | Output path | `input_pipeline.mp4` |
 | `--model <MODEL>` | Path to whisper model file | required |
+| `--vad-threshold <THRESHOLD>` | VAD speech probability threshold (0.0-1.0) | `0.5` |
+| `--min-silence-ms <MS>` | Minimum silence duration to cut (ms) | `400` |
 | `--dry-run` | Preview planned stages without executing | off |
 | `--verbose` | Show verbose FFmpeg output | off |
 
@@ -96,7 +98,8 @@ contentops cut input.mp4
 | `<INPUT>` | Input video file | required |
 | `-o <OUTPUT>` | Output path | `input_cut.mp4` |
 | `--dry-run` | Preview what would be cut without producing output | off |
-| `--breaths` | Also detect and remove breaths | off |
+| `--vad-threshold <THRESHOLD>` | VAD speech probability threshold (0.0-1.0) | `0.5` |
+| `--min-silence-ms <MS>` | Minimum silence duration to cut (ms) | `400` |
 | `--verbose` | Show verbose FFmpeg output | off |
 
 ### `caption` -- Generate captions
