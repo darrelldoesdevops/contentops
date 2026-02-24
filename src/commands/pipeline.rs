@@ -108,6 +108,7 @@ fn run_stages(
             model: model.to_path_buf(),
             lang: "en".to_string(),
             burn: true,
+            fix: true,
         },
         verbose,
         registry,

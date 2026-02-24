@@ -5,12 +5,14 @@ use humansize::{DECIMAL, format_size};
 use serde::Deserialize;
 
 use crate::cli::CaptionArgs;
-use crate::error::{AppError, last_n_lines, require_ffmpeg, require_ffmpeg_libass, require_whisper};
+use crate::error::{
+    AppError, last_n_lines, require_claude, require_ffmpeg, require_ffmpeg_libass, require_whisper,
+};
 use crate::ffmpeg;
 use crate::temp::{TempFileRegistry, make_temp_file};
 use crate::ui;
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Deserialize)]
 struct Word {
     word: String,
     start: f64,
@@ -258,6 +260,100 @@ fn format_srt(entries: &[SrtEntry]) -> String {
         .join("\n")
 }
 
+fn fix_transcription(words: &mut [Word], verbose: bool) -> anyhow::Result<()> {
+    require_claude()?;
+
+    let words_json = serde_json::to_string_pretty(&words).unwrap_or_default();
+
+    let prompt = format!(
+        "This is speech-to-text output as JSON. Each object has word, start, end (seconds).\n\
+         Fix transcription errors: misspellings, words that don't fit context, \
+         phonetic mishearings (e.g. \"suit\" → \"soon\", \"school\" → \"skool\" if that's a brand/community name).\n\
+         Use surrounding words and timing to infer what was actually said.\n\
+         Return the SAME JSON array structure with ONLY the \"word\" fields corrected.\n\
+         Do NOT change start/end times. Do NOT add or remove entries.\n\
+         Do NOT add punctuation or change capitalization.\n\
+         Return raw JSON only, no markdown fences.\n\n{}",
+        words_json
+    );
+
+    let spinner = if !verbose {
+        Some(crate::ui::make_spinner("Fixing transcription with Claude..."))
+    } else {
+        eprintln!("Running: claude -p <prompt> --model haiku");
+        None
+    };
+
+    let output = Command::new("claude")
+        .arg("-p")
+        .arg(&prompt)
+        .arg("--model")
+        .arg("haiku")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(if verbose {
+            Stdio::inherit()
+        } else {
+            Stdio::piped()
+        })
+        .output()
+        .map_err(|e| AppError::StageIo {
+            stage: "fix-transcription".to_string(),
+            source: e,
+        })?;
+
+    if !output.status.success() {
+        if let Some(pb) = spinner {
+            pb.finish_and_clear();
+        }
+        eprintln!("Warning: transcription fix failed, using original words");
+        return Ok(());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let corrected: Vec<Word> = match serde_json::from_str(&stdout) {
+        Ok(v) => v,
+        Err(_) => {
+            if let Some(pb) = spinner {
+                pb.finish_and_clear();
+            }
+            eprintln!("Warning: could not parse LLM response, using original words");
+            return Ok(());
+        }
+    };
+
+    if corrected.len() != words.len() {
+        if let Some(pb) = spinner {
+            pb.finish_and_clear();
+        }
+        eprintln!(
+            "Warning: LLM returned {} words, expected {} — using original words",
+            corrected.len(),
+            words.len()
+        );
+        return Ok(());
+    }
+
+    let mut fixes = 0;
+    for (word, fixed) in words.iter_mut().zip(corrected.iter()) {
+        if word.word != fixed.word {
+            if verbose {
+                eprintln!("  fix: \"{}\" → \"{}\"", word.word, fixed.word);
+            }
+            word.word = fixed.word.clone();
+            fixes += 1;
+        }
+    }
+
+    if let Some(pb) = spinner {
+        pb.finish_with_message(format!("Transcription fixed ({} corrections)", fixes));
+    } else if fixes > 0 {
+        eprintln!("Fixed {} words", fixes);
+    }
+
+    Ok(())
+}
+
 pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow::Result<()> {
     // 1. Validation
     require_ffmpeg()?;
@@ -448,6 +544,11 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
         } else {
             words.push(w);
         }
+    }
+
+    // 5b. Fix transcription with LLM (if --fix flag passed)
+    if args.fix && !words.is_empty() {
+        fix_transcription(&mut words, verbose)?;
     }
 
     if words.is_empty() {

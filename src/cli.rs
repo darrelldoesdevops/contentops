@@ -76,6 +76,10 @@ pub struct CaptionArgs {
     /// Burn captions into video
     #[arg(long)]
     pub burn: bool,
+
+    /// Use Claude to fix transcription errors
+    #[arg(long)]
+    pub fix: bool,
 }
 
 #[derive(Args)]
