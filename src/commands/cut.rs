@@ -11,13 +11,6 @@ use crate::temp::{TempFileRegistry, make_temp_file};
 use crate::ui;
 use crate::vad;
 
-// DEPRECATED: Phase 18 removes
-// const SILENCE_THRESHOLD_DB: f64 = -30.0;
-// const SILENCE_MIN_DURATION: f64 = 0.5;
-// const BREATH_THRESHOLD_DB: f64 = -24.0;
-// const BREATH_MIN_DURATION: f64 = 0.15;
-// const SPEECH_PADDING: f64 = 0.075;
-
 pub fn derive_output_path(input: &Path, suffix: &str) -> PathBuf {
     let parent = input.parent().unwrap_or(Path::new("."));
     let stem = input.file_stem().unwrap_or_default().to_string_lossy();
@@ -48,14 +41,6 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
     let input_str = normalized_path.to_string_lossy().to_string();
 
     // --- Phase 2: Detect speech via VAD ---
-    // DEPRECATED: Phase 18 removes
-    // let (threshold, min_duration) = if args.breaths {
-    //     (BREATH_THRESHOLD_DB, BREATH_MIN_DURATION)
-    // } else {
-    //     (SILENCE_THRESHOLD_DB, SILENCE_MIN_DURATION)
-    // };
-    // let detect_label = if args.breaths { "silence and breaths" } else { "silence" };
-
     let spinner = if !verbose {
         Some(ui::make_spinner(format!(
             "Detecting speech in {}...",
@@ -80,16 +65,10 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
         source: e,
     })?;
 
-    let speeches = vad::run_vad(&wav_path, video_duration)?;
+    let speeches = vad::run_vad(&wav_path, video_duration, args.vad_threshold, args.min_silence_ms)?;
 
     let _ = std::fs::remove_file(&wav_path);
     registry.remove(&wav_path);
-
-    // DEPRECATED: Phase 18 removes
-    // let stderr = ffmpeg::run_silencedetect(&input_str, threshold, min_duration).map_err(|e| {
-    //     AppError::StageIo { stage: "silence-detect".to_string(), source: e }
-    // })?;
-    // let silences = silence::parse_silencedetect(&stderr, video_duration);
 
     if speeches.is_empty() {
         if let Some(pb) = spinner {
@@ -129,9 +108,6 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
     if let Some(pb) = &spinner {
         pb.set_message("Removing silence...".to_string());
     }
-
-    // DEPRECATED: Phase 18 removes
-    // let speeches = silence::silence_to_speech(&silences, video_duration, SPEECH_PADDING);
 
     let concat_filter = silence::build_concat_filter(&speeches);
 

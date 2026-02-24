@@ -51,9 +51,13 @@ pub struct CutArgs {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Also detect and remove breaths (raises threshold, lowers min duration)
-    #[arg(long)]
-    pub breaths: bool,
+    /// VAD speech probability threshold (0.0-1.0, lower = more sensitive)
+    #[arg(long, default_value = "0.5", value_parser = parse_vad_threshold)]
+    pub vad_threshold: f32,
+
+    /// Minimum silence duration in milliseconds to cut
+    #[arg(long, default_value = "400", value_parser = clap::value_parser!(u32).range(1..))]
+    pub min_silence_ms: u32,
 }
 
 #[derive(Args)]
@@ -137,9 +141,13 @@ pub struct PipelineArgs {
     #[arg(long)]
     pub model: PathBuf,
 
-    /// Also detect and remove breaths (disable with --no-breaths)
-    #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
-    pub breaths: bool,
+    /// VAD speech probability threshold (0.0-1.0, lower = more sensitive)
+    #[arg(long, default_value = "0.5", value_parser = parse_vad_threshold)]
+    pub vad_threshold: f32,
+
+    /// Minimum silence duration in milliseconds to cut
+    #[arg(long, default_value = "400", value_parser = clap::value_parser!(u32).range(1..))]
+    pub min_silence_ms: u32,
 
     /// Title text for overlay (skips Claude auto-generation)
     #[arg(long)]
@@ -152,4 +160,12 @@ pub struct PipelineArgs {
     /// Preview planned stages without executing
     #[arg(long)]
     pub dry_run: bool,
+}
+
+fn parse_vad_threshold(s: &str) -> Result<f32, String> {
+    let val: f32 = s.parse().map_err(|_| format!("invalid float: {}", s))?;
+    if !(0.0..=1.0).contains(&val) {
+        return Err(format!("{} is not in 0.0..=1.0", val));
+    }
+    Ok(val)
 }

@@ -113,31 +113,6 @@ pub fn extract_16k_wav(input: &str, dest: &Path, verbose: bool) -> Result<(), st
     Ok(())
 }
 
-// DEPRECATED: Phase 18 removes
-#[allow(dead_code)]
-pub fn run_silencedetect(
-    input: &str,
-    threshold_db: f64,
-    min_duration: f64,
-) -> Result<String, std::io::Error> {
-    let af = format!("silencedetect=noise={}dB:d={}", threshold_db, min_duration);
-    let output = Command::new("ffmpeg")
-        .arg("-nostdin")
-        .arg("-i")
-        .arg(input)
-        .arg("-af")
-        .arg(&af)
-        .arg("-f")
-        .arg("null")
-        .arg("-")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()?;
-
-    Ok(String::from_utf8_lossy(&output.stderr).to_string())
-}
-
 pub fn probe_duration_strict(input: &str) -> Result<f64, std::io::Error> {
     let output = Command::new("ffprobe")
         .arg("-v")

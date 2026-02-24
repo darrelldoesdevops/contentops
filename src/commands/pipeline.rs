@@ -11,13 +11,6 @@ use crate::silence;
 use crate::temp::{TempFileRegistry, make_temp_file};
 use crate::vad;
 
-// DEPRECATED: Phase 18 removes
-// const SILENCE_THRESHOLD_DB: f64 = -30.0;
-// const SILENCE_MIN_DURATION: f64 = 0.5;
-// const BREATH_THRESHOLD_DB: f64 = -24.0;
-// const BREATH_MIN_DURATION: f64 = 0.15;
-// const SPEECH_PADDING: f64 = 0.075;
-
 pub fn run(args: PipelineArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow::Result<()> {
     if !args.input.exists() {
         return Err(AppError::InputNotFound(args.input).into());
@@ -62,7 +55,8 @@ pub fn run(args: PipelineArgs, verbose: bool, registry: &TempFileRegistry) -> an
         &output,
         args.text.as_deref(),
         args.font_size,
-        args.breaths,
+        args.vad_threshold,
+        args.min_silence_ms,
         verbose,
         registry,
     );
@@ -94,7 +88,8 @@ fn run_stages(
     output: &Path,
     text: Option<&str>,
     font_size: Option<u32>,
-    _breaths: bool,
+    vad_threshold: f32,
+    min_silence_ms: u32,
     verbose: bool,
     registry: &TempFileRegistry,
 ) -> anyhow::Result<()> {
@@ -137,20 +132,8 @@ fn run_stages(
             source: e,
         })?;
 
-    // DEPRECATED: Phase 18 removes
-    // let (threshold, min_dur) = if breaths {
-    //     (BREATH_THRESHOLD_DB, BREATH_MIN_DURATION)
-    // } else {
-    //     (SILENCE_THRESHOLD_DB, SILENCE_MIN_DURATION)
-    // };
-    // let detect_label = if breaths { "silence and breaths" } else { "silence" };
-    // let stderr = ffmpeg::run_silencedetect(&normalized_str, threshold, min_dur).map_err(|e| {
-    //     AppError::StageIo { stage: "silence-detect".to_string(), source: e }
-    // })?;
-    // let silences = silence::parse_silencedetect(&stderr, video_duration);
-
     // 3b: Run VAD on shared WAV
-    let speeches = vad::run_vad(&wav_path, video_duration)?;
+    let speeches = vad::run_vad(&wav_path, video_duration, vad_threshold, min_silence_ms)?;
 
     // Clean up shared WAV (no longer needed)
     let _ = std::fs::remove_file(&wav_path);
@@ -183,11 +166,6 @@ fn run_stages(
         speeches.len(),
         total_silence
     );
-
-    // DEPRECATED: Phase 18 removes
-    // let word_times: Vec<(f64, f64)> = words.iter().map(|w| (w.start, w.end)).collect();
-    // let safe_silences = silence::filter_silences_by_words(&silences, &word_times);
-    // let speeches = silence::silence_to_speech(&safe_silences, video_duration, SPEECH_PADDING);
 
     // 3c: Build filter and cut
     let cut_output = temp_dir.join("cut.mp4");

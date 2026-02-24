@@ -4,11 +4,15 @@ use voice_activity_detector::{IteratorExt, LabeledAudio, VoiceActivityDetector};
 
 use crate::silence::SpeechInterval;
 
-const VAD_THRESHOLD: f32 = 0.5;
 const CHUNK_SIZE: usize = 512;
 const SAMPLE_RATE: f64 = 16000.0;
 
-pub fn run_vad(wav_path: &Path, video_duration: f64) -> anyhow::Result<Vec<SpeechInterval>> {
+pub fn run_vad(
+    wav_path: &Path,
+    video_duration: f64,
+    threshold: f32,
+    min_silence_ms: u32,
+) -> anyhow::Result<Vec<SpeechInterval>> {
     let reader = hound::WavReader::open(wav_path)
         .map_err(|e| anyhow::anyhow!("WAV open failed: {}", e))?;
 
@@ -43,7 +47,7 @@ pub fn run_vad(wav_path: &Path, video_duration: f64) -> anyhow::Result<Vec<Speec
     let mut in_speech = false;
     let mut speech_start = 0.0f64;
 
-    for label in samples.into_iter().label(&mut vad, VAD_THRESHOLD, 0usize) {
+    for label in samples.into_iter().label(&mut vad, threshold, 0usize) {
         let start = chunk_idx as f64 * chunk_secs;
         match label {
             LabeledAudio::Speech(_) => {
@@ -75,6 +79,22 @@ pub fn run_vad(wav_path: &Path, video_duration: f64) -> anyhow::Result<Vec<Speec
 
     if let Some(last) = speeches.last_mut() {
         last.end = last.end.min(video_duration);
+    }
+
+    if !speeches.is_empty() && min_silence_ms > 0 {
+        let min_gap = min_silence_ms as f64 / 1000.0;
+        let mut merged = Vec::new();
+        let mut current = speeches.remove(0);
+        for next in speeches {
+            if next.start - current.end < min_gap {
+                current.end = next.end;
+            } else {
+                merged.push(current);
+                current = next;
+            }
+        }
+        merged.push(current);
+        speeches = merged;
     }
 
     Ok(speeches)
