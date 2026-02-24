@@ -63,7 +63,7 @@ See: `.planning/milestones/v1.3-ROADMAP.md` for full details.
 
 - [x] **Phase 16: Build & CI Verification** - voice_activity_detector compiles and ONNX Runtime is cached on all four CI targets (completed 2026-02-24)
 - [ ] **Phase 17: Core VAD Integration** - vad.rs module and shared audio helper wired into cut and pipeline commands
-- [ ] **Phase 18: Tuning Flags & Cleanup** - --vad-threshold and --min-silence-ms exposed; --breaths and dead amplitude code removed
+- [x] **Phase 18: Tuning Flags & Cleanup** - --vad-threshold and --min-silence-ms exposed; --breaths and dead amplitude code removed (completed 2026-02-24)
 
 ## Phase Details
 
@@ -128,4 +128,4 @@ Plans:
 | 15. Cross-Platform Docs & Install | v1.3 | 1/1 | Complete | 2026-02-21 |
 | 16. Build & CI Verification | 1/1 | Complete    | 2026-02-24 | - |
 | 17. Core VAD Integration | v1.4 | 0/TBD | Not started | - |
-| 18. Tuning Flags & Cleanup | v1.4 | 0/TBD | Not started | - |
+| 18. Tuning Flags & Cleanup | v1.4 | Complete    | 2026-02-24 | - |
