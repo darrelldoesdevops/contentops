@@ -75,7 +75,9 @@ See: `.planning/milestones/v1.3-ROADMAP.md` for full details.
   1. `cargo build` succeeds on macOS ARM64, macOS Intel, Linux x86_64, and Windows x86_64 with voice_activity_detector 0.2.1 in Cargo.toml
   2. GitHub Actions CI completes without downloading ONNX Runtime on a second run (cache hit confirmed in workflow logs)
   3. No ort version conflicts appear in `cargo tree` output
-**Plans**: TBD
+**Plans**: 1 plan
+Plans:
+- [ ] 16-01-PLAN.md -- Add voice_activity_detector dep, update CI/release for 4-platform ORT-cached builds
 
 ### Phase 17: Core VAD Integration
 **Goal**: Users running `contentops cut` or `contentops pipeline` get silence removed via Silero VAD neural inference instead of FFmpeg silencedetect
