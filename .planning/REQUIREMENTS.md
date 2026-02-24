@@ -15,8 +15,8 @@
 
 ### Build & CI
 
-- [ ] **CI-01**: `voice_activity_detector` 0.2.1 compiles on macOS ARM64, macOS Intel, Linux x86_64, Windows x86_64
-- [ ] **CI-02**: ONNX Runtime binary cached in GitHub Actions to avoid repeated downloads
+- [x] **CI-01**: `voice_activity_detector` 0.2.1 compiles on macOS ARM64, macOS Intel, Linux x86_64, Windows x86_64
+- [x] **CI-02**: ONNX Runtime binary cached in GitHub Actions to avoid repeated downloads
 
 ### Cleanup
 
@@ -43,8 +43,8 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CI-01 | Phase 16 | Pending |
-| CI-02 | Phase 16 | Pending |
+| CI-01 | Phase 16 | Complete |
+| CI-02 | Phase 16 | Complete |
 | VAD-03 | Phase 17 | Pending |
 | VAD-01 | Phase 17 | Pending |
 | VAD-02 | Phase 17 | Pending |

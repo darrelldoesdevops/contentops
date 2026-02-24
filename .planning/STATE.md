@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-02-24)
 
 Milestone: v1.4 Silero VAD
 Phase: 16 of 18 (Build & CI Verification)
-Plan: 0 of TBD in current phase
-Status: Ready to plan
-Last activity: 2026-02-24 -- v1.4 roadmap created, Phase 16 ready to plan
+Plan: 1 of 1 in current phase
+Status: Phase complete
+Last activity: 2026-02-24 -- Phase 16 complete (voice_activity_detector + 4-platform CI with ORT cache)
 
-Progress: [░░░░░░░░░░] 0% (v1.4)
+Progress: [█░░░░░░░░░] 11% (v1.4)
 
 ## Performance Metrics
 
@@ -43,6 +43,9 @@ Recent v1.4 decisions:
 - Use voice_activity_detector 0.2.1 (bundles Silero V5 ONNX, pins ort =2.0.0-rc.10 -- never upgrade ort independently)
 - Bundle ONNX model in binary (zero user setup; 1.8MB increase acceptable)
 - Remove --breaths flag (VAD detects all non-speech inherently)
+- ORT_CACHE_DIR: ~/.ort-cache normalizes ORT binary cache path across all platforms (Linux/macOS/Windows)
+- Cross-compile x86_64-apple-darwin on ARM64 macos-latest runner; skip tests for that target (exec format error)
+- Security audit conditioned to aarch64-apple-darwin only to avoid 4x redundant cargo install per CI run
 
 ### Pending Todos
 
@@ -50,12 +53,12 @@ None.
 
 ### Blockers/Concerns
 
-- Phase 16: Verify Windows CI ort cache path (%LOCALAPPDATA%\pyke\ort) works with standard Cargo cache action -- test on cold runner
 - Phase 17: voice_activity_detector does not expose get_speech_timestamps(); must implement chunk accumulation loop -- verify exact iterator API from docs.rs before coding
 - Phase 17: Audio format must be 16kHz mono f32le before VAD or inference returns garbage -- assert format at VAD boundary
+- Phase 16 follow-up: Windows CI ORT cache with ~/.ort-cache should work (GHA expands ~ on Windows) but verify on first cold runner run
 
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: v1.4 roadmap created -- ready to plan Phase 16
+Stopped at: Phase 16 complete -- ready for Phase 17 (VAD Integration)
 Resume file: None
