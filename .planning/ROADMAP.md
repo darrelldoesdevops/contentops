@@ -102,7 +102,10 @@ Plans:
   2. `contentops cut input.mp4 output.mp4 --min-silence-ms 600` applies a longer minimum silence duration without error
   3. `contentops cut --help` and `contentops pipeline --help` show no --breaths flag
   4. `silence.rs` contains only SpeechInterval, build_concat_filter, and adjust_timestamps -- no parse_silencedetect, silence_to_speech, filter_silences_by_words, or SilenceInterval
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 18-01-PLAN.md -- Tuning flags (--vad-threshold, --min-silence-ms), remove --breaths, delete dead amplitude code
+- [ ] 18-02-PLAN.md -- VAD doctor health check, update README
 
 ## Progress
 
