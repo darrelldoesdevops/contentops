@@ -99,10 +99,12 @@ CI/CD via GitHub Actions: fmt, clippy, test, audit on macOS/Linux/Windows; five 
 | whisper non-macOS hint links to source | No canonical apt/choco package for whisper-cli | Good |
 | Per-architecture release jobs over matrix | Less risk to working macOS flow; release job stays on macos-latest for lipo | Good |
 | Three-column prerequisites table in README | Side-by-side macOS/Linux/Windows install commands at a glance | Good |
+| ORT_CACHE_DIR: ~/.ort-cache for CI | Normalizes ONNX Runtime cache path across all platforms; avoids platform-conditional logic | Good |
+| 4-platform CI matrix with cross-compile | macOS Intel via cross-compile on ARM64 runner; tests skip cross target (exec format error) | Good |
 
 | Silero VAD over silencedetect | Neural network trained for speech/non-speech; amplitude thresholds can't distinguish breaths from quiet speech | -- Pending |
 | Bundle ONNX model in binary | Zero setup for users; 1.8MB size acceptable for accurate VAD | -- Pending |
 | Remove --breaths flag | VAD inherently detects all non-speech; flag adds complexity without value | -- Pending |
 
 ---
-*Last updated: 2026-02-24 after v1.4 milestone start*
+*Last updated: 2026-02-24 after Phase 16*

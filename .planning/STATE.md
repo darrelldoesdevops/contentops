@@ -5,15 +5,15 @@
 See: .planning/PROJECT.md (updated 2026-02-24)
 
 **Core value:** Take a raw video file and remove dead air automatically
-**Current focus:** v1.4 Silero VAD -- Phase 16: Build & CI Verification
+**Current focus:** v1.4 Silero VAD -- Phase 17: Core VAD Integration
 
 ## Current Position
 
 Milestone: v1.4 Silero VAD
-Phase: 16 of 18 (Build & CI Verification)
-Plan: 1 of 1 in current phase
-Status: Phase complete
-Last activity: 2026-02-24 -- Phase 16 complete (voice_activity_detector + 4-platform CI with ORT cache)
+Phase: 17 of 18 (Core VAD Integration)
+Plan: 0 of TBD in current phase
+Status: Ready to plan
+Last activity: 2026-02-24 -- Phase 16 complete, transitioning to Phase 17
 
 Progress: [█░░░░░░░░░] 11% (v1.4)
 
@@ -55,10 +55,10 @@ None.
 
 - Phase 17: voice_activity_detector does not expose get_speech_timestamps(); must implement chunk accumulation loop -- verify exact iterator API from docs.rs before coding
 - Phase 17: Audio format must be 16kHz mono f32le before VAD or inference returns garbage -- assert format at VAD boundary
-- Phase 16 follow-up: Windows CI ORT cache with ~/.ort-cache should work (GHA expands ~ on Windows) but verify on first cold runner run
+- Windows CI ORT cache with ~/.ort-cache should work (GHA expands ~ on Windows) but verify on first cold runner run
 
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Phase 16 complete -- ready for Phase 17 (VAD Integration)
+Stopped at: Phase 16 complete, ready to discuss Phase 17
 Resume file: None
