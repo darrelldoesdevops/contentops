@@ -31,14 +31,22 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 
 ### Active
 
-(None -- planning next milestone)
+## Current Milestone: v1.4 Silero VAD
+
+**Goal:** Replace amplitude-based silence detection with Silero VAD neural network for accurate silence and breath removal.
+
+**Target features:**
+- Silero VAD integration via `silero-vad-rust` crate with ONNX model bundled in binary
+- Replace `silencedetect` in both `cut` and `pipeline` commands
+- Remove `--breaths` flag — VAD inherently detects all non-speech
+- Update `doctor` to verify ONNX runtime availability
 
 ### Out of Scope
 
 - GUI or web interface -- CLI-only personal tool
 - Cloud/API transcription -- local Whisper only for privacy and cost
 - Resolution/aspect ratio conversion -- TikTok standard only
-- Configurable silence thresholds -- hardcoded defaults work well for spoken content
+- Configurable silence thresholds -- VAD handles detection automatically
 - Pipeline config files (YAML/TOML) -- subcommands are sufficient
 - Batch processing -- single file at a time
 - Homebrew formula in homebrew-core -- review overhead, personal tap is sufficient
@@ -92,5 +100,9 @@ CI/CD via GitHub Actions: fmt, clippy, test, audit on macOS/Linux/Windows; five 
 | Per-architecture release jobs over matrix | Less risk to working macOS flow; release job stays on macos-latest for lipo | Good |
 | Three-column prerequisites table in README | Side-by-side macOS/Linux/Windows install commands at a glance | Good |
 
+| Silero VAD over silencedetect | Neural network trained for speech/non-speech; amplitude thresholds can't distinguish breaths from quiet speech | -- Pending |
+| Bundle ONNX model in binary | Zero setup for users; 1.8MB size acceptable for accurate VAD | -- Pending |
+| Remove --breaths flag | VAD inherently detects all non-speech; flag adds complexity without value | -- Pending |
+
 ---
-*Last updated: 2026-02-23 after v1.3 milestone*
+*Last updated: 2026-02-24 after v1.4 milestone start*
