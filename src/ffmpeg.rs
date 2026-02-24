@@ -113,6 +113,8 @@ pub fn extract_16k_wav(input: &str, dest: &Path, verbose: bool) -> Result<(), st
     Ok(())
 }
 
+// DEPRECATED: Phase 18 removes
+#[allow(dead_code)]
 pub fn run_silencedetect(
     input: &str,
     threshold_db: f64,

@@ -8,13 +8,15 @@ use crate::commands::{caption, cut, normalize, overlay};
 use crate::error::AppError;
 use crate::ffmpeg;
 use crate::silence;
-use crate::temp::TempFileRegistry;
+use crate::temp::{TempFileRegistry, make_temp_file};
+use crate::vad;
 
-const SILENCE_THRESHOLD_DB: f64 = -30.0;
-const SILENCE_MIN_DURATION: f64 = 0.5;
-const BREATH_THRESHOLD_DB: f64 = -24.0;
-const BREATH_MIN_DURATION: f64 = 0.15;
-const SPEECH_PADDING: f64 = 0.075;
+// DEPRECATED: Phase 18 removes
+// const SILENCE_THRESHOLD_DB: f64 = -30.0;
+// const SILENCE_MIN_DURATION: f64 = 0.5;
+// const BREATH_THRESHOLD_DB: f64 = -24.0;
+// const BREATH_MIN_DURATION: f64 = 0.15;
+// const SPEECH_PADDING: f64 = 0.075;
 
 pub fn run(args: PipelineArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow::Result<()> {
     if !args.input.exists() {
@@ -40,7 +42,7 @@ pub fn run(args: PipelineArgs, verbose: bool, registry: &TempFileRegistry) -> an
             args.model.display()
         );
         eprintln!("  2. fix        → LLM transcription correction");
-        eprintln!("  3. cut        → Normalize + silencedetect + word-protected cut");
+        eprintln!("  3. cut        → Normalize + VAD-based silence removal");
         eprintln!("  4. caption    → Burn captions onto cut video");
         eprintln!("  5. overlay    → Add title overlay");
         eprintln!();
@@ -92,13 +94,26 @@ fn run_stages(
     output: &Path,
     text: Option<&str>,
     font_size: Option<u32>,
-    breaths: bool,
+    _breaths: bool,
     verbose: bool,
     registry: &TempFileRegistry,
 ) -> anyhow::Result<()> {
-    // Stage 1: Transcribe original video
+    let input_str = input.to_string_lossy().to_string();
+    let parent_dir = input.parent().unwrap_or(Path::new("."));
+
+    // Extract shared 16kHz WAV before Stage 1 (reused by Whisper + VAD)
+    let wav_temp = make_temp_file(parent_dir, ".wav")?;
+    let wav_path = wav_temp.path().to_path_buf();
+    registry.register(wav_path.clone());
+
+    ffmpeg::extract_16k_wav(&input_str, &wav_path, verbose).map_err(|e| AppError::StageIo {
+        stage: "wav-extraction".to_string(),
+        source: e,
+    })?;
+
+    // Stage 1: Transcribe original video (reuses shared WAV)
     eprintln!("\n{}", "Stage 1/5: transcribe".bold());
-    let mut words = caption::transcribe(input, model, "en", verbose, registry)?;
+    let mut words = caption::transcribe(input, model, "en", verbose, registry, Some(&wav_path))?;
 
     if words.is_empty() {
         eprintln!("Warning: No speech detected");
@@ -109,10 +124,10 @@ fn run_stages(
     eprintln!("\n{}", "Stage 2/5: fix".bold());
     caption::fix_transcription(&mut words, verbose)?;
 
-    // Stage 3: Hybrid cut (normalize + silencedetect + word protection)
+    // Stage 3: VAD-based silence removal
     eprintln!("\n{}", "Stage 3/5: cut".bold());
 
-    // 3a: Normalize audio for consistent silence detection
+    // 3a: Normalize audio
     let normalized = normalize::normalize_to_temp(input, verbose, registry)?;
     let normalized_str = normalized.to_string_lossy().to_string();
 
@@ -122,30 +137,27 @@ fn run_stages(
             source: e,
         })?;
 
-    // 3b: Detect silence/breaths via amplitude
-    let (threshold, min_dur) = if breaths {
-        (BREATH_THRESHOLD_DB, BREATH_MIN_DURATION)
-    } else {
-        (SILENCE_THRESHOLD_DB, SILENCE_MIN_DURATION)
-    };
-    let detect_label = if breaths {
-        "silence and breaths"
-    } else {
-        "silence"
-    };
+    // DEPRECATED: Phase 18 removes
+    // let (threshold, min_dur) = if breaths {
+    //     (BREATH_THRESHOLD_DB, BREATH_MIN_DURATION)
+    // } else {
+    //     (SILENCE_THRESHOLD_DB, SILENCE_MIN_DURATION)
+    // };
+    // let detect_label = if breaths { "silence and breaths" } else { "silence" };
+    // let stderr = ffmpeg::run_silencedetect(&normalized_str, threshold, min_dur).map_err(|e| {
+    //     AppError::StageIo { stage: "silence-detect".to_string(), source: e }
+    // })?;
+    // let silences = silence::parse_silencedetect(&stderr, video_duration);
 
-    let stderr =
-        ffmpeg::run_silencedetect(&normalized_str, threshold, min_dur).map_err(|e| {
-            AppError::StageIo {
-                stage: "silence-detect".to_string(),
-                source: e,
-            }
-        })?;
-    let silences = silence::parse_silencedetect(&stderr, video_duration);
+    // 3b: Run VAD on shared WAV
+    let speeches = vad::run_vad(&wav_path, video_duration)?;
 
-    if silences.is_empty() {
-        eprintln!("No {} detected — skipping cut stage", detect_label);
-        // Copy normalized file as-is for subsequent stages
+    // Clean up shared WAV (no longer needed)
+    let _ = std::fs::remove_file(&wav_path);
+    registry.remove(&wav_path);
+
+    if speeches.is_empty() {
+        eprintln!("No speech detected -- skipping cut stage");
         let cut_output = temp_dir.join("cut.mp4");
         std::fs::copy(&normalized, &cut_output).map_err(|e| AppError::StageIo {
             stage: "copy-normalized".to_string(),
@@ -165,42 +177,19 @@ fn run_stages(
         );
     }
 
-    // 3c: Filter — only keep silences where no word midpoint falls
-    let word_times: Vec<(f64, f64)> = words.iter().map(|w| (w.start, w.end)).collect();
-    let safe_silences = silence::filter_silences_by_words(&silences, &word_times);
+    let total_silence = silence::total_silence_from_speeches(&speeches, video_duration);
+    eprintln!(
+        "Found {} speech segments, removing {:.1}s of silence",
+        speeches.len(),
+        total_silence
+    );
 
-    if verbose {
-        eprintln!(
-            "  silencedetect found {} regions, {} safe after word filtering",
-            silences.len(),
-            safe_silences.len()
-        );
-    }
+    // DEPRECATED: Phase 18 removes
+    // let word_times: Vec<(f64, f64)> = words.iter().map(|w| (w.start, w.end)).collect();
+    // let safe_silences = silence::filter_silences_by_words(&silences, &word_times);
+    // let speeches = silence::silence_to_speech(&safe_silences, video_duration, SPEECH_PADDING);
 
-    if safe_silences.is_empty() {
-        eprintln!("No safe {} regions to cut (all overlap speech)", detect_label);
-        let cut_output = temp_dir.join("cut.mp4");
-        std::fs::copy(&normalized, &cut_output).map_err(|e| AppError::StageIo {
-            stage: "copy-normalized".to_string(),
-            source: e,
-        })?;
-        let adjusted_words = words.clone();
-
-        return finish_stages(
-            temp_dir,
-            &cut_output,
-            &adjusted_words,
-            output,
-            text,
-            font_size,
-            verbose,
-            registry,
-        );
-    }
-
-    // 3d: Convert filtered silences → speech intervals → cut
-    let speeches = silence::silence_to_speech(&safe_silences, video_duration, SPEECH_PADDING);
-
+    // 3c: Build filter and cut
     let cut_output = temp_dir.join("cut.mp4");
     let concat_filter = silence::build_concat_filter(&speeches);
     let cut_str = cut_output.to_string_lossy().to_string();
@@ -234,7 +223,7 @@ fn run_stages(
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
-    let message = format!("Cutting {} from {}...", detect_label, filename);
+    let message = format!("Cutting silence from {}...", filename);
 
     let result = if verbose {
         eprintln!("Running: ffmpeg {}", ffmpeg_args.join(" "));
@@ -250,12 +239,10 @@ fn run_stages(
 
     match result {
         Ok(ref o) if o.success => {
-            let removed = silence::total_silence_removed(&safe_silences, SPEECH_PADDING);
             eprintln!(
-                "\u{2713} Removed {:.1}s of {} ({} regions)",
-                removed,
-                detect_label,
-                safe_silences.len()
+                "\u{2713} Removed {:.1}s of silence ({} regions)",
+                total_silence,
+                speeches.len()
             );
         }
         Ok(o) => {
@@ -276,7 +263,7 @@ fn run_stages(
         }
     }
 
-    // 3e: Adjust word timestamps to match the cut video
+    // 3d: Adjust word timestamps to match the cut video
     let word_data: Vec<(f64, f64, String)> = words
         .iter()
         .map(|w| (w.start, w.end, w.word.clone()))
@@ -312,11 +299,10 @@ fn finish_stages(
 ) -> anyhow::Result<()> {
     // Write JSON sidecar (for overlay auto-title)
     let caption_json = temp_dir.join("captioned.json");
-    let json_content = serde_json::to_string_pretty(words)
-        .map_err(|e| AppError::ParseFailed {
-            stage: "caption-json".into(),
-            message: e.to_string(),
-        })?;
+    let json_content = serde_json::to_string_pretty(words).map_err(|e| AppError::ParseFailed {
+        stage: "caption-json".into(),
+        message: e.to_string(),
+    })?;
     std::fs::write(&caption_json, json_content).map_err(|e| AppError::StageIo {
         stage: "write-json".to_string(),
         source: e,

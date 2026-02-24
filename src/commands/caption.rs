@@ -12,14 +12,14 @@ use crate::ffmpeg;
 use crate::temp::{TempFileRegistry, make_temp_file};
 use crate::ui;
 
-#[derive(serde::Serialize, Deserialize)]
-struct Word {
-    word: String,
-    start: f64,
-    end: f64,
+#[derive(serde::Serialize, Deserialize, Clone)]
+pub struct Word {
+    pub word: String,
+    pub start: f64,
+    pub end: f64,
 }
 
-struct SrtEntry {
+pub struct SrtEntry {
     index: usize,
     start: f64,
     end: f64,
@@ -71,7 +71,7 @@ fn derive_caption_output(input: &Path, suffix: &str, ext: &str) -> PathBuf {
     parent.join(format!("{}_{}.{}", stem, suffix, ext))
 }
 
-fn group_words_into_srt(words: &[Word]) -> Vec<SrtEntry> {
+pub fn group_words_into_srt(words: &[Word]) -> Vec<SrtEntry> {
     let mut entries = Vec::new();
     let mut current_words: Vec<&Word> = Vec::new();
     let mut index = 1;
@@ -187,7 +187,7 @@ fn format_ass_time(seconds: f64) -> String {
     format!("{}:{:02}:{:02}.{:02}", hours, minutes, secs, cs)
 }
 
-fn generate_ass(words: &[Word]) -> String {
+pub fn generate_ass(words: &[Word]) -> String {
     let mut output = String::new();
 
     // Script Info
@@ -244,7 +244,7 @@ fn generate_ass(words: &[Word]) -> String {
     output
 }
 
-fn format_srt(entries: &[SrtEntry]) -> String {
+pub fn format_srt(entries: &[SrtEntry]) -> String {
     entries
         .iter()
         .map(|entry| {
@@ -260,7 +260,7 @@ fn format_srt(entries: &[SrtEntry]) -> String {
         .join("\n")
 }
 
-fn fix_transcription(words: &mut [Word], verbose: bool) -> anyhow::Result<()> {
+pub fn fix_transcription(words: &mut [Word], verbose: bool) -> anyhow::Result<()> {
     require_claude()?;
 
     let words_json = serde_json::to_string_pretty(&words).unwrap_or_default();
@@ -365,6 +365,229 @@ fn fix_transcription(words: &mut [Word], verbose: bool) -> anyhow::Result<()> {
         pb.finish_with_message(format!("Transcription fixed ({} corrections)", fixes));
     } else if fixes > 0 {
         eprintln!("Fixed {} words", fixes);
+    }
+
+    Ok(())
+}
+
+pub fn transcribe(
+    input: &Path,
+    model: &Path,
+    lang: &str,
+    verbose: bool,
+    registry: &TempFileRegistry,
+    wav_path: Option<&Path>,
+) -> anyhow::Result<Vec<Word>> {
+    require_ffmpeg()?;
+    require_whisper()?;
+
+    let owns_wav = wav_path.is_none();
+    let parent_dir = input.parent().unwrap_or(Path::new("."));
+
+    let (temp_wav, _temp_file) = if let Some(provided) = wav_path {
+        (provided.to_path_buf(), None)
+    } else {
+        let temp_file = make_temp_file(parent_dir, ".wav")?;
+        let path = temp_file.path().to_path_buf();
+        registry.register(path.clone());
+
+        let input_str = input.to_string_lossy();
+
+        let spinner = if !verbose {
+            let filename = input.file_name().unwrap_or_default().to_string_lossy();
+            Some(ui::make_spinner(format!("Extracting audio from {}...", filename)))
+        } else {
+            None
+        };
+
+        ffmpeg::extract_16k_wav(&input_str, &path, verbose).map_err(|e| {
+            if let Some(pb) = &spinner {
+                pb.finish_and_clear();
+            }
+            AppError::StageIo {
+                stage: "audio-extraction".to_string(),
+                source: e,
+            }
+        })?;
+
+        if let Some(ref pb) = spinner {
+            pb.finish_with_message("Audio extracted");
+        }
+
+        (path, Some(temp_file))
+    };
+
+    let wav_str = temp_wav.to_string_lossy();
+
+    let spinner = if !verbose {
+        Some(ui::make_spinner("Transcribing with Whisper..."))
+    } else {
+        eprintln!(
+            "Running: whisper-cli -m {} -f {} --output-json --max-len 1 -l {}",
+            model.display(),
+            wav_str,
+            lang
+        );
+        None
+    };
+
+    let whisper_output = Command::new("whisper-cli")
+        .arg("-m")
+        .arg(model)
+        .arg("-f")
+        .arg(&temp_wav)
+        .arg("--output-json")
+        .arg("--max-len")
+        .arg("1")
+        .arg("--split-on-word")
+        .arg("-l")
+        .arg(lang)
+        .stdin(Stdio::null())
+        .stdout(if verbose {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        })
+        .stderr(if verbose {
+            Stdio::inherit()
+        } else {
+            Stdio::piped()
+        })
+        .output()
+        .map_err(|e| AppError::StageIo {
+            stage: "transcription".to_string(),
+            source: e,
+        })?;
+
+    if !whisper_output.status.success() {
+        if let Some(pb) = spinner {
+            pb.finish_and_clear();
+        }
+        let code = whisper_output.status.code().unwrap_or(-1);
+        let stderr = last_n_lines(&whisper_output.stderr, 20);
+        return Err(AppError::WhisperFailed {
+            stage: "transcription".to_string(),
+            code,
+            stderr,
+        }
+        .into());
+    }
+
+    if let Some(ref pb) = spinner {
+        pb.finish_with_message("Transcription complete");
+    }
+
+    let whisper_json_path = PathBuf::from(format!("{}.json", temp_wav.display()));
+    registry.register(whisper_json_path.clone());
+
+    let json_content = std::fs::read_to_string(&whisper_json_path)
+        .map_err(|e| AppError::StageIo {
+            stage: "read-whisper-json".to_string(),
+            source: e,
+        })?;
+
+    let whisper_data: WhisperJson =
+        serde_json::from_str(&json_content).map_err(|e| AppError::ParseFailed {
+            stage: "whisper-json".into(),
+            message: e.to_string(),
+        })?;
+
+    let raw_words: Vec<Word> = whisper_data
+        .transcription
+        .iter()
+        .map(|seg| {
+            let text = seg
+                .text
+                .trim()
+                .replace(|c: char| c.is_ascii_punctuation() && c != '\'', "");
+            Word {
+                word: text,
+                start: parse_timestamp(&seg.timestamps.from),
+                end: parse_timestamp(&seg.timestamps.to),
+            }
+        })
+        .filter(|w| !w.word.is_empty())
+        .collect();
+
+    let mut words: Vec<Word> = Vec::with_capacity(raw_words.len());
+    for w in raw_words {
+        if !words.is_empty() && w.word.starts_with('\'') {
+            let prev = words.last_mut().unwrap();
+            prev.word.push_str(&w.word);
+            prev.end = w.end;
+        } else {
+            words.push(w);
+        }
+    }
+
+    if owns_wav {
+        let _ = std::fs::remove_file(&temp_wav);
+        registry.remove(&temp_wav);
+    }
+    let _ = std::fs::remove_file(&whisper_json_path);
+    registry.remove(&whisper_json_path);
+
+    Ok(words)
+}
+
+pub fn burn_captions(
+    input: &Path,
+    words: &[Word],
+    output: &Path,
+    verbose: bool,
+    registry: &TempFileRegistry,
+) -> anyhow::Result<()> {
+    require_ffmpeg_libass()?;
+
+    let parent_dir = input.parent().unwrap_or(Path::new("."));
+    let ass_content = generate_ass(words);
+    let ass_temp = make_temp_file(parent_dir, ".ass")?;
+    let ass_path = ass_temp.path().to_path_buf();
+    registry.register(ass_path.clone());
+    std::fs::write(&ass_path, ass_content)
+        .map_err(|e| AppError::StageIo { stage: "write-ass".to_string(), source: e })?;
+
+    let input_str = input.to_string_lossy();
+    let vf_string = format!("ass={}", ass_path.to_string_lossy());
+    let output_str = output.to_string_lossy().to_string();
+
+    let burn_args = [
+        "-i", &input_str, "-vf", &vf_string,
+        "-c:v", "libx264", "-crf", "14", "-preset", "slow", "-pix_fmt", "yuv420p",
+        "-c:a", "copy", &output_str,
+    ];
+
+    let spinner = if !verbose {
+        Some(ui::make_spinner("Burning captions..."))
+    } else {
+        eprintln!("Running: ffmpeg {}", burn_args.join(" "));
+        None
+    };
+
+    let result = if verbose {
+        ffmpeg::run_ffmpeg_verbose(&burn_args)
+    } else {
+        ffmpeg::run_ffmpeg(&burn_args)
+    };
+
+    let _ = std::fs::remove_file(&ass_path);
+    registry.remove(&ass_path);
+
+    match result {
+        Ok(ref o) if o.success => {
+            if let Some(ref pb) = spinner { pb.finish_with_message("Captions burned"); }
+        }
+        Ok(o) => {
+            if let Some(pb) = spinner { pb.finish_and_clear(); }
+            let truncated = last_n_lines(&o.stderr, 20);
+            return Err(AppError::FfmpegFailed {
+                stage: "caption-burn".to_string(), code: o.exit_code.unwrap_or(-1), stderr: truncated,
+            }.into());
+        }
+        Err(io_err) => {
+            if let Some(pb) = spinner { pb.finish_and_clear(); }
+            return Err(AppError::StageIo { stage: "caption-burn".to_string(), source: io_err }.into());
+        }
     }
 
     Ok(())
