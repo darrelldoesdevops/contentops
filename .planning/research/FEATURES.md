@@ -1,156 +1,299 @@
 # Feature Research
 
-**Domain:** Homebrew personal tap distribution + CLI documentation (video processing tool)
-**Researched:** 2026-02-20
-**Confidence:** HIGH
-**Milestone:** v1.2 — Homebrew tap + README (additive to existing v1.1 CI/CD, pre-built macOS binaries)
+**Domain:** Neural voice activity detection (Silero VAD) — Rust CLI video processing tool
+**Researched:** 2026-02-24
+**Confidence:** HIGH (parameters), MEDIUM (tuning guidance), MEDIUM (crate selection)
+**Milestone:** v1.4 — Silero VAD replacing FFmpeg silencedetect in `cut` and `pipeline`
 
 ---
 
 ## Context
 
-This research covers only the two new feature areas for the v1.2 milestone. Existing features (cut, caption, overlay, doctor, pipeline, CI/CD with GitHub Releases) are complete and not repeated. The Homebrew tap is a personal tap (not homebrew-core), macOS-only, distributing the pre-built binaries already shipping in GitHub Releases.
+This research covers only the v1.4 milestone additions. Existing features (silence removal via silencedetect, --breaths flag, audio normalization, Whisper transcription, caption burn, title overlays, pipeline) are complete and not repeated here.
 
-The prior SUMMARY.md explicitly deferred Homebrew as "ongoing maintenance burden" for v1.1. That calculus has changed: CI/CD now produces signed, checksummed binaries at a stable URL pattern, which is the only prerequisite for a tap that distributes pre-built binaries rather than building from source.
+**Current pipeline (to be replaced at `cut` stage):**
+
+```
+Input video
+  → normalize (FFmpeg loudnorm)
+  → silencedetect -af silencedetect=n=-30dB:d=0.5 (stderr parse)
+  → silence_to_speech() → SpeechInterval list
+  → build_concat_filter() → FFmpeg concat
+  → output video
+```
+
+**Target pipeline after v1.4:**
+
+```
+Input video
+  → normalize (FFmpeg loudnorm) [unchanged]
+  → FFmpeg: extract 16kHz mono PCM f32le → raw samples
+  → Silero VAD: samples → Vec<SpeechInterval> with (start_sec, end_sec)
+  → build_concat_filter() [unchanged]
+  → FFmpeg concat [unchanged]
+  → output video
+```
 
 ---
 
-## Feature Area 1: Homebrew Personal Tap
+## How Silero VAD Works
 
-### What a personal tap is
+### Model architecture
 
-A personal tap is a GitHub repository named `homebrew-<something>` (the `homebrew-` prefix is mandatory for the one-argument `brew tap` shorthand). It contains Ruby formula files that tell Homebrew where to download a binary and how to install it. Unlike homebrew-core formulas, personal tap formulas are not reviewed by Homebrew maintainers — they are the author's responsibility entirely.
+Silero VAD is a pre-trained ONNX model (~260K parameters, ~2MB for V5) that classifies short audio chunks as speech or non-speech. It processes fixed-size windows of audio samples and outputs a float probability (0.0–1.0) per window. The model was trained on 6000+ languages and is robust to background noise, mic quality variation, and accented speech — all conditions common in TikTok talking-head recordings.
 
-For `contentops`, the tap downloads the pre-built binary already produced by the release workflow, installs it into `~/.local/bin` (or `/opt/homebrew/bin`), and runs a smoke test. It does not compile Rust. It does not require Rust to be installed on the user's machine.
+### Audio requirements
+
+- **Sample rate:** 16000 Hz only for the standard model (8000 Hz also supported, but 16kHz has better accuracy)
+- **Channels:** Mono only — stereo must be downmixed before inference
+- **Format:** Linear PCM, float32 samples preferred by most Rust crates
+- **Window size:** Fixed at **512 samples at 16kHz** (= 32ms per chunk). Other sizes (1024, 1536) are permitted but may affect accuracy. The model was explicitly trained on 30ms, 60ms, and 100ms chunks.
+- **Pre-processing required:** Video audio at 44.1kHz/48kHz stereo must be resampled to 16kHz mono before VAD. FFmpeg handles this in-process via:
+  ```
+  ffmpeg -i input.mp4 -ac 1 -ar 16000 -f f32le -vn pipe:1
+  ```
+
+### Output: speech segments (not silence)
+
+Silero VAD **returns speech timestamps** — `(start_sec, end_sec)` pairs for detected speech. This is the inverse of the current FFmpeg silencedetect approach which returns silence intervals. The `silence_to_speech()` function in `src/silence.rs` becomes unnecessary; VAD output maps directly to `Vec<SpeechInterval>`.
+
+```
+Current: silencedetect → parse silence → invert to speech → concat filter
+Target:  Silero VAD   → speech timestamps directly → concat filter
+```
+
+### Parameters
+
+| Parameter | Type | Default | Range | What It Does |
+|-----------|------|---------|-------|--------------|
+| `threshold` | f32 | 0.5 | 0.0–1.0 | Probability cutoff: chunks above this are speech. Lower = more sensitive, captures quiet speech. Higher = more conservative, ignores marginal audio. |
+| `min_speech_duration_ms` | u32 | 250 | 50–2000 | Minimum contiguous speech duration to retain. Shorter speech chunks are dropped. Prevents isolated coughs or clicks from appearing as speech. |
+| `min_silence_duration_ms` | u32 | 100 | 100–2000 | Silence gap required to split two speech segments. If silence between two utterances is shorter than this, they merge into one segment. |
+| `speech_pad_ms` | u32 | 30 | 0–500 | Padding added to each side of every speech segment. Preserves natural leading/trailing audio around words. |
+| `max_speech_duration_s` | f32 | ∞ | — | Maximum speech segment length before forced split. Relevant for streaming; not needed for offline batch processing. |
+| `window_size_samples` | u32 | 512 | 512/1024/1536 | Chunk size for inference. 512 samples @ 16kHz = 32ms per inference call. |
+
+**Note on `speech_pad_ms` vs existing `SPEECH_PADDING`:** The current codebase applies `SPEECH_PADDING = 0.075s` (75ms) to speech intervals post-detection. VAD's native `speech_pad_ms = 30ms` is lower. For talking-head video, the padding should be configured to match the original 75ms behavior to avoid clipped word starts/ends.
+
+---
+
+## Rust Crate Landscape
+
+Four Rust VAD crates are available. Evaluated for: model bundling, maintenance, API quality, ONNX runtime handling.
+
+### Option A: `voice_activity_detector` (RECOMMENDED)
+
+- **Version:** 0.2.1 (August 2025, actively maintained)
+- **Downloads:** ~2,557/month; 11 releases; 28 commits
+- **Model:** Silero VAD V5 (opset 16), bundled implicitly — ONNX Runtime downloaded automatically at compile time
+- **API style:** Iterator/stream over raw samples; returns probability per chunk; label extensions emit `Speech`/`NonSpeech` enums with configurable threshold and padding chunks
+- **Sample rates:** 8kHz or 16kHz
+- **ONNX Runtime:** Downloaded from Microsoft during build (not linked at runtime); `load-dynamic` feature available for custom binary paths
+- **Cross-platform:** Windows, macOS, Linux verified
+- **Limitation:** Does not expose high-level `get_speech_timestamps()` — requires implementing the timestamp accumulation loop in application code
+- **Why recommended:** Most actively maintained Rust Silero VAD crate as of 2025. Clean API. V5 model.
+
+### Option B: `silero-vad-rust`
+
+- **Model:** Silero ONNX opset 15 & 16 bundled in `src/silero_vad/data`
+- **API:** `audio_forward()` for batch; `forward_chunk()` for streaming with state
+- **Limitation:** Less documentation, unclear maintenance cadence
+- **Why not:** Weaker maintenance signal vs voice_activity_detector
+
+### Option C: `silero-vad-rs`
+
+- **Model:** NOT bundled — user must download ONNX file separately
+- **Why not:** Requires user setup step; violates zero-setup distribution requirement. 3 total commits, inactive.
+
+### Option D: Roll own via `ort` crate directly
+
+- **Model:** Download silero_vad.onnx (V5, ~2MB), `include_bytes!()` into binary
+- **API:** Write inference loop against raw ONNX tensors
+- **Why not:** Significantly more implementation work; no meaningful advantage over voice_activity_detector.
+
+---
+
+## Feature Landscape
 
 ### Table Stakes (Users Expect These)
 
 | Feature | Why Expected | Complexity | Notes |
 |---------|--------------|------------|-------|
-| `brew tap darrelltang/tap` works | The entire point. Without this, there is no tap. | LOW | Repo must be named `homebrew-tap` (or `homebrew-contentops`). Public repo required — Homebrew cannot fetch private release assets. |
-| `brew install contentops` installs a working binary | Users expect `brew install` to produce a functional binary on PATH. | LOW | Formula `def install` uses `bin.install "contentops"`. Binary must be executable and respond to `--version`. |
-| ARM64 and x86_64 binary selection | M1/M2/M3 Macs (ARM64) and Intel Macs (x86_64) are both in use. Wrong binary = silent failure or `Exec format error`. | LOW | Formula uses `on_macos do / if Hardware::CPU.arm?` conditional blocks to select correct release asset. Both assets already exist in GitHub Releases. |
-| SHA256 checksum verification | Homebrew always verifies checksums. Missing or wrong SHA256 = install fails. | LOW | SHA256 files already generated by release workflow (`.sha256` files). Formula must reference exact hash per architecture. |
-| Formula has `test do` block | `brew test contentops` is how users verify installation. `brew audit` warns if absent. | LOW | `system "#{bin}/contentops", "--version"` is sufficient. |
-| Formula has `desc` and `homepage` | `brew info contentops` shows these. Users expect them. Empty fields are confusing. | LOW | `desc "Video processing pipeline"`, `homepage "https://github.com/darrelltang/contentops"`. |
-| `brew upgrade contentops` works after formula update | Formula update (new version + new SHA256) must not break existing install or require user intervention. | LOW | No special handling needed — Homebrew's upgrade path is: pull new formula, unlink old, install new. Works automatically when formula is updated correctly. |
+| Speech detection accuracy on quiet/breathy audio | The core value prop of VAD over silencedetect. If VAD performs worse on normal talking-head content, the milestone fails. | LOW (model is pre-trained) | Use threshold=0.5 default; verify on representative samples before shipping. |
+| Zero additional user setup | Binary already requires ffmpeg + whisper-cli. Adding "download ONNX model" would break this. VAD model must ship inside the binary. | MEDIUM | ONNX runtime downloads at compile time (build.rs); model bytes embedded via include_bytes! or crate-internal. |
+| Same CLI surface as before | Replacing an implementation detail should not require users to learn new flags. Cut and pipeline commands should work identically. | LOW | Remove --breaths; all other flags unchanged. |
+| Dry-run still works | --dry-run shows what would be cut. VAD produces the same SpeechInterval output format, so dry-run display is unchanged. | LOW | Output is already in seconds; format unchanged. |
+| Doctor still validates readiness | Doctor checks prerequisites. If ONNX runtime is bundled (compile-time download), no new runtime check needed. | LOW | No new doctor check required if ort handles runtime linkage at build time. Verify on CI. |
+| Correct output for 16kHz requirement | Silero VAD requires 16kHz mono input. The cut command currently sends normalized audio (44.1kHz/48kHz) through silencedetect. VAD integration requires resampling step. | MEDIUM | Add FFmpeg pipe: extract 16kHz mono PCM before VAD. Keep normalized path for FFmpeg concat output. Two audio extraction paths: one for VAD (16kHz PCM), one for output concat (original rate normalized). |
 
 ### Differentiators (Competitive Advantage)
 
 | Feature | Value Proposition | Complexity | Notes |
 |---------|-------------------|------------|-------|
-| Auto-update formula on release via GitHub Actions | Manual formula updates on every release are easily forgotten. A workflow that updates SHA256 and version in the tap formula automatically removes the maintenance burden. | MEDIUM | Requires: (1) GitHub PAT with `repo` scope stored in contentops repo secrets, (2) workflow in release.yml that checks out homebrew-tap repo, runs a sed/script to update version + SHA256 values per architecture, commits and pushes. Cross-repo token is the only new credential required. |
-| `brew install darrelltang/tap/contentops` one-liner in README | Users can install without knowing anything about taps. The fully-qualified install command works without a prior `brew tap`. | LOW | The formula URL format `user/tap/formula` is a Homebrew feature. Just document it in the README. |
-| `caveats` block documenting whisper model requirement | `brew install contentops` succeeds but `contentops caption` fails without a whisper model. The caveats block shows after install: "caption requires a whisper model — download from huggingface.co". | LOW | `def caveats` block in formula. Shown once after `brew install`. |
+| --breaths removal | VAD detects all non-speech including breaths without a separate flag or threshold tuning. The user no longer needs to know what -24dB means. | LOW | Simply remove CutArgs.breaths and PipelineArgs.breaths from cli.rs. One less flag to explain. |
+| Configurable threshold (--vad-threshold) | Advanced users wanting to tune for noisy environments or quiet speakers can adjust the speech probability cutoff without recompiling. | LOW | Single f32 flag, default 0.5. Optional — could ship without it in v1.4 since default works for talking-head. |
+| Configurable min-silence (--min-silence-ms) | Replaces the hardcoded 500ms min_duration from silencedetect, exposed explicitly. Allows tuning between aggressive (200ms) and conservative (600ms) silence removal. | LOW | u32 flag in milliseconds. Meaningful range: 200–800ms for talking-head. |
 
 ### Anti-Features (Commonly Requested, Often Problematic)
 
 | Feature | Why Requested | Why Problematic | Alternative |
 |---------|---------------|-----------------|-------------|
-| Universal binary in formula | "One binary, simpler formula" | The universal binary is a fat binary that includes both ARM64 and Intel slices. It is larger (~2x) and offers no benefit on Homebrew since Homebrew already routes to the correct architecture. The `on_macos + Hardware::CPU.arm?` pattern is the correct approach. | Architecture-specific download per the conditional pattern. |
-| Building from source in formula | Avoids hosting binaries, "more transparent" | Requires Rust toolchain on user's machine, ffmpeg headers at compile time, whisper-rs native compilation (complex). Build time is 3-5 minutes. The pre-built binary approach is strictly better UX for a personal tool. | Pre-built binary distribution using existing GitHub Release assets. |
-| Submitting to homebrew-core | Wider distribution, `brew install contentops` without tapping | homebrew-core requires: actively maintained projects, cross-platform support, no vendored dependencies, Homebrew CI running on their infrastructure. contentops is macOS-only with whisper-rs native deps. It would be rejected. | Personal tap is the correct distribution model for this tool. |
-| Formula in the contentops repo itself | "Simpler, one repo" | Homebrew requires the tap to be a separate GitHub repo named `homebrew-*`. A formula inside the main repo cannot be tapped with `brew tap`. | Separate `homebrew-tap` repo (or `homebrew-contentops`). |
-| `brew services` integration | Allows `brew services start contentops` | `contentops` is a CLI tool invoked per-file, not a daemon. Services integration is for long-running background processes. | Not applicable. |
+| GPU acceleration / CUDA execution provider | "Faster inference" | VAD on 5-minute video runs in <500ms on CPU. GPU setup requires CUDA drivers not available on standard macOS. Adds platform complexity with no user-visible benefit for offline batch use. | Default CPU execution provider via ort. Fast enough. |
+| Streaming/realtime VAD mode | "Detect as audio plays" | contentops is a batch-processing offline tool. Streaming VAD is for voice assistants. Real-time output format (per-chunk Speech/NonSpeech) is incompatible with the concat filter approach. | Batch process entire audio then apply concat filter. |
+| Expose all VAD parameters as CLI flags | "Full control" | 5 new flags (threshold, min_speech_ms, min_silence_ms, speech_pad_ms, max_speech_s) clutters the interface. Most users never touch them. The current tool's value is simplicity. | Ship threshold + min_silence_ms as optional flags only. Leave others at tuned defaults. |
+| Auto-tune parameters from content | "VAD that adapts to podcast vs talking-head" | Adds inference-time complexity; no reliable way to classify content type from audio alone without another model. | Good defaults for talking-head; document manual flag tuning in --help. |
+| Standalone `vad` subcommand | "Inspect VAD results before cutting" | --dry-run already shows speech intervals. A separate vad subcommand duplicates the functionality of cut --dry-run with more API surface to maintain. | Keep --dry-run in cut command. |
 
 ---
 
-## Feature Area 2: Comprehensive README
+## Parameter Defaults for Talking-Head Content
 
-### What a CLI tool README must cover
+Talking-head content (solo speaker, low background noise, occasional pauses, no music) is the primary use case. Recommended defaults derived from:
+- Silero upstream defaults
+- LiveKit plugin defaults (min_silence=550ms for conversational speech)
+- faster-whisper defaults (speech_pad=400ms for Whisper compatibility)
+- Existing contentops behavior (SPEECH_PADDING=75ms, SILENCE_MIN_DURATION=500ms)
 
-Users land on the GitHub repo page before deciding whether to install. The README is the product's landing page, help text backup, and trust signal. For a video processing CLI, users arrive with a specific problem ("I need to auto-remove silence") and need to quickly determine: does this do what I need, how do I get it, and how do I use it.
+| Parameter | Upstream Default | Recommended for Talking-Head | Rationale |
+|-----------|-----------------|-------------------------------|-----------|
+| `threshold` | 0.5 | **0.5** | Works well for clean speech; no adjustment needed for talking-head |
+| `min_speech_duration_ms` | 250 | **250** | Filters isolated breath sounds, clicks without affecting normal speech |
+| `min_silence_duration_ms` | 100 | **400–500** | Matches existing 0.5s SILENCE_MIN_DURATION; prevents over-cutting between sentences |
+| `speech_pad_ms` | 30 | **75** | Matches existing SPEECH_PADDING=0.075s; preserves natural word boundaries |
+| `window_size_samples` | 512 | **512** | 32ms @ 16kHz; standard, well-tested chunk size |
 
-The contentops README has a unique shape because: (1) it has 5 subcommands with distinct flags, (2) it requires external prerequisites (ffmpeg, whisper-cli, a model file), (3) it now has a Homebrew install path alongside GitHub Releases, and (4) the `doctor` subcommand provides the primary onboarding experience.
+**Tuning guide for other content types (for documentation):**
 
-### Table Stakes (Users Expect These)
+- **Podcast (multiple speakers, cross-talk):** Lower `min_silence_duration_ms` to 200ms; speakers overlap and short gaps are not true silence.
+- **Noisy background (outdoor, ambient):** Raise `threshold` to 0.65–0.7; reduces false speech on rustling/wind.
+- **Quiet/soft speaker:** Lower `threshold` to 0.35–0.45; captures soft speech that would otherwise be classified as non-speech.
+- **Music beds:** VAD does not separate speech from music. Music is not silence and will not be removed. This is a known limitation — contentops is not designed for music-heavy content.
 
-| Feature | Why Expected | Complexity | Notes |
-|---------|--------------|------------|-------|
-| **What it does** — one-paragraph description | Users decide whether to continue reading in the first 10 seconds. Missing this = bounce. | LOW | Focus on the problem solved, not the technology stack. "Replaces CapCut's manual editing with a CLI pipeline" is more compelling than "Rust CLI using FFmpeg". |
-| **Prerequisites** section | contentops requires ffmpeg, ffprobe, whisper-cli, and a model file. Users who install via Homebrew and then get `Error: ffmpeg not found` feel deceived. | LOW | List each prerequisite, the install command, and which subcommands require it. Map directly to `doctor` output. |
-| **Installation** section with Homebrew instructions | Homebrew is the standard macOS package manager. Users expect `brew install` to be the primary installation path. | LOW | Show: (1) `brew install darrelltang/tap/contentops`, (2) manual download from GitHub Releases as alternative. |
-| **Usage** section with examples per subcommand | Users reference the README as help text when `--help` is insufficient. Each subcommand needs at least one realistic example. | LOW | Real examples with realistic paths. Not `input.mp4` — `recording.mp4 -o recording_final.mp4`. |
-| **`contentops doctor` as onboarding step** | Doctor is specifically designed to validate the installation. Telling users to run it before anything else surfaces configuration problems clearly. | LOW | "After installation, run `contentops doctor` to verify all prerequisites are installed and configured." |
-| **`contentops pipeline` as the primary workflow** | Pipeline is the highest-value command. It should be the first thing users learn, with individual subcommands as "advanced usage". | LOW | Invert the typical "list subcommands alphabetically" pattern. Lead with the end-to-end workflow example. |
-| **License** | Standard expectation for any open-source project. Users and organizations need to know before adopting. | LOW | Single line or badge linking to LICENSE file. |
+---
 
-### Differentiators (Competitive Advantage)
+## Output Format: Speech Timestamps in Seconds
 
-| Feature | Value Proposition | Complexity | Notes |
-|---------|-------------------|------------|-------|
-| **Full flag reference table per subcommand** | `--help` output is available at the terminal but not searchable via GitHub or Google. A flag table in the README is indexed and discoverable. | LOW | One table per subcommand: flag, type, default, description. Directly from `cli.rs` — no invention required. |
-| **Workflow diagram or ASCII art** | `cut → caption → overlay` is the core pipeline. Visual representation makes the composition obvious. | LOW | ASCII art preferred over image — renders in all Markdown contexts, no hosting required. |
-| **Copy-paste pipeline command** | The `pipeline` command with all flags is long. Providing the exact command with realistic values saves users from assembling it from the flag reference. | LOW | `contentops pipeline recording.mp4 --model ~/.cache/whisper/ggml-base.en.bin --cut --caption --burn --overlay --auto` |
-| **`contentops doctor` output as trust signal** | Showing what a healthy `doctor` run looks like reassures users that the tool is polished before they install. | LOW | Include sample `doctor` output (clean state) in the README. Sets expectations for the `[ok]/[fail]/[warn]` format. |
-| **Troubleshooting section with common errors** | "Why is `contentops caption` failing?" is the most common user question. Pre-answering it in the README reduces support friction. | LOW | Map each common error to its fix. Source from `doctor` check failures and `error.rs` messages. |
+Silero VAD produces speech segments in seconds. This maps directly to the existing `SpeechInterval` struct:
 
-### Anti-Features (Commonly Requested, Often Problematic)
+```rust
+pub struct SpeechInterval {
+    pub start: f64,  // seconds
+    pub end: f64,    // seconds
+}
+```
 
-| Feature | Why Requested | Why Problematic | Alternative |
-|---------|---------------|-----------------|-------------|
-| **Comprehensive API documentation / full option spec as primary content** | "Document everything" | For a personal CLI tool with `--help` output, extensive option documentation buries the 80% use case. Users stop reading before they get to the useful part. | Lead with the common workflow. Flag reference as a collapsible section or at the end. |
-| **Architecture / internals section** | "Explain how it works" | Target audience is content creators, not Rust developers. Implementation details in the README signal "for developers" which can discourage adoption. | Keep internals in separate docs or CONTRIBUTING.md if needed. |
-| **Badges for everything** | "Shows project health" | Build status, coverage, crates.io version, license, deps — each badge is a network request that can fail or show stale data. Three badges maximum before it becomes noise. | Build status badge (CI) + license badge only. |
-| **Video demo / GIF** | "Shows the tool in action" | GIFs are large (1-10MB), slow to load on cellular, invisible in text-only Git viewers, and become stale quickly. They also require hosting. | Prefer text output samples. Show terminal output as code blocks. |
-| **Changelog in README** | "One place for everything" | Changelogs in READMEs grow unbounded, push the actual content off the screen, and are redundant with GitHub Releases. | Link to GitHub Releases for the changelog. CHANGELOG.md as a separate file if needed. |
+The `build_concat_filter()` function in `src/silence.rs` already consumes `Vec<SpeechInterval>` and produces the FFmpeg filter string. No changes needed there.
+
+**Data flow replacement:**
+
+```
+Before:
+  parse_silencedetect(stderr) → Vec<SilenceInterval>
+  silence_to_speech(silences) → Vec<SpeechInterval>
+
+After:
+  vad_detect(pcm_samples)    → Vec<SpeechInterval>   (direct)
+```
+
+The `parse_silencedetect`, `silence_to_speech`, `filter_silences_by_words`, `words_to_speech_intervals` functions in `src/silence.rs` become dead code after VAD integration. They can be deleted or preserved if the breaths-via-transcription path is kept.
+
+---
+
+## Integration Architecture
+
+### Audio path for VAD (new, parallel to existing normalize path)
+
+```
+Input video
+  │
+  ├──[existing]──> FFmpeg loudnorm → normalized temp .mp4 → concat filter output
+  │
+  └──[new]──> FFmpeg pipe:
+                -i normalized.mp4
+                -ac 1 -ar 16000 -f f32le -vn pipe:1
+              → Vec<f32> samples in Rust
+              → voice_activity_detector crate
+              → Vec<SpeechInterval>
+              → build_concat_filter()
+```
+
+### Audio pre-processing via FFmpeg pipe
+
+Use FFmpeg to extract 16kHz mono f32le audio from the normalized video to stdout, captured in Rust as raw bytes → cast to `Vec<f32>`:
+
+```rust
+// FFmpeg command
+// ffmpeg -i {normalized_path} -ac 1 -ar 16000 -f f32le -vn pipe:1
+let output = Command::new("ffmpeg")
+    .args(["-i", &normalized_path, "-ac", "1", "-ar", "16000", "-f", "f32le", "-vn", "pipe:1"])
+    .output()?;
+
+let bytes = output.stdout;
+// bytes.len() must be divisible by 4 (f32 = 4 bytes)
+let samples: Vec<f32> = bytes
+    .chunks_exact(4)
+    .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+    .collect();
+```
+
+### ONNX runtime at build time
+
+The `voice_activity_detector` crate downloads ONNX Runtime from Microsoft's servers during `cargo build`. This happens once, is cached by Cargo, and is included in the CI pipeline without extra configuration. No runtime dynamic library dependency. No user-visible setup step.
+
+**Cross-compilation concern (MEDIUM confidence):** Building for Linux/Windows on macOS CI may require ONNX Runtime binaries for those platforms to be available at link time. Verify in CI before shipping. The `load-dynamic` feature may simplify cross-compilation by deferring library loading.
 
 ---
 
 ## Feature Dependencies
 
 ```
-[Existing: GitHub Releases CI/CD]
-    |
-    v
-[Homebrew tap repo] ──requires──> [GitHub Releases public binary URLs]
-    |                               (contentops-aarch64-apple-darwin, contentops-x86_64-apple-darwin)
-    |                               (existing .sha256 files)
-    |
-    v
-[Formula: on_macos + Hardware::CPU.arm? blocks]
-    |
-    v
-[Auto-update workflow] ──requires──> [GitHub PAT with repo scope]
-                                      [Formula version + sha256 placeholders in tap repo]
+[FFmpeg loudnorm normalize step]
+    └──produces──> normalized temp .mp4
+                       └──feeds──> [FFmpeg 16kHz PCM extraction]
+                                       └──produces──> Vec<f32> samples
+                                                          └──feeds──> [Silero VAD inference]
+                                                                          └──produces──> Vec<SpeechInterval>
+                                                                                             └──feeds──> [build_concat_filter()]
+                                                                                                             └──feeds──> [FFmpeg concat filter output]
 
-[README] ──documents──> [Homebrew install path]
-[README] ──documents──> [All 5 subcommands: cut, caption, overlay, doctor, pipeline]
-[README] ──documents──> [Prerequisites: ffmpeg, ffprobe, whisper-cli, model file]
-[README] ──references──> [contentops doctor] (onboarding step)
-[README] ──leads with──> [contentops pipeline] (primary use case)
+[--breaths flag removal] ──requires──> [VAD replaces silencedetect]
+[Doctor --no-new-check]  ──requires──> [ONNX runtime bundled at build time]
 ```
 
 ### Dependency Notes
 
-- **Homebrew tap requires GitHub Releases public assets:** The formula downloads from `github.com/releases/download/...`. The repo must be public. Pre-built binaries must already exist (they do, since v1.1).
-- **Auto-update requires a PAT, not GITHUB_TOKEN:** The GitHub Actions `GITHUB_TOKEN` only has write access to the repository it runs in. Cross-repo commits (to `homebrew-tap`) require a PAT stored as a secret in the main repo.
-- **README Homebrew section requires tap to exist first:** Writing the install instructions before the tap repo exists creates a broken README. Tap first, then document.
-- **Formula SHA256 must match exactly:** The `.sha256` files in GitHub Releases contain the exact hash. Copy them verbatim. Recalculate with `curl -sL <url> | shasum -a 256` to verify.
+- **VAD requires 16kHz mono:** Must add FFmpeg extraction step before VAD inference. The normalized file is already available from the existing loudnorm step, so no new temp file is needed for the concat output — only the PCM bytes are extracted for VAD, then discarded.
+- **--breaths removal requires VAD first:** Cannot remove --breaths until VAD is the detection backend, since --breaths is the only way to remove breaths with silencedetect.
+- **SpeechInterval struct is already correct:** `src/silence.rs` defines `SpeechInterval { start: f64, end: f64 }` which matches VAD output format exactly. No struct changes needed.
+- **build_concat_filter() is format-agnostic:** Consumes `Vec<SpeechInterval>` regardless of how they were generated. No changes needed.
 
 ---
 
 ## MVP Definition
 
-### Launch With (v1 of this milestone)
+### Launch With (v1.4)
 
-- [ ] `homebrew-tap` repo created, public, with `Formula/contentops.rb`
-- [ ] Formula downloads correct binary per architecture (ARM64 / x86_64) with correct SHA256
-- [ ] Formula includes `test do` block: `system "#{bin}/contentops", "--version"`
-- [ ] Formula includes `caveats` block mentioning whisper model requirement
-- [ ] `brew install darrelltang/tap/contentops` installs a working binary
-- [ ] README: what it does, prerequisites, installation (Homebrew + direct), pipeline workflow example, doctor onboarding step, license
-- [ ] README: full flag reference for each subcommand (table format)
+- [ ] `voice_activity_detector` crate added to Cargo.toml — no separate ONNX model download required
+- [ ] FFmpeg pipe command extracts 16kHz mono f32le PCM from normalized video
+- [ ] VAD inference on f32 samples produces `Vec<SpeechInterval>` in seconds
+- [ ] `cut` command uses VAD output instead of silencedetect + silence_to_speech
+- [ ] `pipeline` command uses VAD output (via cut::run) with same change
+- [ ] `--breaths` flag removed from `cut` and `pipeline` in cli.rs
+- [ ] Dead code from silence.rs removed (parse_silencedetect, silence_to_speech, filter_silences_by_words)
+- [ ] Default parameters tuned for talking-head: min_silence_duration_ms=400, speech_pad_ms=75
+- [ ] `--dry-run` continues to show speech intervals with same format
+- [ ] Three-platform CI (macOS, Linux, Windows) passes with ONNX runtime downloaded at build time
 
 ### Add After Validation (v1.x)
 
-- [ ] Auto-update formula workflow — add once `brew install` is confirmed working; reduces ongoing maintenance friction
-- [ ] README troubleshooting section — add based on actual user confusion encountered
+- [ ] `--vad-threshold` flag (f32, default 0.5) — add once default proves insufficient for edge cases
+- [ ] `--min-silence-ms` flag (u32, default 400) — expose when users request tuning
+- [ ] Doctor check for ONNX runtime if bundling approach changes
 
 ### Future Consideration (v2+)
 
-- [ ] Bottle-based distribution (Homebrew CI builds on Homebrew's infrastructure) — not worth the overhead for a personal tap; pre-built binaries work fine
-- [ ] homebrew-core submission — not viable until tool supports multiple platforms
+- [ ] Configurable VAD backend (silencedetect vs Silero) — only if regression in specific content types reported
+- [ ] All five VAD parameters as flags — only if multiple power users request it
 
 ---
 
@@ -158,49 +301,38 @@ The contentops README has a unique shape because: (1) it has 5 subcommands with 
 
 | Feature | User Value | Implementation Cost | Priority |
 |---------|------------|---------------------|----------|
-| Working `brew install contentops` | HIGH — primary installation path | LOW | P1 |
-| Architecture-correct binary selection (ARM/Intel) | HIGH — wrong binary is silent failure | LOW | P1 |
-| SHA256 verification in formula | HIGH — security baseline | LOW | P1 |
-| `caveats` for whisper model | MEDIUM — prevents post-install confusion | LOW | P1 |
-| README: what + install + pipeline example | HIGH — primary onboarding surface | LOW | P1 |
-| README: full flag reference tables | MEDIUM — discoverability / reference use | LOW | P2 |
-| Auto-update formula via GitHub Actions | HIGH — prevents formula staleness | MEDIUM | P2 |
-| README: troubleshooting section | MEDIUM — reduces support friction | LOW | P2 |
-| README: doctor output as trust signal | LOW — polish | LOW | P3 |
+| VAD replaces silencedetect in `cut` | HIGH — core value prop of milestone | MEDIUM | P1 |
+| FFmpeg 16kHz PCM extraction pipe | HIGH — VAD prerequisite | LOW | P1 |
+| `--breaths` flag removal | HIGH — simplifies interface | LOW (delete flag) | P1 |
+| Default parameter tuning (min_silence=400ms, pad=75ms) | HIGH — accuracy requires good defaults | LOW (constants) | P1 |
+| Dead code removal (silence.rs unused fns) | LOW — hygiene | LOW | P1 |
+| CI passes on all 3 platforms with ONNX build | HIGH — blocks release | MEDIUM | P1 |
+| `--vad-threshold` CLI flag | MEDIUM — power user control | LOW | P2 |
+| `--min-silence-ms` CLI flag | MEDIUM — tuning control | LOW | P2 |
+| Doctor ONNX runtime check | LOW — ONNX bundled, no runtime dep | LOW | P3 |
 
 **Priority key:**
-- P1: Must have for launch (this milestone incomplete without it)
-- P2: Should have, add when possible
+- P1: Must have for milestone to ship
+- P2: Should have, add when core is working
 - P3: Nice to have, future consideration
-
----
-
-## Competitor Feature Analysis
-
-| Feature | Similar tools (whisper-cli, ffmpeg wrappers) | homebrew-core CLIs (gh, bat, ripgrep) | Our Approach |
-|---------|----------------------------------------------|---------------------------------------|--------------|
-| Installation | Source only or cargo install | `brew install` primary | `brew install darrelltang/tap/contentops` with pre-built binary |
-| Architecture handling | Often x86_64-only, Rosetta fallback | Bottle per arch | `on_macos + Hardware::CPU.arm?` conditional in formula |
-| Formula maintenance | Manual, often stale | Automated via Homebrew CI | GitHub Actions auto-update workflow |
-| README structure | Minimal (assumes developer audience) | Comprehensive user docs | Pipeline-first, prerequisites explicit, doctor onboarding |
-| Prerequisites documentation | Often missing | Included in bottle deps | Explicit section + caveats block in formula |
 
 ---
 
 ## Sources
 
-- [Homebrew: How to Create and Maintain a Tap](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap) — naming requirements, repo structure, bottle automation (HIGH confidence — official docs)
-- [Homebrew Taps Documentation](https://docs.brew.sh/Taps) — `brew tap` command format, naming convention, formula discovery (HIGH confidence — official docs)
-- [Homebrew Formula Cookbook](https://docs.brew.sh/Formula-Cookbook) — `on_macos`, `on_arm`, `on_intel` blocks, `bin.install`, `test do`, `caveats` (HIGH confidence — official docs)
-- [kristoffer.dev: Creating Your First Homebrew Tap](https://kristoffer.dev/blog/guide-to-creating-your-first-homebrew-tap/) — `Hardware::CPU.arm?` pattern for architecture-conditional URL + SHA256, formula structure for pre-built binaries (MEDIUM confidence — verified against official docs)
-- [ivaniscoding.github.io: Rust CLI Homebrew Packaging](https://ivaniscoding.github.io/posts/rustpackaging2/) — template-based auto-update approach for Rust CLIs, SHA256 injection script (MEDIUM confidence — single source, consistent with builtfast.dev)
-- [builtfast.dev: Automating Homebrew Tap Updates with GitHub Actions](https://builtfast.dev/blog/automating-homebrew-tap-updates-with-github-actions/) — GitHub Actions cross-repo dispatch pattern, SHA256 calculation via curl pipe (MEDIUM confidence)
-- [GitHub Marketplace: Homebrew Releaser Action](https://github.com/marketplace/actions/homebrew-releaser) — supports darwin-amd64 and darwin-arm64 targets, expects `{repo}-{version}-{os}-{arch}.tar.gz` naming (MEDIUM confidence — GitHub Marketplace listing)
-- [NSHipster: update-homebrew-formula-action](https://github.com/NSHipster/update-homebrew-formula-action) — alternative auto-update action (MEDIUM confidence)
-- [Ripgrep README structure](https://github.com/BurntSushi/ripgrep) — installation section covering multiple package managers, why/why-not structure, feature comparison (HIGH confidence — reference example, widely cited as best-in-class CLI README)
-- Existing codebase: `src/cli.rs` (all flag definitions), `.github/workflows/release.yml` (binary naming: `contentops-aarch64-apple-darwin`, `contentops-x86_64-apple-darwin`, `.sha256` files) — direct source (HIGH confidence)
+- [Silero VAD GitHub — snakers4/silero-vad](https://github.com/snakers4/silero-vad) — upstream model, parameter documentation (HIGH confidence — official repo)
+- [Silero VAD Version History Wiki](https://github.com/snakers4/silero-vad/wiki/Version-history-and-Available-Models) — V5 model details, ONNX opset 16, ~260K parameters (HIGH confidence — official wiki)
+- [silero-vad-rs VADIterator docs](https://docs.rs/silero-vad-rs/latest/silero_vad_rs/vad/struct.VADIterator.html) — parameter types, output format `SpeechTimestamps` with start/end in seconds (MEDIUM confidence — Rust docs)
+- [voice_activity_detector crate — lib.rs](https://lib.rs/crates/voice_activity_detector) — version 0.2.1, August 2025, Silero V5, cross-platform, maintenance status (HIGH confidence — package registry)
+- [voice_activity_detector GitHub — nkeenan38](https://github.com/nkeenan38/voice_activity_detector) — API details, ONNX Runtime download behavior, load-dynamic feature (MEDIUM confidence — official repo)
+- [voice_activity_detector — docs.rs](https://docs.rs/voice_activity_detector/latest/voice_activity_detector/) — VoiceActivityDetector struct, builder pattern, predict() return type f32 (HIGH confidence — official docs)
+- [ort crate — Linking documentation](https://ort.pyke.io/setup/linking) — static vs dynamic linking, compile-time download strategy, load-dynamic feature (HIGH confidence — official docs)
+- [LiveKit Silero VAD plugin — livekit/agents vad.py](https://github.com/livekit/agents/blob/main/livekit-plugins/livekit-plugins-silero/livekit/plugins/silero/vad.py) — production defaults: min_silence=550ms, speech_pad=500ms, threshold=0.5 (MEDIUM confidence — well-maintained production codebase)
+- [faster-whisper VAD parameter discussion](https://github.com/guillaumekln/faster-whisper/issues/477) — why faster-whisper uses speech_pad=400ms vs silero default 30ms; Whisper training context (MEDIUM confidence — maintainer responses in issue)
+- [Silero VAD parameter tuning discussion #562](https://github.com/snakers4/silero-vad/discussions/562) — maintainer recommendation: tune min_silence_duration_ms and speech_pad_ms as primary knobs (MEDIUM confidence — official maintainer response)
+- [Bundling ONNX Runtime in Rust blog](https://blog.stark.pub/posts/bundling-onnxruntime-rust-nix/) — compile-time download approach, tradeoffs for CI/cross-platform distribution (MEDIUM confidence — detailed technical post, single source)
 
 ---
 
-*Feature research for: Homebrew personal tap + comprehensive README (contentops v1.2)*
-*Researched: 2026-02-20*
+*Feature research for: Silero VAD integration (contentops v1.4)*
+*Researched: 2026-02-24*

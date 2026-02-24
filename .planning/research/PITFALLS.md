@@ -1,12 +1,15 @@
 # Pitfalls Research
 
 **Domain:** Rust CLI orchestrating FFmpeg for video processing (silence removal, captioning, overlays)
-**Researched:** 2026-02-20
+**Researched:** 2026-02-20, updated 2026-02-24 for v1.4 Silero VAD milestone
 **Confidence:** HIGH (v1.0 pitfalls) / MEDIUM (new-milestone pitfalls, grounded in codebase audit)
 
 > **Scope note:** This file was updated for the v1.1 milestone. Pitfalls 1-13 cover the v1.0 domain
 > (FFmpeg piping, silence removal, temp files). Pitfalls 14+ cover the new work: codebase audit,
 > `doctor` subcommand, `pipeline` subcommand, and GitHub Actions CI/CD.
+>
+> Pitfalls 20+ cover the v1.4 Silero VAD milestone: ort/ONNX Runtime linking, model versioning,
+> cross-platform distribution, CI integration, binary size, and audio format requirements.
 
 ---
 
@@ -48,826 +51,695 @@
 
 **Detection:** Run any FFmpeg command twice against the same output path.
 
-**Phase:** Foundation (Phase 1). Hard-code these flags into your FFmpeg command builder from day one.
+**Phase:** Foundation (Phase 1). Test this in your very first FFmpeg integration.
 
-**Confidence:** HIGH — well-documented FFmpeg behavior, confirmed by [ffmpeg-python issue #452](https://github.com/kkroening/ffmpeg-python/issues/452).
+**Confidence:** HIGH — FFmpeg documented behavior.
 
 ---
 
-### Pitfall 3: Audio/Video Sync Drift After Silence Removal
+### Pitfall 3: Silencedetect Timestamp Parsing Fails on Non-English Locales
 
-**What goes wrong:** After removing silent segments and concatenating the remaining clips, audio gradually drifts out of sync with video. The drift accumulates with each cut, so a video with many silent segments ends up with noticeable lip-sync issues by the end.
+**What goes wrong:** FFmpeg's silencedetect filter outputs timestamps as decimal numbers with `.` as the decimal separator (e.g., `silence_end: 2.34`). On systems with a locale that uses `,` as the decimal separator (common in Europe), FFmpeg may output `2,34` instead, causing float parsing to fail.
 
-**Why it happens:** Two root causes:
-1. **Keyframe-based cutting with `-c copy`:** Video stream can only be cut at keyframes (every 2-5 seconds), but audio is cut at the exact timestamp. This creates a mismatch at every cut point.
-2. **Timestamp rounding accumulation:** Each segment's PTS (Presentation Time Stamps) carries small rounding errors that compound across concatenation.
+**Why it happens:** FFmpeg respects the system locale for number formatting in some output contexts. Rust's `str::parse::<f64>()` expects `.` as the decimal separator regardless of locale.
 
-**Consequences:** Output video has audio that gradually leads or lags the video. For TikTok content with speech, this is immediately noticeable and makes the video unusable.
+**Consequences:** Silence timestamp parsing panics or returns no timestamps, causing the entire silent segment removal to fail silently (the output video has no cuts made).
 
 **Prevention:**
-- Use the **select/aselect filter approach** (like Remsi) instead of cutting into segments and concatenating. This applies identical time-based selection to both audio and video in a single FFmpeg pass:
+- Use `LC_ALL=C` or `LANG=C` when invoking FFmpeg from Rust if you intend to parse its output.
+- In Rust: set `.env("LC_ALL", "C")` on the `Command`.
+- Alternatively, replace `,` with `.` before parsing.
+
+**Detection:** Test on a machine with a non-English locale, or temporarily `export LANG=de_DE` before running.
+
+**Phase:** Silence Removal (Phase 2).
+
+**Confidence:** MEDIUM — documented locale issue, verified through community reports.
+
+---
+
+### Pitfall 4: Float Precision in Silence Timestamp Arithmetic Causes A/V Sync Drift
+
+**What goes wrong:** When calculating silence segment boundaries (start/end), floating-point arithmetic on ffmpeg timestamps accumulates error over many segments. After 50+ cuts in a long video, the concat filter's segment boundaries drift from the actual audio waveform, causing A/V desync.
+
+**Why it happens:** FFmpeg timestamps are floating-point. Adding/subtracting the silence pad duration (e.g., 0.075 seconds) many times accumulates binary floating-point representation error. The concat filter is sensitive to sub-millisecond timing precision.
+
+**Consequences:** A/V sync drift increases with video length and number of cuts. Imperceptible for short videos with few cuts; noticeable (50-100ms drift) for 10-minute videos with 100+ cuts.
+
+**Prevention:**
+- Use i64 milliseconds internally, not f64 seconds.
+- Convert to float only when building the FFmpeg filter expression.
+- Round pad calculations to 3 decimal places maximum.
+
+**Detection:** Run silence removal on a 30-minute lecture with frequent cuts. Compare the audio waveform of a specific word in the input vs. output.
+
+**Phase:** Silence Removal (Phase 2).
+
+**Confidence:** MEDIUM — general float arithmetic issue; specific drift threshold is an estimate.
+
+---
+
+### Pitfall 5: Concat Filter Fails With Zero-Duration Segments
+
+**What goes wrong:** When speech is immediately adjacent to the start or end of the file, the silence pad calculation can produce a segment with a duration of 0 seconds or negative duration. FFmpeg's concat filter rejects zero-duration segments and exits with an error.
+
+**Why it happens:** If the first silence ends at 0.05s and your pad is 0.075s, the segment start calculates to -0.025s, which is clamped to 0. If the next silence starts at 0.0s, you get a 0-duration first segment.
+
+**Consequences:** `ffmpeg: Error while opening encoder for output stream` or similar. The output file is not produced.
+
+**Prevention:**
+- Filter out segments where `end - start <= 0.001` before building the concat filter.
+- Clamp segment start to `max(0.0, silence_end - pad)`.
+- Clamp segment end to `min(total_duration, silence_start + pad)`.
+
+**Detection:** Test with a video that starts speaking immediately (no silence at the beginning), or a video where all content is speech (no silence at all).
+
+**Phase:** Silence Removal (Phase 2).
+
+**Confidence:** HIGH — directly observed failure mode.
+
+---
+
+### Pitfall 6: Temp File Cleanup Fails on Process Kill
+
+**What goes wrong:** When the user Ctrl+C's the process, the temp directory is not cleaned up. On subsequent runs, stale temp files accumulate and can be hundreds of MB.
+
+**Why it happens:** Rust's `Drop` trait is not called on SIGTERM/SIGKILL. `ctrlc::set_handler` can work for SIGINT but not for kills.
+
+**Consequences:** Disk fills up over time. Especially problematic on CI where workspace cleanup is expected.
+
+**Prevention:**
+- Use `tempfile::TempDir` which registers cleanup even on panic (but not on kill).
+- Accept that kill-level signals cannot be handled cleanly; document this.
+- Don't register the temp dir in any global state that would prevent GC.
+- Add a cleanup message on normal exit so users know where temp files live.
+
+**Detection:** Start a long encode and kill -9 the process. Check for leftover temp directories.
+
+**Phase:** Foundation (Phase 1).
+
+**Confidence:** HIGH — standard systems programming constraint.
+
+---
+
+### Pitfall 7: Progress Bar Interferes With stderr Logging
+
+**What goes wrong:** When using `indicatif` progress bars while also writing to stderr (e.g., for debug output or error messages), the progress bar and text output interleave incorrectly. The progress bar overwrites error messages, or error messages are partially rendered.
+
+**Why it happens:** indicatif uses ANSI escape codes to move the cursor and redraw the progress bar on the same terminal lines. Any other writes to stderr during this time corrupt the display.
+
+**Consequences:** Error messages from FFmpeg or the Rust code are invisible or garbled. Users see corrupted output.
+
+**Prevention:**
+- Never write to stderr directly while a progress bar is active. Use `println_below()` or `bar.println()` to write messages that interleave correctly with the bar.
+- For error output: finish the bar first, then write the error.
+- Use `ProgressBar::suspend()` around any print calls.
+
+**Detection:** Run any command that produces stderr output while a progress bar is active.
+
+**Phase:** Overlays and Polish (Phase 5).
+
+**Confidence:** HIGH — documented indicatif behavior.
+
+---
+
+### Pitfall 8: Whisper Timestamps Are Word-Level But Not Sub-Word
+
+**What goes wrong:** Whisper's word-level timestamps (`--word-timestamps true`) give one timestamp per token, but tokens are not always whole words. Contractions like "don't" become two tokens ("don" and "'t") each with timestamps. This produces subtitles where punctuation splits incorrectly across word boundaries.
+
+**Why it happens:** Whisper tokenizes text using a byte-pair encoding that doesn't respect English word boundaries. The `--word-timestamps` flag gives timestamps per BPE token, not per orthographic word.
+
+**Consequences:** Caption highlighting splits at apostrophes, creating visual glitches. "don" lights up, then "'t" lights up as a separate word.
+
+**Prevention:**
+- Post-process: merge tokens that start with punctuation (apostrophe, comma, period) with the previous token.
+- Specifically: if a word starts with `'`, merge it with the preceding word's span.
+
+**Detection:** Transcribe any audio containing contractions or possessives. Look for split words in the generated ASS subtitles.
+
+**Phase:** Caption Generation (Phase 3).
+
+**Confidence:** HIGH — directly observed, fixed in v1.0 implementation.
+
+---
+
+### Pitfall 9: ASS Subtitle Rendering Misaligns With Fonts Not Present
+
+**What goes wrong:** The ASS subtitle style specifies a font family (e.g., "Arial"). If that font is not installed on the render machine, FFmpeg silently substitutes a different font. The substitution font has different metrics (character widths, line heights), causing text overflow, incorrect positioning, or visual misalignment.
+
+**Why it happens:** FFmpeg delegates font rendering to libass, which uses fontconfig on Linux/macOS and GDI on Windows. Missing fonts are substituted without any warning or error.
+
+**Consequences:** Captions are cut off at edges, positioned incorrectly, or look completely different from what was tested.
+
+**Prevention:**
+- Use fonts that are universally available on all platforms (Arial on macOS/Windows; DejaVu Sans on Linux).
+- Or bundle a specific font and pass it explicitly to ffmpeg via `-vf subtitles=file.ass:fontsdir=/path/to/fonts`.
+- Test on all three platforms.
+
+**Detection:** Test on a fresh Linux machine where common fonts may not be installed.
+
+**Phase:** Caption Rendering (Phase 4).
+
+**Confidence:** HIGH — documented libass behavior.
+
+---
+
+### Pitfall 10: Impact Font Not Available on Non-macOS Systems
+
+**What goes wrong:** The Impact font used for overlay title cards is not universally installed. It's a Microsoft font present on macOS and Windows by default, but absent on most Linux distributions.
+
+**Why it happens:** Impact is a proprietary Microsoft font. Linux distributions typically only include open-source fonts (Liberation, DejaVu, Noto) by default.
+
+**Consequences:** On Linux, FFmpeg exits with "No such file or directory: Impact" or silently renders with a different font.
+
+**Prevention:**
+- Use `#[cfg(target_os = "linux")]` to select a different font.
+- Or probe font availability at runtime and fall back.
+- Implemented in v1.3: `#[cfg]` blocks select the right font constant per platform.
+
+**Detection:** Run `contentops overlay` on a fresh Linux machine.
+
+**Phase:** Platform-Portable Code (Phase 13). Fixed in v1.3.
+
+**Confidence:** HIGH — directly verified in v1.3 implementation.
+
+---
+
+### Pitfall 11: GitHub Actions Cache Invalidates on Rust Toolchain Update
+
+**What goes wrong:** The Rust toolchain updates frequently. If the cache key only uses `Cargo.lock`, it won't invalidate when the toolchain version changes. Cached compilation artifacts from an old toolchain can cause spurious build failures or incorrect behavior when the toolchain updates.
+
+**Why it happens:** Cargo's artifact format is not guaranteed to be forward-compatible across toolchain versions. Using cached `.d` files and `.rlib` files from a different rustc version can produce link errors.
+
+**Consequences:** CI fails on toolchain updates with opaque errors. The fix (clearing cache) is non-obvious.
+
+**Prevention:**
+- Include the Rust toolchain version in the cache key: `${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-${{ steps.toolchain.outputs.rustc_hash }}`.
+- Or simply accept occasional cache misses by using `restore-keys` as fallback.
+
+**Detection:** Update the Rust toolchain version and observe whether CI builds correctly on cached runs.
+
+**Phase:** CI/CD (Phase 9).
+
+**Confidence:** MEDIUM — common pattern in GitHub Actions Rust CI.
+
+---
+
+### Pitfall 12: Universal Binary `lipo` Step Fails if Architecture Builds Run in Parallel
+
+**What goes wrong:** The macOS `lipo` step that combines ARM64 and Intel binaries into a universal binary fails if either architecture binary is not present (e.g., one build job failed silently, or artifacts were not downloaded correctly).
+
+**Why it happens:** GitHub Actions matrix jobs run in parallel. If the ARM64 or Intel job fails but is configured as `continue-on-error`, the `lipo` job still runs but receives only one binary. `lipo -create` with one input just copies the file; the output appears valid but is not universal.
+
+**Consequences:** A "universal" binary is published that is actually single-architecture. Homebrew silently installs the wrong architecture for half of users.
+
+**Prevention:**
+- Do not use `continue-on-error` on architecture build jobs.
+- Add a verification step after `lipo`: run `lipo -info ./contentops-universal` and verify the output contains both `x86_64` and `arm64`.
+- Fail the release job if verification fails.
+
+**Detection:** Run `lipo -info` on any published universal binary before releasing.
+
+**Phase:** CI/CD (Phase 9), Release (Phase 14 for multi-platform).
+
+**Confidence:** HIGH — documented release workflow risk.
+
+---
+
+### Pitfall 13: Homebrew Formula SHA256 Mismatch After Re-Release
+
+**What goes wrong:** If a GitHub Release is edited (assets deleted and re-uploaded), the SHA256 of the new asset differs from what was originally computed and stored in the Homebrew formula. Users see `sha256 mismatch` errors on `brew upgrade`.
+
+**Why it happens:** GitHub generates new binary content even for identically-named assets. The formula's auto-update workflow captures the SHA256 at release time; re-uploaded assets have different hashes.
+
+**Consequences:** Homebrew install fails for all users until the formula is manually corrected.
+
+**Prevention:**
+- Never delete and re-upload release assets. Create a new patch release instead.
+- The release workflow should be treated as immutable once published.
+
+**Detection:** Check `brew audit --formula contentops` after any release correction.
+
+**Phase:** GitHub Actions Auto-Update (Phase 11).
+
+**Confidence:** HIGH — fundamental constraint of Homebrew formula versioning.
+
+---
+
+## Critical Pitfalls — v1.1 Domain (Audit, Doctor, Pipeline, CI)
+
+### Pitfall 14: Typed Error Variants Can't Be Added Without Touching All Match Arms
+
+**What goes wrong:** When adding a new `AppError` variant, the compiler forces you to update every `match` statement that covers `AppError`. This is good for exhaustiveness, but it means adding one variant requires touching many files simultaneously.
+
+**Why it happens:** Rust's exhaustive pattern matching is a feature, not a bug. But when the error enum grows across multiple milestones, it creates merge conflicts if multiple people work on it simultaneously.
+
+**Consequences:** Large diffs when adding error variants. In a solo project, this is manageable. In a team, it creates merge conflicts.
+
+**Prevention:**
+- Keep `AppError` variants coarse-grained (one per subcommand/domain, not one per error case).
+- Use `#[non_exhaustive]` if you expect to add variants frequently.
+
+**Detection:** Count the number of match arms touching `AppError` before adding a new variant.
+
+**Phase:** Audit & Cleanup (Phase 6).
+
+**Confidence:** HIGH — standard Rust enum exhaustiveness constraint.
+
+---
+
+### Pitfall 15: Doctor Subcommand Checks the Wrong Binary
+
+**What goes wrong:** `contentops doctor` checks whether `ffmpeg` is on `PATH`, but when users install FFmpeg via a non-standard path (e.g., `/opt/homebrew/bin/ffmpeg` vs `/usr/local/bin/ffmpeg`), the check passes but the actual `cut` command fails because `cut` uses a hardcoded path.
+
+**Why it happens:** The doctor check and the actual invocation must resolve binaries the same way. If doctor uses `which ffmpeg` and cut uses `Command::new("ffmpeg")`, they agree on PATH resolution. But if cut ever uses an absolute path, they diverge.
+
+**Consequences:** `doctor` reports green, but `cut` fails. Users are confused.
+
+**Prevention:**
+- Always use `Command::new("ffmpeg")` (PATH-relative) for both the doctor check and the actual invocations.
+- Doctor should check using the same resolution mechanism as the actual commands.
+
+**Detection:** Set `PATH` to a custom location with FFmpeg and run both `doctor` and `cut`.
+
+**Phase:** Doctor Subcommand (Phase 7).
+
+**Confidence:** HIGH — design constraint verified in v1.1.
+
+---
+
+### Pitfall 16: Pipeline Subcommand Shares TempFileRegistry Incorrectly
+
+**What goes wrong:** If `pipeline` creates a new `TempFileRegistry` per sub-step instead of passing a shared registry, temp files from intermediate steps (e.g., the `cut` output used as `caption` input) are deleted before the next step runs.
+
+**Why it happens:** Each subcommand's `run()` function creates its own `TempFileRegistry` with `Drop` cleanup. If `pipeline` calls `cut::run()` and `caption::run()` as separate function calls without sharing state, the temp files from `cut` are deleted when `cut::run()` returns.
+
+**Consequences:** Caption fails with "file not found" on the intermediate cut video.
+
+**Prevention:**
+- Pass a shared `TempFileRegistry` into each subcommand's `run()` function.
+- Or structure pipeline to use named intermediate files that live until pipeline completion.
+
+**Detection:** Run `contentops pipeline` and verify the intermediate files exist during the caption step.
+
+**Phase:** Pipeline Subcommand (Phase 8).
+
+**Confidence:** HIGH — directly verified in v1.1 implementation.
+
+---
+
+### Pitfall 17: cargo-audit Blocks CI on Every New Advisory
+
+**What goes wrong:** `cargo audit` exits non-zero when any advisory is published for any dependency, including transitive ones. A new advisory for a dep you don't control (e.g., a patch to `libc` or `ring`) breaks CI immediately.
+
+**Why it happens:** cargo-audit treats all advisories as errors by default. Security advisories are published continuously.
+
+**Consequences:** CI breaks on an unrelated dependency update. The fix is often "bump a dep" but cargo update might not immediately pull in the fix if the fix isn't yet released.
+
+**Prevention:**
+- Use `cargo audit --ignore RUSTSEC-XXXX-XXXX` for advisories you've triaged and accepted.
+- Or configure `.cargo/audit.toml` with `[advisories] ignore = [...]`.
+- Consider whether cargo-audit should be a hard gate vs. a warning-only check.
+
+**Detection:** Watch for CI failures not caused by your code changes. Check `cargo audit` output for advisory IDs.
+
+**Phase:** CI/CD (Phase 9).
+
+**Confidence:** HIGH — common cargo-audit operational experience.
+
+---
+
+### Pitfall 18: Release Workflow Triggers on Any Tag, Not Just Version Tags
+
+**What goes wrong:** If the `release.yml` GitHub Actions workflow triggers on `on: push: tags: ['*']`, pushing any tag (e.g., a date-based tag or a test tag) triggers a full release build and potentially publishes artifacts.
+
+**Why it happens:** Wildcards in tag filters match everything. It's easy to accidentally push a non-version tag.
+
+**Consequences:** Spurious releases appear in GitHub Releases. Homebrew auto-update triggers on every tag push.
+
+**Prevention:**
+- Use semantic version tags only: `tags: ['v[0-9]+.[0-9]+.[0-9]+']`.
+- Protect release tags with branch protection rules.
+
+**Detection:** Push a non-semver tag and observe whether the release workflow triggers.
+
+**Phase:** CI/CD (Phase 9).
+
+**Confidence:** HIGH — documented GitHub Actions tag filter behavior.
+
+---
+
+### Pitfall 19: Cross-Platform CI Matrix Masks Platform-Specific Failures
+
+**What goes wrong:** When a CI matrix job fails on one platform (e.g., Windows), the overall CI check may appear to pass if the matrix is configured with `fail-fast: false` and the successful jobs are what the PR branch protection checks.
+
+**Why it happens:** GitHub PR status checks can be configured to require only the overall matrix check (pass if any job passes) rather than requiring all matrix entries to pass.
+
+**Consequences:** Windows-specific bugs ship undetected. Users file bugs; the Windows CI was never actually passing.
+
+**Prevention:**
+- Configure branch protection to require each matrix job individually, or use `fail-fast: true`.
+- Alternatively, add a synthetic "all-pass" job that depends on all matrix jobs with `needs: [job-matrix-ids]`.
+
+**Detection:** Deliberately break Windows-only code and verify CI fails on PRs.
+
+**Phase:** CI/CD (Phase 9).
+
+**Confidence:** MEDIUM — GitHub Actions matrix behavior depends on configuration.
+
+---
+
+## Critical Pitfalls — v1.4 Domain (Silero VAD / ONNX Runtime)
+
+### Pitfall 20: ort `download` Strategy Fails in Sandboxed CI Environments
+
+**What goes wrong:** The `ort` crate's default `download` linking strategy downloads ONNX Runtime prebuilt binaries during `cargo build` via the build script (`build.rs`). This network call fails in sandboxed or network-restricted CI environments (restricted GitHub Actions runners, Nix builds, Docker with `--network=none`), producing a build error with no useful message about the root cause.
+
+**Why it happens:** Build scripts run during compilation and are permitted to access the network by default, but some CI configurations block external HTTP from build scripts. The crate downloads from Microsoft CDN URLs; any proxy or network restriction breaks this silently.
+
+**Consequences:** CI fails on every runner with an opaque network or I/O error from within the build script. Local builds work fine, CI does not.
+
+**How to avoid:**
+- Do not rely on the `download` strategy in CI. Instead, pre-download ONNX Runtime binaries as a CI step before `cargo build`, then use the `system` strategy with `ORT_LIB_LOCATION` set.
+- Or use the `load-dynamic` feature with a pre-staged dylib, setting `ORT_DYLIB_PATH`.
+- For GitHub Actions, add a download step per platform before the cargo build step:
+
+```yaml
+- name: Download ONNX Runtime
+  run: |
+    ORT_VERSION="1.20.1"
+    # Linux x86_64 example:
+    curl -L "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz" -o ort.tgz
+    tar xzf ort.tgz
+    echo "ORT_DYLIB_PATH=$(pwd)/onnxruntime-linux-x64-${ORT_VERSION}/lib/libonnxruntime.so" >> $GITHUB_ENV
+```
+
+**Warning signs:** Build log contains "download" or "fetch" errors from within `build.rs`. The error message does not mention ONNX Runtime by name — it shows as a generic download failure.
+
+**Phase to address:** CI/CD update phase (first phase of v1.4).
+
+**Confidence:** HIGH — documented in [Bundling ONNX Runtime in Rust with Nix, Docker and GitHub Actions](https://blog.stark.pub/posts/bundling-onnxruntime-rust-nix/) and [ort linking docs](https://ort.pyke.io/setup/linking).
+
+---
+
+### Pitfall 21: Windows DLL Version Conflict with System32 onnxruntime.dll
+
+**What goes wrong:** Windows 11 ships with `onnxruntime.dll` in `C:\Windows\System32`. When the binary is executed, Windows' DLL search order finds the system copy first. The system copy is typically version 1.10.x; your binary was built against 1.20.x. The version mismatch causes a runtime assertion: "The given version [N] is not supported."
+
+**Why it happens:** Windows DLL search order: executable directory → system directories. If the correct version of `onnxruntime.dll` is not in the same directory as the binary, and the system has an older version, the wrong one loads.
+
+**Consequences:** The binary crashes at startup on Windows systems where ONNX Runtime is pre-installed (common on Windows 11 with WSL2 or ML tools).
+
+**How to avoid:**
+- Use the `load-dynamic` feature of `ort` instead of compile-time dynamic linking. With `load-dynamic`, `ort` uses `dlopen()`/`LoadLibrary()` and you control the exact path.
+- For distribution, bundle `onnxruntime.dll` alongside the binary in the same directory.
+- Or statically link ONNX Runtime to avoid DLL conflicts entirely (increases binary size by ~20-30MB).
+- The `copy-dylibs` feature helps during development (`cargo run`) but does not solve the deployment problem.
+
+**Warning signs:** Works in CI (where no system ONNX Runtime exists) but crashes on end-user Windows machines. Error message mentions "version" and "not supported."
+
+**Phase to address:** Binary distribution phase (same phase as cross-platform release build).
+
+**Confidence:** HIGH — documented in [ort linking docs](https://ort.pyke.io/setup/linking) and [Microsoft ONNX Runtime issue #11799](https://github.com/microsoft/onnxruntime/issues/11799).
+
+---
+
+### Pitfall 22: macOS Universal Binary Cannot Use Dynamic ONNX Runtime
+
+**What goes wrong:** The current release workflow creates a universal macOS binary by running `lipo` to combine ARM64 and Intel binaries. If the binary dynamically links to `libonnxruntime.dylib`, the universal binary requires a universal `libonnxruntime.dylib` at runtime — which Microsoft does not distribute. They provide separate ARM64 and x86_64 dylibs.
+
+**Why it happens:** A universal binary that dynamically loads a fat dylib requires the dylib to also be universal (contain both slices). Microsoft's prebuilt ONNX Runtime releases for macOS are single-architecture. Creating a universal dylib via `lipo` of two separate prebuilt dylibs is possible but adds significant CI complexity.
+
+**Consequences:** The universal binary works on ARM64 Macs (because the ARM64 dylib is found), fails on Intel Macs (dylib architecture mismatch), or fails on both if the dylib is not distributed alongside the binary.
+
+**How to avoid:**
+- Use static linking for macOS: build ONNX Runtime as a static library for each architecture, link statically into each architecture binary, then `lipo` the resulting static-linked binaries together. This is the only clean path to a truly universal, self-contained macOS binary.
+- Alternatively, abandon the universal binary and distribute separate ARM64 and Intel binaries (the Homebrew formula already supports this via `on_arm`/`on_intel` DSL — use it).
+- Do not attempt to `lipo` two single-arch dynamic binaries that depend on different dylibs.
+
+**Warning signs:** `lipo -info ./contentops-universal` shows both architectures, but the binary crashes on Intel Macs with a dylib load error. `otool -L ./contentops-universal` shows `libonnxruntime.dylib` as a dependency.
+
+**Phase to address:** The macOS build phase of v1.4. Decision needed before implementation: static link or drop universal binary.
+
+**Confidence:** HIGH — derived from [ONNX Runtime universal binary issue #12052](https://github.com/microsoft/onnxruntime/issues/12052) and macOS dynamic linking fundamentals. MEDIUM on exact behavior of lipo'd binaries with mismatched dylibs.
+
+---
+
+### Pitfall 23: Silero VAD Model Version Mismatch (v4 vs v5 Chunk Size)
+
+**What goes wrong:** Silero VAD v4 and v5 ONNX models are not interchangeable. V5 enforces a strict chunk size of exactly 512 samples at 16kHz (or 256 at 8kHz). V4 was more flexible. If code written for v4 (or a Rust crate targeting v4) is used with a v5 model file, inference fails silently or returns garbage probabilities.
+
+**Why it happens:** The ONNX model's input tensor shape is version-specific. V5's model expects a fixed `[1, 512]` input. Providing a different size causes the ONNX Runtime to reject the input or pad/truncate in ways the model wasn't designed for.
+
+**Consequences:** VAD detects either all-silence or all-speech across the entire audio. The output video is either empty (all cut) or uncut (no silence removed).
+
+**How to avoid:**
+- Pin the model version explicitly. If using `silero-vad-rs` or `silero-vad-rust`, check which model version the crate was built for and use only that model file.
+- For v5: chunk size must be exactly 512 samples at 16kHz. Never pass partial chunks — pad with zeros to exactly 512 samples.
+- Name model files explicitly: `silero_vad_v5.onnx` not `silero_vad.onnx` to avoid ambiguity.
+- Check the Rust crate's `Cargo.toml` or README for which model version it supports before downloading any model file.
+
+**Warning signs:** VAD returns constant probability values (near 0.0 or near 1.0) across all chunks regardless of audio content. Input tensor shape errors in ONNX Runtime error output.
+
+**Phase to address:** Implementation phase (Silero VAD integration).
+
+**Confidence:** HIGH — documented v5 breaking changes in [Silero VAD v5 discussion #471](https://github.com/snakers4/silero-vad/discussions/471) and [version history wiki](https://github.com/snakers4/silero-vad/wiki/Version-history-and-Available-Models).
+
+---
+
+### Pitfall 24: Audio Format Mismatch — Wrong Sample Rate or Channel Count
+
+**What goes wrong:** Silero VAD requires 16kHz mono f32 audio (normalized to [-1.0, 1.0]). Video files typically have 44.1kHz or 48kHz stereo audio in AAC or Opus format. Feeding raw audio bytes from the source video directly to VAD produces garbage predictions.
+
+**Why it happens:** Audio format conversion is often treated as a detail rather than a prerequisite. The ONNX model does not error — it accepts any f32 array of the right chunk size. It simply produces wrong speech probabilities when the sample rate is wrong.
+
+**Consequences:** VAD detects no speech in a video containing clear speech, or detects speech in pure silence. The silence removal either cuts everything or cuts nothing.
+
+**How to avoid:**
+- Always decode to 16kHz mono f32 PCM before VAD inference. Use FFmpeg to extract audio:
+  ```bash
+  ffmpeg -i input.mp4 -ac 1 -ar 16000 -f f32le output.raw
   ```
-  -vf "select='between(t,S1,E1)+between(t,S2,E2)+...',setpts=N/FRAME_RATE/TB"
-  -af "aselect='between(t,S1,E1)+between(t,S2,E2)+...',asetpts=N/SR/TB"
+- Verify the format before inference: assert `sample_rate == 16000` and `channels == 1`.
+- Do not rely on the ONNX model to reject wrong-format input — it won't.
+
+**Warning signs:** VAD probability for all chunks is very low (< 0.1) even for clearly voiced audio. Or very high (> 0.9) for silent audio.
+
+**Phase to address:** Implementation phase (audio decoding pipeline).
+
+**Confidence:** HIGH — confirmed by [Silero VAD FAQ](https://github.com/snakers4/silero-vad/wiki/FAQ) and official model requirements.
+
+---
+
+### Pitfall 25: Silero VAD State Not Reset Between Invocations
+
+**What goes wrong:** Silero VAD is a stateful RNN — it carries hidden state from chunk to chunk within a single audio stream. When processing multiple videos sequentially (e.g., in a batch), if the model's internal state is not reset between files, the model's perception of "is speech happening?" bleeds across file boundaries. The first few seconds of each subsequent file are mispredicted based on the previous file's end state.
+
+**Why it happens:** The `VADIterator` and the underlying model session maintain LSTM hidden state. Developers initialize the model once and reuse it across files for performance, forgetting to call `reset_states()`.
+
+**Consequences:** The second video processed in a session shows incorrect VAD at the start. This is subtle because it only manifests when processing multiple videos in one process lifecycle. Single-video use (the current `contentops` design) is unaffected.
+
+**How to avoid:**
+- Even though contentops currently processes one video per invocation, the model initialization and reset pattern should be correct from the start.
+- Call `model.reset_states()` before processing each file.
+- Or re-initialize the model per file — slightly slower but avoids the state management concern.
+
+**Warning signs:** VAD predictions for the first few seconds of a file differ between single-run and sequential-run benchmarks.
+
+**Phase to address:** Implementation phase (Silero VAD integration).
+
+**Confidence:** HIGH — confirmed in [Silero VAD streaming documentation](https://github.com/snakers4/silero-vad/discussions/572) and silero-vad-rs docs.
+
+---
+
+### Pitfall 26: Binary Size Bloat From ort Default Features
+
+**What goes wrong:** Adding `ort` to `Cargo.toml` with default features and static linking increases the binary size from ~5MB to 30-50MB depending on linking strategy and ONNX Runtime version. Users who previously installed a 5MB binary via Homebrew would need to download a 35MB binary.
+
+**Why it happens:** ONNX Runtime is a large C++ library (~25MB static). Default ort features pull in training ops, model zoo fetchers, and RTTI support. Static linking embeds all of this in the Rust binary.
+
+**Consequences:** Homebrew tap download time increases 7x. Direct download install time increases 7x. CI artifact upload time increases.
+
+**How to avoid:**
+- Explicitly disable default features: `ort = { version = "2", default-features = false, features = ["load-dynamic"] }`.
+- Use the `load-dynamic` feature to keep ONNX Runtime as a separate dylib — the Rust binary itself stays small (~5-8MB), but the dylib must be distributed alongside it.
+- If static linking is chosen, use `minimal-build` feature on ort to strip unused ONNX Runtime components.
+- The Silero VAD model file itself is ~1.8MB (v5) — use `include_bytes!` for the model (acceptable size), but do not statically link ONNX Runtime.
+
+**Warning signs:** Release binary grows from ~5MB to >20MB after adding `ort`. `ls -lh target/release/contentops` shows unexpected size.
+
+**Phase to address:** Implementation phase (ort integration setup).
+
+**Confidence:** HIGH — confirmed by ort documentation on `minimal-build` and `default-features`. Binary size estimates are MEDIUM confidence (estimates based on typical ONNX Runtime static link sizes).
+
+---
+
+### Pitfall 27: ort `load-dynamic` Requires dylib Present at Runtime — Distribution Problem
+
+**What goes wrong:** Using `load-dynamic` keeps the Rust binary small but requires `libonnxruntime.so`/`libonnxruntime.dylib`/`onnxruntime.dll` to be present on the user's system at runtime. If it's not found, the binary crashes with a cryptic `dlopen` error, not a helpful "install ONNX Runtime" message.
+
+**Why it happens:** `load-dynamic` defers the library load to runtime. If `ORT_DYLIB_PATH` is not set, `ort` searches in standard library paths, which will not contain ONNX Runtime on most systems.
+
+**Consequences:** End users get an unhelpful error about a missing `.so`/`.dylib`. The tool appeared to install correctly (the binary downloaded fine) but fails on first run.
+
+**How to avoid:**
+- If using `load-dynamic`, distribute the dylib alongside the binary in the release archive.
+- The release archive structure should be:
   ```
-- `setpts=N/FRAME_RATE/TB` and `asetpts=N/SR/TB` rebuild timestamps from scratch, eliminating drift.
-- If you must use segment-based cutting, always re-encode (no `-c copy`) for frame-accurate cuts.
-
-**Detection:** Process a 5+ minute video with 10+ silence cuts. Compare a spoken word at the 30-second mark and the 4-minute mark against the visual lip movement.
-
-**Phase:** Silence removal (Phase 1). This is the core feature and getting sync wrong makes the tool worthless.
-
-**Confidence:** HIGH — confirmed by [FFmpeg concat documentation](https://trac.ffmpeg.org/wiki/Concatenate), [Remsi's approach](https://github.com/bambax/Remsi), and multiple FFmpeg mailing list threads.
-
----
-
-### Pitfall 4: Silencedetect Trailing Silence Edge Case
-
-**What goes wrong:** When a video ends with silence, FFmpeg's silencedetect emits `silence_start` but never emits the corresponding `silence_end`. Your parser builds a list of silence intervals where the last entry has a start but no end. Depending on how you handle this, you either crash (index out of bounds), include the trailing silence in output, or silently produce a truncated video.
-
-**Why it happens:** silencedetect sets `silence_end` metadata on the "first frame after the silence." If the file ends during silence, there is no frame after the silence, so `silence_end` is never emitted.
-
-**Consequences:** Parser crash, trailing silence in output, or incorrect segment boundaries.
-
-**Prevention:**
-- After parsing silencedetect output, check if you have an unmatched `silence_start`. If so, treat the video duration as the implicit `silence_end`.
-- Get total duration from FFmpeg's output (it prints `Duration: HH:MM:SS.ms` early in stderr) and use it as the fallback end boundary.
-- Similarly handle leading silence: if the first event is `silence_end` (silence started at t=0), treat 0.0 as the implicit `silence_start`.
-- Reference implementation: [ffmpeg-python split_silence.py](https://github.com/kkroening/ffmpeg-python/blob/master/examples/split_silence.py) handles both cases.
-
-**Detection:** Test with a video that has silence at the end (common in real recordings when the creator pauses before stopping).
-
-**Phase:** Silence removal (Phase 1).
-
-**Confidence:** HIGH — verified in [silencedetect source](https://github.com/FFmpeg/FFmpeg/blob/master/libavfilter/af_silencedetect.c) and [FFmpeg filter docs](https://ayosec.github.io/ffmpeg-filters-docs/7.1/Filters/Audio/silencedetect.html).
-
----
-
-### Pitfall 5: Temp File Leaks on Crash, Signal, or FFmpeg Failure
-
-**What goes wrong:** Intermediate video segments, temp concat files, or half-written output files accumulate on disk when the process exits unexpectedly. Rust's `Drop` trait runs on normal scope exit and panics, but NOT on `SIGINT` (Ctrl+C), `SIGTERM`, or `std::process::abort()`.
-
-**Why it happens:** Video files are large (hundreds of MB). A multi-segment silence removal might create N intermediate files. If FFmpeg fails mid-pipeline or the user hits Ctrl+C, destructors for `tempfile::NamedTempFile` or `tempfile::TempDir` may not run.
-
-**Consequences:** Gigabytes of orphaned temp files in `/tmp` or the working directory. For a personal tool this is annoying; for repeated use it fills disk.
-
-**Prevention:**
-- Use `tempfile::TempDir` for all intermediate files — at least Drop handles the normal/panic cases.
-- Register a SIGINT handler via the `ctrlc` crate that sets an `AtomicBool` flag, then check it between pipeline stages and clean up.
-- Use a dedicated temp directory with a predictable name pattern (e.g., `contentops-XXXX`) so a cleanup command can find orphans.
-- Place temp files in the same directory as the output (not system `/tmp`) so the user knows where to look.
-- As a last resort, add a `--clean` flag that removes any `contentops-*` temp directories.
-
-**Detection:** Kill the process mid-run with Ctrl+C and check for leftover files.
-
-**Phase:** Foundation (Phase 1). Bake this into the temp file strategy before writing any pipeline code.
-
-**Confidence:** HIGH — documented in [tempfile crate docs](https://docs.rs/tempfile/latest/tempfile/) and [Rust CLI signal handling guide](https://rust-cli.github.io/book/in-depth/signals.html).
-
----
-
-## Moderate Pitfalls — v1.0 Domain (Existing)
-
-### Pitfall 6: iPhone/Mobile Video Rotation Metadata
-
-**What goes wrong:** iPhones and Android phones store video in landscape orientation with a rotation metadata flag (0/90/180/270). When you process the video through FFmpeg filters (select, setpts, etc.), the rotation metadata may be stripped or mishandled, producing output that plays sideways or upside-down.
-
-**Why it happens:** FFmpeg's behavior around auto-rotation has changed across versions. Newer FFmpeg (5.0+) auto-rotates by default when using filters, but the `-noautorotate` flag or certain filter chains can suppress this. The metadata-vs-pixels distinction is a persistent source of confusion.
-
-**Prevention:**
-- Let FFmpeg auto-rotate (default behavior in modern FFmpeg). Don't add `-noautorotate`.
-- After processing, verify output plays correctly on both desktop and mobile.
-- If you ever use `-c:v copy`, rotation metadata may be preserved but pixels won't be rotated — this is fine for stream copy but wrong for filter-based processing.
-- For the select/aselect approach, auto-rotation should work. Test with a portrait iPhone video.
-
-**Detection:** Process a portrait-mode iPhone recording. If the output plays sideways in QuickTime or on TikTok, rotation handling is broken.
-
-**Phase:** Foundation (Phase 1) or output encoding. Test with real iPhone footage early.
-
-**Confidence:** MEDIUM — FFmpeg auto-rotation behavior varies by version and filter chain. Needs testing with actual device footage.
-
----
-
-### Pitfall 7: Variable Frame Rate (VFR) Input Videos
-
-**What goes wrong:** iPhone and screen recordings commonly use Variable Frame Rate (VFR). When FFmpeg processes VFR input through filters and outputs to a constant frame rate (required for reliable playback), frames are duplicated or dropped. This can cause audio sync issues, stuttering, or unnatural motion.
-
-**Why it happens:** VFR videos have inconsistent frame durations. The `fps` filter or output frame rate settings force constant timing, but the mapping from variable to constant isn't lossless. Silent segment boundaries calculated from timestamps may not align with actual frame boundaries.
-
-**Prevention:**
-- Detect VFR input early: run `ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate,avg_frame_rate` and compare the two values. If they differ significantly, the input is VFR.
-- Use `-vsync cfr` explicitly to make the behavior deterministic.
-- For the select filter approach, `setpts=N/FRAME_RATE/TB` handles this naturally by rebuilding timestamps, but the output FRAME_RATE must be chosen correctly (use the avg_frame_rate from probe).
-- Consider converting VFR to CFR as a preprocessing step before silence detection.
-
-**Detection:** Process an iPhone screen recording or FaceTime capture. Check for audio drift and stuttered frames.
-
-**Phase:** Silence removal (Phase 1). iPhone recordings are the most common input for a TikTok workflow tool.
-
-**Confidence:** MEDIUM — well-documented VFR problem, but the select/aselect approach may mitigate it naturally. Needs testing.
-
----
-
-### Pitfall 8: Parsing silencedetect Output With Regex Instead of Structure
-
-**What goes wrong:** Silencedetect output format is not a stable API. Parsing it with brittle regex patterns (e.g., hardcoded field positions, split-by-space assumptions) breaks across FFmpeg versions or with unexpected log output interleaved.
-
-**Why it happens:** silencedetect writes to stderr, which also contains FFmpeg's startup banners, codec info, progress output, and warnings. A naive `line.contains("silence_start")` approach works until FFmpeg prints a warning line that happens to contain those words, or until the output format changes between versions.
-
-**Prevention:**
-- Use robust regex with anchored patterns: `r"\[silencedetect .+\] silence_start: (-?\d+\.?\d*)"` and similar for `silence_end` and `silence_duration`.
-- Parse `silence_duration` as a cross-check: verify `silence_end - silence_start ~= silence_duration`.
-- Consider using FFmpeg metadata output (`-f null -`) with `ametadata=print` for structured output instead of log parsing. However, for v0.1, regex on stderr is the pragmatic approach — just make it robust.
-- Pin a minimum FFmpeg version in your documentation/checks.
-
-**Detection:** Run silencedetect on various video files and diff the raw stderr output. Look for unexpected lines between silence events.
-
-**Phase:** Silence removal (Phase 1).
-
-**Confidence:** HIGH — the [FFmpeg-devel mailing list](https://ffmpeg.org/pipermail/ffmpeg-devel/2014-May/157790.html) has discussed output format changes for silencedetect.
-
----
-
-### Pitfall 9: Pixel Format Compatibility for TikTok Output
-
-**What goes wrong:** FFmpeg defaults to the input pixel format or an encoder-determined format. Some inputs use `yuv444p`, `yuvj420p`, or `nv12`. Without explicitly specifying `-pix_fmt yuv420p`, the output may use a pixel format that TikTok's player can't decode properly, causing washed-out colors, green artifacts, or upload rejection.
-
-**Why it happens:** H.264 supports many pixel formats, but mobile devices and social platforms expect `yuv420p` (8-bit 4:2:0). Professional cameras and screen captures may produce 10-bit or 4:4:4 content.
-
-**Prevention:**
-- Always specify `-pix_fmt yuv420p` in the encoding command.
-- Combine with: `-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 192k -ar 48000 -pix_fmt yuv420p`.
-- This is a hard-coded output setting, not user-configurable.
-
-**Detection:** Upload output to TikTok from a video originally recorded on a Mac screen capture or professional camera.
-
-**Phase:** Output encoding (Phase 1). Hard-code the TikTok output profile from the start.
-
-**Confidence:** HIGH — standard H.264 compatibility requirement, confirmed by [TikTok format guides](https://snaptiksave.online/tiktok-video-formats-explained/).
-
----
-
-### Pitfall 10: Not Checking FFmpeg Exit Codes Properly
-
-**What goes wrong:** FFmpeg exits with code 0 on success and non-zero on failure, but `Command::status()` and `Command::output()` return `Ok(...)` even when the exit code is non-zero. Your code thinks FFmpeg succeeded when it actually failed. You proceed to the next pipeline stage with a missing or corrupt intermediate file.
-
-**Why it happens:** Rust's `Command` API considers a process that was launched and completed as `Ok`, regardless of its exit code. You must explicitly check `.status().success()` or `.output().status.success()`. This is [a known confusion point](https://github.com/rust-lang/rust/issues/73126).
-
-**Prevention:**
-- Create a helper function that runs FFmpeg and returns `Result<Output, Error>` where non-zero exit becomes an `Err` containing stderr output.
-- Log the full FFmpeg command (with args) on failure for debugging.
-- Include the exit code and last ~20 lines of stderr in the error message.
-
-**Detection:** Feed FFmpeg a corrupt file or invalid arguments and verify your tool reports the error.
-
-**Phase:** Foundation (Phase 1). Build the FFmpeg runner abstraction before anything else.
-
-**Confidence:** HIGH — documented in [Rust std::process docs](https://doc.rust-lang.org/std/process/struct.ExitStatus.html).
-
----
-
-## Minor Pitfalls — v1.0 Domain (Existing)
-
-### Pitfall 11: Silence Threshold Defaults That Don't Match Content Type
-
-**What goes wrong:** The default silence threshold (-60dB) works for studio-quality audio but not for smartphone recordings with background noise. Videos recorded in a room with AC, street noise, or fans have a noise floor above -60dB, meaning silencedetect never fires or fires incorrectly.
-
-**Prevention:**
-- Start with `-60dB` and `2s` minimum duration as defaults.
-- Plan to expose `--silence-threshold` and `--silence-duration` flags in a later phase.
-- Test with actual phone-recorded content, not synthetic test files.
-
-**Phase:** Phase 2 (configuration). Hardcoded defaults for v0.1, expose tuning later.
-
-**Confidence:** MEDIUM — threshold sensitivity varies wildly by recording environment.
-
----
-
-### Pitfall 12: Select Filter Expression Length Limits
-
-**What goes wrong:** For videos with many short silences (e.g., a fast-talking creator), the select filter expression `between(t,S1,E1)+between(t,S2,E2)+...` can become extremely long. FFmpeg has practical limits on filter graph expression complexity, and very long expressions may cause parsing errors or performance degradation.
-
-**Prevention:**
-- For v0.1, this is unlikely to be a problem (most TikTok source videos are under 10 minutes with <50 silence segments).
-- If it becomes an issue, fall back to the segment-and-concat approach for videos with >100 segments.
-- Monitor the generated filter string length and warn if it exceeds ~10,000 characters.
-
-**Phase:** Phase 2 or later. Not a v0.1 concern for short-form video.
-
-**Confidence:** LOW — theoretical limit, no confirmed breakage found for realistic use cases.
-
----
-
-### Pitfall 13: FFmpeg Version Incompatibilities
-
-**What goes wrong:** Different FFmpeg versions (Homebrew installs different versions over time) have different filter availability, default behaviors, and output formats. A tool that works on FFmpeg 6.x may break on 7.x due to changed auto-rotation defaults, deprecated options, or new filter behaviors.
-
-**Prevention:**
-- Check FFmpeg version at startup: `ffmpeg -version`.
-- Set a minimum version requirement (FFmpeg 6.0+ is reasonable for 2026).
-- Print a clear error if the version is too old rather than failing with cryptic FFmpeg errors.
-
-**Phase:** Foundation (Phase 1). Add a version check to the startup validation.
-
-**Confidence:** MEDIUM — FFmpeg is generally backward-compatible for basic features, but edge cases exist.
-
----
-
-## Critical Pitfalls — v1.1 New Milestone
-
-### Pitfall 14: Refactoring Working Code Breaks Existing Subcommands
-
-**What goes wrong:** The audit/cleanup phase extracts shared logic (spinner construction, output path derivation, temp file patterns) into common modules. The refactor compiles cleanly but changes subtle behavior: a spinner that was `finish_and_clear()` is now `finish_with_message()`, a temp file that had `.keep()` called no longer does, or an error message changes format. Existing subcommands break in ways that are not caught at compile time.
-
-**Why it happens:** The codebase has significant duplication (three identical `make_spinner` implementations in `cut.rs`, `caption.rs`, `overlay.rs`; identical error match arms; similar output path derivation). Extracting these requires changing call sites. In Rust, the borrow checker enforces correctness of ownership transfers but cannot catch behavioral regressions — a function signature change from `&TempFileRegistry` to an owned `TempFileRegistry` compiles but changes cleanup semantics.
-
-**Specific risk in this codebase:**
-- `normalize.rs:132` calls `temp_file.keep()` to persist the temp file across the function. If extracted into a shared helper that doesn't call `.keep()`, the `NamedTempFile` drops and deletes the file before the caller uses it.
-- `cut.rs` manually removes normalized temp files at the end (`std::fs::remove_file(&normalized_path)`). If normalization is refactored to return an RAII guard instead of a raw `PathBuf`, this manual cleanup becomes a double-free (harmless in this case but indicative of logic confusion).
-
-**Prevention:**
-- Refactor one subcommand at a time. Verify each still works before touching the next.
-- Write integration tests (even simple `assert!(output_path.exists())` smoke tests) before refactoring, so regressions are caught immediately.
-- Extract only identical code first; don't combine slightly-different variants until the behavior difference is understood.
-- Keep a git diff of each extraction. Review that temp file ownership semantics are preserved exactly.
-
-**Warning signs:**
-- Refactored build compiles but `cargo clippy` emits warnings about unused results or shadowed variables.
-- A temp file cleanup at the call site becomes a no-op (the file was already cleaned up by the extracted helper's Drop).
-- Integration test produces output file of 0 bytes or wrong duration.
-
-**Phase:** Audit/Cleanup Phase. Do this first before adding new features.
-
-**Confidence:** HIGH — grounded in direct codebase audit of three near-identical spinner + temp file patterns across `cut.rs`, `caption.rs`, `overlay.rs`.
-
----
-
-### Pitfall 15: `doctor` Subcommand Reports Wrong Version or Missing Dep on CI
-
-**What goes wrong:** The `doctor` command checks for `ffmpeg`, `whisper-cli`, and `claude` using `which::which()` (already used in `error.rs`). It reports them as present or absent and optionally their versions by parsing `ffmpeg -version` output. On CI, these binaries are absent — the `doctor` command exits non-zero, and if CI runs `contentops doctor` as part of a smoke test, the job fails even though the build succeeded.
-
-**Why it happens:** `doctor` is a diagnostic tool for user environments, not for CI. Running it in CI without external deps installed is always going to fail. Additionally, parsing version strings from `ffmpeg -version` is brittle — the format is `ffmpeg version 7.1 Copyright...` but Homebrew builds include extra git hash suffixes that break naive `semver` parsing.
-
-**Prevention:**
-- Do not run `contentops doctor` in CI. CI should test compilation and unit tests only; external binary availability is not a CI concern.
-- For version parsing: use a regex to extract just the numeric part (`r"ffmpeg version (\d+\.\d+)"`) rather than passing the full output to a semver parser.
-- Make `doctor` exit 0 even when deps are missing — it should report status, not enforce prerequisites. Use colored output (already have `owo-colors`) to show green/red status without a non-zero exit code. Reserve exit 1 for the case where the user explicitly asks for a strict check (`--strict` flag).
-- Add a `--json` output mode so scripts can machine-read the results.
-
-**Warning signs:**
-- `contentops doctor` exits 1 on a fresh CI runner (no FFmpeg installed).
-- Version check output changes between FFmpeg patch releases and breaks the parser.
-
-**Phase:** Doctor Subcommand Phase. Design exit code semantics before implementing.
-
-**Confidence:** HIGH — directly observed in `error.rs` `require_ffmpeg()` pattern; version string parsing is a well-known fragility in CLI tools.
-
----
-
-### Pitfall 16: Pipeline Intermediate Files Named After Input, Collide With Each Other
-
-**What goes wrong:** The `pipeline` subcommand chains `cut -> caption -> overlay`. Each stage needs an intermediate output file. If stages derive filenames using the existing `derive_output_path()` convention (`{stem}_cut.mp4`, `{stem}_cut_captioned.mp4`, etc.), names become confusing and pollute the working directory. Worse: if the user runs pipeline on `video.mp4` and already has a `video_cut.mp4` present, the pipeline silently overwrites it (FFmpeg's `-y` flag).
-
-**Why it happens:** The current filename derivation in `cut.rs:derive_output_path()` appends a suffix to the input stem. Pipeline chaining creates a suffix chain: `video_cut_captioned_overlay.mp4`. Additionally, intermediate files (the `cut` output that feeds `caption`) are permanent artifacts unless explicitly cleaned up. Users are left with every intermediate file after pipeline runs.
-
-**Prevention:**
-- For pipeline mode: use a temporary directory for ALL intermediate files. Only the final output is written to the user's working directory.
-- Name the temp directory `{stem}_pipeline_tmp_{timestamp}/` so it's clearly identifiable and easily cleaned.
-- On success: delete the temp directory. On failure: leave it (for debugging) but print its path.
-- The final output path should be `{stem}_final.mp4` or user-specified via `-o`, not a chained suffix.
-- Guard against overwriting an existing `-o` output: check existence before starting the pipeline (not just when FFmpeg runs), so the user gets an early error rather than discovering the file was overwritten after a 10-minute run.
-
-**Warning signs:**
-- After a pipeline run, the working directory contains `video_cut.mp4`, `video_cut_captioned.mp4`, and `video_cut_captioned_overlay.mp4` in addition to the final output.
-- Running pipeline twice on the same input silently overwrites intermediate files from the first run.
-
-**Phase:** Pipeline Subcommand Phase.
-
-**Confidence:** HIGH — direct analysis of `derive_output_path()` in `cut.rs` and the stage chaining pattern.
-
----
-
-### Pitfall 17: Pipeline Partial Failure Leaves User in Ambiguous State
-
-**What goes wrong:** Pipeline runs three FFmpeg stages (cut, caption, overlay) plus whisper-cli and claude-cli. If `caption` fails after `cut` succeeds, the user has a `*_cut.mp4` temp file but no final output. If pipeline cleans up the temp directory on failure, the user loses the intermediate cut. If it doesn't clean up, re-running the pipeline re-does the cut even though it succeeded.
-
-**Why it happens:** Multi-stage pipelines fail in the middle in practice — whisper-cli runs out of memory on long videos, claude-cli has rate limits, FFmpeg fails on a specific input codec. There's no established resume mechanism in the current architecture.
-
-**Prevention:**
-- On failure: preserve the temp directory and print exactly which stage failed and what intermediate files exist. Give the user the path so they can manually continue.
-- Print a clear message: "Caption stage failed. Intermediate cut is at: /path/to/video_pipeline_tmp/cut.mp4. Run `contentops caption` on it to continue manually."
-- Do not silently re-run successful stages on retry (this is v1.1 scope — full resume is v2.0).
-- Consider a `--keep-intermediates` flag as a power user escape hatch.
-
-**Warning signs:**
-- User reports that pipeline fails at caption but they can't find the cut file.
-- Pipeline re-runs take as long as the first run even when the first stage succeeded.
-
-**Phase:** Pipeline Subcommand Phase. Error handling design must come before implementation.
-
-**Confidence:** HIGH — observable failure mode from existing `cut.rs` and `caption.rs` error handling patterns. `run_ffmpeg_with_progress` and whisper-cli have no retry or resume logic.
-
----
-
-### Pitfall 18: GitHub Actions CI Fails on macOS-Specific Code Paths
-
-**What goes wrong:** The codebase has hard-coded macOS paths. `overlay.rs:107` sets `DEFAULT_FONT` to `/System/Library/Fonts/Supplemental/Impact.ttf`. If CI runs on `ubuntu-latest`, this path doesn't exist, and any test that exercises the overlay code fails with a file-not-found error from FFmpeg's drawtext filter — not a clear Rust error.
-
-**Similarly:** `normalize.rs:87` uses `/dev/null` as FFmpeg's null output. This works on macOS and Linux but fails on Windows. Since this tool is macOS-only, `/dev/null` is fine — but if CI runs on `windows-latest` for any reason, it silently breaks.
-
-**Prevention:**
-- Use `ubuntu-latest` runners for compile + unit tests (fast, cheap). Use `macos-latest` runners ONLY for integration tests that require the macOS font path or macOS-specific behavior.
-- Add a `#[cfg(target_os = "macos")]` guard on the `DEFAULT_FONT` constant, or better: make the font path resolution return `None` on non-macOS systems so the code path is skipped in tests.
-- For the null device: `if cfg!(windows) { "NUL" } else { "/dev/null" }` — but since the tool is macOS-only, document this limitation rather than patching it.
-- In CI workflow: split into two jobs: `test` (ubuntu-latest, compile + unit tests) and `release` (macos-latest, build binary + integration tests).
-
-**Warning signs:**
-- CI `ubuntu-latest` job fails with `No such file or directory: /System/Library/Fonts/Supplemental/Impact.ttf`.
-- CI job passes because overlay tests are never run — the font path issue is latent.
-
-**Phase:** CI/CD Phase.
-
-**Confidence:** HIGH — direct code audit of `overlay.rs:107` and `normalize.rs:87`.
-
----
-
-### Pitfall 19: CI Has No Way to Test Commands That Require External Binaries
-
-**What goes wrong:** `cut`, `caption`, and `overlay` all shell out to `ffmpeg`, `whisper-cli`, or `claude`. On CI without these installed, `cargo test` passes (unit tests compile and run) but any integration test that actually invokes a subcommand fails immediately with `AppError::FfmpegNotFound`. This gives a false sense of test coverage — CI is green but nothing that runs the actual binary is tested.
-
-**Why it happens:** The current architecture tightly couples business logic to `Command::new("ffmpeg")` invocations inside each command module. There is no abstraction layer that can be swapped for a test double. The existing unit tests (`tests/silence_tests.rs`) only test pure Rust parsing logic — they don't test the FFmpeg invocation path.
-
-**Prevention:**
-- For CI: install FFmpeg via `brew install ffmpeg` (macOS runner) or `apt-get install ffmpeg` (ubuntu runner). This is fast (prebuilt packages) and enables real integration tests.
-- For whisper-cli: do NOT install on CI. It requires a model file (hundreds of MB) and GPU. Mock the whisper invocation in integration tests by creating a test fixture with a pre-generated JSON output file and a `--mock-whisper` flag, OR skip caption integration tests in CI with `#[cfg_attr(not(feature = "integration"), ignore)]`.
-- For claude-cli: same approach — skip or mock. Claude API calls in CI would require secrets and incur costs.
-- Structure tests in two tiers: `unit` (always runs, no external deps) and `integration` (runs only when `INTEGRATION_TESTS=1` or in CI with FFmpeg installed).
-
-**Warning signs:**
-- `cargo test` passes on CI but the binary produces wrong output when run manually.
-- CI test suite has 0 tests that exercise the `run()` function of any command module.
-
-**Phase:** CI/CD Phase. Define the test strategy before writing CI YAML.
-
-**Confidence:** HIGH — direct observation of `tests/silence_tests.rs` which only tests `silence.rs` parsing.
-
----
-
-### Pitfall 20: GitHub Release Workflow Uploads Wrong Binary or Wrong Architecture
-
-**What goes wrong:** The release workflow runs `cargo build --release` on `macos-latest` and uploads the binary. But `macos-latest` on GitHub Actions is now `macos-14` (ARM64/Apple Silicon) as of early 2024. Users on Intel Macs download an ARM binary that their Rosetta 2 can run, but native Intel users may prefer a native binary. More critically: if the workflow doesn't specify the target triple explicitly, the uploaded artifact name may not indicate architecture, causing confusion.
-
-**Additionally:** The Cargo.lock file must be committed and the workflow must use `--locked` to ensure reproducible builds. Without `--locked`, the CI build may use different dependency versions than the developer's local build.
-
-**Prevention:**
-- Use a build matrix with both `macos-latest` (ARM64) and `macos-13` (last Intel runner) to produce two binaries.
-- Name artifacts explicitly: `contentops-macos-aarch64` and `contentops-macos-x86_64`.
-- Always use `cargo build --release --locked` in CI.
-- Use the [taiki-e/upload-rust-binary-action](https://github.com/taiki-e/upload-rust-binary-action) which handles target naming, checksums, and archive creation automatically.
-- Commit `Cargo.lock` to the repository (it is already present in this project per the file listing).
-
-**Warning signs:**
-- Release artifacts are named `contentops` without architecture suffix.
-- `cargo build --release` on CI produces a different binary than local `cargo build --release` due to dependency version drift.
-
-**Phase:** CI/CD Phase.
-
-**Confidence:** MEDIUM — `macos-latest` runner architecture change is documented in GitHub's changelog; binary naming is a common oversight observed across Rust CLI project releases.
-
----
-
-### Pitfall 21: `#[allow(dead_code)]` Accumulation During Audit Creates False Positives
-
-**What goes wrong:** The audit phase runs `cargo clippy` and `rustc` dead_code warnings to find unused code. The codebase already has `#[allow(dead_code)]` on `cleanup_all` in `temp.rs`. When extracting shared helpers, new functions are created that are only used in some subcommands, causing clippy to flag them as dead code. Developers add `#[allow(dead_code)]` to suppress the warning rather than investigating — masking real dead code.
-
-**Why it happens:** `cleanup_all` is currently dead (`#[allow(dead_code)]` on line 26 of `temp.rs`). It was written for future use or was orphaned during refactoring. If this pattern is followed during the audit, legitimate dead code accumulates behind allow attributes.
-
-**Prevention:**
-- During the audit: enumerate ALL `#[allow(dead_code)]` attributes and verify each is intentional. Remove `cleanup_all` if it has no callers and no planned use in this milestone.
-- For newly extracted shared functions: if a function is only used internally within one module, keep it private (`fn` not `pub fn`) so dead code detection works correctly.
-- Add `#![deny(dead_code)]` at the crate level for the duration of the audit to force investigation of every warning (remove it after cleanup is complete).
-- Do not add `#[allow(dead_code)]` during the audit phase without a code comment explaining why.
-
-**Warning signs:**
-- `grep -r "allow(dead_code)"` count increases after the audit.
-- Functions marked `pub` that have no external callers.
-
-**Phase:** Audit/Cleanup Phase.
-
-**Confidence:** HIGH — direct code observation: `temp.rs:25` already has `#[allow(dead_code)]` on `cleanup_all`.
-
----
-
-## Critical Pitfalls — v1.2 Distribution & Docs Milestone
-
-> **Scope:** Adding a personal Homebrew tap with auto-updating formula and full README documentation to an existing Rust CLI tool with working GitHub Actions releases.
-
----
-
-### Pitfall 22: SHA256 in Formula Does Not Match the Downloaded Binary
-
-**What goes wrong:** The most common Homebrew install failure. The formula's `sha256` field contains a stale or incorrectly computed checksum. `brew install` downloads the binary and verifies it — mismatch causes a hard failure with no useful diagnostic for the end user.
-
-**Why it happens:** Three root causes:
-1. **Format confusion:** `shasum -a 256` outputs `<hash>  <filename>` (two fields with double space). If the full output is copy-pasted into the formula instead of just the hex string, Homebrew rejects it.
-2. **Computed against wrong artifact:** The existing release workflow uploads individual binaries AND `.sha256` sidecar files. The `.sha256` files contain the hash of the binary, but in `shasum` format (with filename). If an automation script reads the sidecar file and uses its full content as the formula's `sha256`, it will fail.
-3. **Formula updated before release assets are finalized:** If the GitHub Actions workflow that updates the formula triggers too early (race condition between asset upload and formula update), the formula may reference an asset URL that doesn't yet exist or an asset that was re-uploaded after the hash was computed.
-
-**How to avoid:**
-- Compute the hash by downloading directly: `curl -sL <URL> | shasum -a 256 | awk '{print $1}'` — always pipe through `awk '{print $1}'` to strip the filename field.
-- In the auto-update workflow, compute the hash from the actual release asset URL, not from the sidecar `.sha256` file. The sidecar is for human verification; the formula hash must be freshly computed from the artifact.
-- Gate the formula update step on the `release` job completing with `needs: [release]` in GitHub Actions — never trigger formula updates from a separate event that could race with asset uploads.
-- After updating the formula, run `brew install --formula ./Formula/contentops.rb` locally to verify before pushing.
-
-**Warning signs:**
-- `brew install` fails with "SHA256 mismatch" immediately after a new release.
-- The formula's `sha256` value contains spaces or a filename suffix (e.g., `abc123def  contentops-aarch64-apple-darwin`).
-- The automation script reads from a `.sha256` sidecar file instead of recomputing from the binary URL.
-
-**Phase to address:** Homebrew tap setup (Phase 1 of v1.2). Nail the hash computation before wiring up any automation.
-
-**Confidence:** HIGH — documented in [Homebrew tap creation guide](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap), confirmed by [multiple community SHA256 mismatch threads](https://github.com/orgs/Homebrew/discussions/1312). The `shasum` format difference (vs `sha256sum`) is confirmed by [sha256sum command note](https://github.com/sobolevn/git-secret/issues/124).
-
----
-
-### Pitfall 23: Architecture Detection in Formula Serves Wrong Binary
-
-**What goes wrong:** The formula uses a single URL and `sha256`, downloading the same binary for all macOS users. ARM users get an Intel binary (works under Rosetta 2 but slower); Intel users get an ARM binary that Rosetta 2 cannot run in reverse (ARM-only binaries don't run on Intel natively). Alternatively, the formula uses the universal binary for everyone, which is larger (2x size) and less transparent.
-
-**Why it happens:** The simplest formula structure has one `url` and one `sha256`. Developers default to this and use the universal binary, not realizing Homebrew has first-class support for architecture-conditional downloads that users expect for native performance.
-
-**How to avoid:**
-- Use Homebrew's `on_arm` and `on_intel` blocks for per-architecture URLs and checksums:
-  ```ruby
-  on_arm do
-    url "https://github.com/user/contentops/releases/download/v#{version}/contentops-aarch64-apple-darwin"
-    sha256 "<arm64-hash>"
-  end
-  on_intel do
-    url "https://github.com/user/contentops/releases/download/v#{version}/contentops-x86_64-apple-darwin"
-    sha256 "<x86_64-hash>"
-  end
+  contentops-linux-x86_64.tar.gz/
+    contentops          # the binary
+    lib/
+      libonnxruntime.so  # the dylib
   ```
-- The existing release workflow already produces both `contentops-aarch64-apple-darwin` and `contentops-x86_64-apple-darwin` — use them.
-- Do NOT use `Hardware::CPU.arm?` inside `def install` for URL selection — `on_arm`/`on_intel` blocks at the formula level are the correct pattern.
-- `Hardware::CPU.arm?` is only valid inside `def install` and `test do` blocks, not at the formula definition level.
+- The binary finds the dylib via `ort::init_from("./lib/libonnxruntime.so").commit()` called at startup.
+- Update the Homebrew formula to include the dylib as a resource, or use the `keg_only` ONNX Runtime formula if one exists.
+- Update `contentops doctor` to check for ONNX Runtime availability and print a helpful error if absent.
 
-**Warning signs:**
-- `brew install` on an Intel Mac downloads the aarch64 binary (wrong arch, will silently fail or run via Rosetta 2).
-- Formula uses universal binary at 2x the size with no architecture-specific optimization.
-- Formula was tested only on ARM (developer's M-series Mac) but not verified on Intel.
+**Warning signs:** The binary works for developers (who have `ORT_DYLIB_PATH` set) but fails for users. Error message is `cannot open shared object file: No such file or directory` or `image not found`.
 
-**Phase to address:** Homebrew tap setup (Phase 1 of v1.2). Architecture detection must be correct from the first published formula.
+**Phase to address:** Binary distribution phase and doctor subcommand update.
 
-**Confidence:** HIGH — confirmed by [Homebrew Formula Cookbook](https://docs.brew.sh/Formula-Cookbook) (`on_arm`/`on_intel` block documentation) and [architecture-specific cask discussion](https://github.com/orgs/Homebrew/discussions/3096).
+**Confidence:** HIGH — standard dynamic library distribution problem. Specific distribution structure is a recommendation, not verified in contentops CI.
 
 ---
 
-### Pitfall 24: GITHUB_TOKEN Cannot Push to a Different Repository
+### Pitfall 28: Linux musl Static Build Incompatible With ONNX Runtime
 
-**What goes wrong:** The auto-update workflow in the `contentops` repo needs to push a commit to `homebrew-contentops` (a separate tap repository). GitHub's automatic `GITHUB_TOKEN` is scoped exclusively to the repository the workflow runs in. Using `GITHUB_TOKEN` to push to the tap repo fails with a 403 or authentication error.
+**What goes wrong:** If you attempt to target `x86_64-unknown-linux-musl` (fully static Linux binary) while linking ONNX Runtime, the build fails. ONNX Runtime's C++ runtime and its dependencies (openmp, etc.) are not compatible with musl libc.
 
-**Why it happens:** This is a fundamental GitHub Actions security constraint, not a configuration mistake. `GITHUB_TOKEN` is a short-lived token with permissions limited to the current repository. Cross-repository writes require a token scoped to the target repository.
+**Why it happens:** The current contentops Linux builds target glibc (`x86_64-unknown-linux-gnu`). ONNX Runtime is built against glibc. Musl libc has different symbol names and ABI. ONNX Runtime does not provide musl builds.
+
+**Consequences:** If anyone attempts to port contentops to Alpine Linux or another musl-based system, the build fails at link time with undefined symbol errors.
 
 **How to avoid:**
-- Create a Personal Access Token (classic) with `repo` scope (or fine-grained token with `Contents: write` on the tap repo).
-- Store it as a repository secret in the `contentops` repo (e.g., `HOMEBREW_TAP_TOKEN`).
-- Use it explicitly in the formula-update workflow step:
-  ```yaml
-  - name: Update formula
-    env:
-      GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-    run: |
-      git clone https://x-access-token:${GH_TOKEN}@github.com/user/homebrew-contentops.git
-      # ... update formula ...
-      git push
+- Keep the Linux target as `x86_64-unknown-linux-gnu` (already the case).
+- Do not attempt musl builds for contentops once ONNX Runtime is added.
+- Document this limitation if Alpine/musl support is ever requested.
+
+**Warning signs:** "undefined reference to `__stack_chk_fail`" or similar musl/glibc ABI mismatch errors during link.
+
+**Phase to address:** CI build configuration phase.
+
+**Confidence:** HIGH — ONNX Runtime musl incompatibility is a known constraint.
+
+---
+
+### Pitfall 29: ONNX Runtime Version Pinning Drift
+
+**What goes wrong:** The `ort` crate pins to a specific ONNX Runtime version. The bundled model and the crate's ONNX opset compatibility are linked. If you update the `ort` crate version, it may require a different ONNX Runtime version than what's pre-downloaded in CI. If you update the model file, it may use ONNX opsets not supported by the current `ort` version.
+
+**Why it happens:** ONNX Runtime has a strict C ABI version contract. The `ort` crate's version number tracks the ONNX Runtime version it was built for. Mismatches produce runtime panics or "unsupported opset" errors.
+
+**Consequences:** CI builds pass (they download the correct ONNX Runtime version), but if the downloaded artifact version and the crate's expected version diverge, runtime failures occur only during actual inference.
+
+**How to avoid:**
+- Pin all three versions together: `ort` crate version, ONNX Runtime dylib version, and model ONNX opset version.
+- Keep a comment in `Cargo.toml` documenting the expected ONNX Runtime version:
+  ```toml
+  # ort 2.0.0-rc.9 requires ONNX Runtime 1.20.x
+  ort = { version = "=2.0.0-rc.9", ... }
   ```
-- Alternatively, use `peter-evans/create-pull-request` or similar actions that handle auth internally with the PAT.
-- Rotate the PAT annually; document expiry in the repo.
+- Pin the ONNX Runtime download URL to an exact version in CI, not `latest`.
+- When upgrading, update all three simultaneously.
 
-**Warning signs:**
-- Release workflow fails at the formula-update step with "remote: Permission to user/homebrew-contentops.git denied to github-actions[bot]".
-- Workflow uses `GITHUB_TOKEN` for a `git push` to a different repository.
+**Warning signs:** Runtime panic in `ort::init()` with a version assertion message. Or "unsupported opset" from ONNX Runtime when loading the model.
 
-**Phase to address:** GitHub Actions integration (Phase 2 of v1.2). Set up the PAT before writing the automation step.
+**Phase to address:** Implementation phase (ort integration setup).
 
-**Confidence:** HIGH — confirmed by [GitHub docs on GITHUB_TOKEN scope](https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/controlling-permissions-for-github_token) and multiple community reports. The token limitation is by design.
-
----
-
-### Pitfall 25: Formula Ruby Class Name Must Match Filename Exactly
-
-**What goes wrong:** Homebrew loads formula files by requiring the Ruby file and finding the class named after the formula. If the filename is `contentops.rb`, the class must be `Contentops`. If the class is named `ContentOps`, `ContentOps`, or `CONTENTOPS`, Homebrew fails to load the formula with an obscure Ruby error, not a helpful "class name mismatch" message.
-
-**Why it happens:** Ruby class naming rules combined with Homebrew's file-to-class mapping. Homebrew converts the filename to a class name by capitalizing the first letter and replacing hyphens with CamelCase (e.g., `my-tool.rb` → `MyTool`). Developers hand-write the class name and guess wrong.
-
-**How to avoid:**
-- For `contentops.rb`, the class is `class Contentops < Formula` — single word, first letter capitalized only.
-- Run `brew style Formula/contentops.rb` locally before pushing to catch naming issues.
-- The tap repository name must start with `homebrew-` (e.g., `homebrew-contentops`) to enable the short `brew tap user/contentops` form.
-
-**Warning signs:**
-- `brew tap user/contentops && brew install contentops` fails with a Ruby `NameError` or "undefined method" error.
-- `brew audit Formula/contentops.rb` reports a class name error.
-
-**Phase to address:** Homebrew tap setup (Phase 1 of v1.2). Verify locally with `brew install --formula` before setting up automation.
-
-**Confidence:** HIGH — confirmed by [Homebrew Formula Cookbook naming rules](https://docs.brew.sh/Formula-Cookbook) and [community discussion on class name enforcement](https://github.com/homebrew/brew/issues/508).
-
----
-
-### Pitfall 26: Formula URL Points to Bare Binary but Homebrew Expects an Archive
-
-**What goes wrong:** The existing release workflow uploads raw binary files (e.g., `contentops-aarch64-apple-darwin` — no extension, no archive). Homebrew formulas using the standard `url` + `def install` pattern expect a tarball or zip that Homebrew extracts before running `def install`. Pointing `url` to a raw binary causes Homebrew to try to `tar -xf` the binary, which fails with a tar error.
-
-**Why it happens:** Homebrew's default download strategy for URLs without a recognized archive extension is to treat the download as a resource to be extracted. A bare ELF/Mach-O binary is not a valid archive.
-
-**How to avoid:** Two valid approaches:
-1. **Change the release workflow** to package each binary in a `.tar.gz`: `tar -czf contentops-aarch64-apple-darwin.tar.gz contentops-aarch64-apple-darwin`. The formula's `def install` then does `bin.install "contentops-aarch64-apple-darwin"` (or just `bin.install "contentops"` if you rename inside the archive).
-2. **Use a cask instead of a formula.** Homebrew casks handle pre-built binaries more naturally and don't require source compilation semantics. However, casks are typically for GUI apps; a CLI-only tool is slightly unconventional as a cask.
-
-The tarball approach (option 1) is recommended — it matches the standard pattern used by other Rust CLI tools distributed via Homebrew taps (e.g., `ripgrep`, `fd`, `bat` all distribute tarballs).
-
-**Warning signs:**
-- `brew install` fails with `tar: Error opening archive: Failed to open '<binary>'`.
-- The release URL in the formula has no `.tar.gz`, `.zip`, or similar extension.
-- `brew fetch --formula Formula/contentops.rb` succeeds but `brew install` fails at the extraction step.
-
-**Phase to address:** Homebrew tap setup (Phase 1 of v1.2) AND release workflow update. The release workflow needs to produce tarballs, not bare binaries, before the formula can be written.
-
-**Confidence:** HIGH — standard Homebrew behavior; confirmed by [Formula Cookbook](https://docs.brew.sh/Formula-Cookbook) which states the working directory during `def install` is "the extracted tarball."
-
----
-
-### Pitfall 27: Auto-Update Race Condition Between Asset Upload and Formula Push
-
-**What goes wrong:** The formula-update workflow triggers on the `release` event or on a tag push. Asset uploads happen asynchronously after the release is created. If the formula update workflow runs immediately when the release event fires — before all assets are uploaded — it computes SHA256 from an asset URL that may return 404 or a partial file.
-
-**Why it happens:** GitHub's release workflow in this project has three jobs: `build-arm64`, `build-x86_64`, and `release` (which downloads artifacts, creates universal binary, and uploads everything). The `release` event fires when the release is created, which happens before all files are attached. A formula-update workflow triggered by `on: release: types: [published]` may run before the `release` job in the source repo finishes uploading binaries.
-
-**How to avoid:**
-- Add the formula-update step as a final step INSIDE the existing `release` job (after the `softprops/action-gh-release` step), not as a separate workflow triggered by the release event.
-- This guarantees the formula update runs only after all assets are confirmed uploaded.
-- If the formula update must be a separate workflow, use `workflow_run` with `workflows: ["Release"]` and `types: [completed]` to wait for the Release workflow to finish.
-- Add a `sleep 30` or retry loop before computing SHA256 as a defensive measure (not a substitute for proper ordering).
-
-**Warning signs:**
-- Formula-update step reports "404 Not Found" when fetching the release asset URL.
-- `brew install` fails with SHA256 mismatch on new releases but works 30 minutes later (race condition resolved itself).
-- The formula references a version that was tagged but not yet released.
-
-**Phase to address:** GitHub Actions integration (Phase 2 of v1.2). Sequence the jobs correctly from the start.
-
-**Confidence:** HIGH — race condition is inherent in event-driven workflows; confirmed by analysis of the existing `release.yml` which has a separate `release` job with upload steps that take time to complete.
-
----
-
-### Pitfall 28: README Documents Flags That Clap Doesn't Actually Expose (or Vice Versa)
-
-**What goes wrong:** The README is written once and immediately drifts from the actual CLI interface. Users run a command from the README, get a "unexpected argument" or "no such option" error, and lose trust in the documentation. Common drift points: flags renamed during development, new flags added but not documented, deprecated flags left in docs after removal.
-
-**Why it happens:** Manual documentation maintenance. There is no automated check that the README's documented flags match what `clap` actually parses. For a personal tool with five subcommands and multiple flags each, drift is easy and costly.
-
-**How to avoid:**
-- Write the README at the end of v1.2, not the beginning. Document from `contentops --help` and `contentops <subcommand> --help` output, not from memory or design docs.
-- Copy the actual help output into the README rather than paraphrasing it — users will run `--help` anyway; exact flag names matter.
-- Add a CI smoke test that runs `contentops --help` and each subcommand's `--help` and asserts exit code 0. This catches regressions where the binary crashes on `--help` (broken `clap` config).
-- For the flags table in the README: generate it from `clap`'s output rather than writing it by hand. A `contentops generate-docs` subcommand or a build script can automate this in a future milestone.
-
-**Warning signs:**
-- README example uses `--silence-threshold` but the actual flag is `--threshold`.
-- `contentops cut --help` shows flags not mentioned in the README.
-- README was written before `clap` definitions were finalized.
-
-**Phase to address:** Documentation phase (Phase 3 of v1.2). Write README last; derive from live binary output.
-
-**Confidence:** HIGH — universal CLI documentation problem; confirmed by community observations and direct analysis of contentops having five subcommands with multiple flags each.
-
----
-
-### Pitfall 29: Homebrew Tap Caches Stale Formula After Update
-
-**What goes wrong:** After pushing a formula update to the tap repository, `brew install contentops` (or `brew upgrade contentops`) on an existing installation still installs the old version. The user's local Homebrew cache has the tap cached and doesn't pick up the new formula immediately.
-
-**Why it happens:** Homebrew caches tap contents locally. `brew update` refreshes the cache, but users who don't run `brew update` before `brew install` get stale results. More commonly: the tap was updated but the cached tap in `$(brew --repository)/Library/Taps/` was not refreshed.
-
-**How to avoid:**
-- This is expected Homebrew behavior, not a bug. Document it: "Run `brew update && brew upgrade contentops` to get the latest version."
-- If the tap appears completely stuck, the nuclear option is `brew untap user/contentops && brew tap user/contentops`.
-- For the formula file: ensure the `version` field is updated in every formula push. Homebrew uses the version to determine if an upgrade is available.
-- Never re-use a version tag for a different binary (re-releasing under the same tag is undetectable by Homebrew).
-
-**Warning signs:**
-- `brew upgrade contentops` reports "contentops is already installed at the latest version" after pushing a new release.
-- `brew info contentops` shows the old version even after `brew update`.
-- Formula was pushed but the `version` field was not updated (copy-paste error).
-
-**Phase to address:** Homebrew tap setup (Phase 1 of v1.2). Understand the update lifecycle before writing the automation.
-
-**Confidence:** MEDIUM — standard Homebrew behavior, confirmed by [Homebrew tap maintenance docs](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap) and community reports. Not a pitfall to "fix" but to document correctly.
+**Confidence:** HIGH — standard version pinning constraint for native library bindings.
 
 ---
 
 ## Technical Debt Patterns
 
-Shortcuts that seem reasonable but create long-term problems.
-
 | Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
 |----------|-------------------|----------------|-----------------|
-| Duplicate `make_spinner` in each command module | Avoids upfront abstraction | 3 places to update when spinner style changes | Never — extract now in audit phase |
-| Hard-coded `/System/Library/Fonts/Supplemental/Impact.ttf` | Works on dev machine | CI failures, breaks for users without font | Acceptable for macOS-only tool; add `--font` fallback path |
-| Manual registry cleanup at end of each `run()` | Explicit, easy to follow | Mismatched register/remove pairs if error paths are added | Replace with RAII wrapper in audit phase |
-| `#[allow(dead_code)]` on `cleanup_all` | Silences warning | Masks real dead code, confuses future auditors | Remove the function or document the planned use case |
-| `which::which()` for dep checks with no version validation | Simple presence check | Silently accepts wrong versions of FFmpeg | Add version check in `doctor` command; keep simple check for fast-path commands |
-| `anyhow::bail!` mixed with `AppError` returns | Flexible error handling | Inconsistent error formatting (some get `format_error()` treatment, some don't) | Standardize on `AppError` for all user-visible errors in audit phase |
-| Universal binary in formula (avoids per-arch SHA256) | Simpler formula, single hash | 2x download size; defeats architecture-specific optimization | Never — use `on_arm`/`on_intel` blocks instead |
-| Manual README updates alongside code changes | No tooling setup needed | Inevitable drift between docs and actual flags/behavior | Acceptable short-term; automate with `--help` output extraction in v2.0 |
-| Hardcoded version in formula (not auto-updated) | Zero automation complexity | Every release requires manual formula update | Never for a regularly-released tool — automate from day one |
+| Dynamic ONNX Runtime linking | Smaller binary, faster CI | Dylib must be distributed alongside binary; Homebrew formula complexity | Only if binary size is a hard constraint |
+| Static ONNX Runtime linking | Single self-contained binary | ~25MB binary size increase | Acceptable for most CLI tools |
+| Bundle `silero_vad.onnx` via `include_bytes!` | No external model file | ~1.8MB binary size increase (acceptable); compile time increases | Always acceptable for small models |
+| Skip model version verification at startup | Simpler code | Cryptic failures if wrong model is used | Never; always verify model version |
+| Hardcode chunk size = 512 | Simple code | Breaks silently if model version changes to different chunk requirement | Only if model version is pinned |
+| Use `download` strategy in CI | Zero CI configuration | Fails in sandboxed runners, slow builds | Only in permissive CI (no sandbox) |
+| Single universal macOS binary | Simpler Homebrew formula | Cannot dynamically link ONNX Runtime; forces static link | Acceptable if static linking is chosen |
 
 ---
 
 ## Integration Gotchas
 
-Common mistakes when connecting to external services.
-
 | Integration | Common Mistake | Correct Approach |
 |-------------|----------------|------------------|
-| FFmpeg via `Command` | Forgetting `-y` and `-nostdin` on new invocations added during pipeline work | Centralize all FFmpeg invocation through `ffmpeg.rs` helpers that add these flags unconditionally |
-| whisper-cli JSON output | Assuming JSON file is at `{wav_path}.json` — whisper-cli writes to the same directory as the WAV with `.json` appended to the full filename | Current code in `caption.rs:434` already handles this correctly; preserve this assumption when refactoring |
-| claude-cli in pipeline | Pipeline runs claude-cli for `--auto` overlay; in pipeline mode the JSON transcript is an intermediate file from the caption stage, not a user-provided path | The pipeline must wire the caption JSON output path explicitly to the overlay `--auto` input — do not rely on derived filenames |
-| GitHub Actions for release | Using `GITHUB_TOKEN` for cross-repo push to Homebrew tap | Create a PAT with `repo` scope, store as `HOMEBREW_TAP_TOKEN` secret, use for tap repo push only |
-| GitHub Actions + Homebrew tap | Formula-update workflow triggered by `release` event before assets finish uploading | Embed formula update as a final step in the `release` job, after `softprops/action-gh-release` completes |
-| Homebrew `sha256` field | Pasting full `shasum -a 256` output including filename | Always pipe through `awk '{print $1}'` or `cut -d' ' -f1` to extract hash only |
-| Homebrew formula URL | Pointing `url` at a raw binary without archive extension | Package binary in `.tar.gz` before uploading to GitHub Release; update release workflow accordingly |
+| ort + GitHub Actions | Using default `download` strategy, expecting network access in build script | Pre-download ONNX Runtime before `cargo build`, use `system` or `load-dynamic` strategy |
+| Silero VAD ONNX model | Using `silero_vad.onnx` (v4) with v5 chunk sizes | Match model file version to crate expectations; use explicitly versioned model files |
+| Audio decoding for VAD | Passing compressed audio bytes or wrong-rate PCM to VAD | Always FFmpeg-decode to 16kHz mono f32le PCM before inference |
+| Homebrew + dylib distribution | Formula installs binary but not the required dylib | Bundle dylib in the release archive; formula installs both |
+| Windows DLL search | Relying on PATH resolution for `onnxruntime.dll` | Place DLL next to binary, or use `load-dynamic` with explicit path |
+| Universal macOS binary + ONNX | `lipo`-ing dynamic-linked binaries from two architectures | Static link each architecture binary, then `lipo` the static-linked results |
 
 ---
 
 ## Performance Traps
 
-Patterns that work at small scale but fail as usage grows.
-
 | Trap | Symptoms | Prevention | When It Breaks |
 |------|----------|------------|----------------|
-| Re-running full pipeline on retry | User re-runs pipeline after caption failure; cut stage re-runs (10+ min for long video) | Preserve intermediates on failure with clear path message | Immediately on any multi-stage failure |
-| Loudnorm two-pass inside pipeline | Cut already normalizes audio (two FFmpeg passes). Pipeline cut→caption feeds normalized video to caption, which is fine. But overlay also re-encodes. Three full re-encodes per pipeline run. | Accept the re-encoding cost for v1.1; optimize to stream copy where possible in v2.0 | Never a correctness problem, but 30-60 min for a 60-min source video |
-| Blocking on claude-cli in pipeline | Claude API call for title generation blocks the pipeline; no timeout | Add a `--timeout` flag to the claude invocation, or use `Command::spawn()` + `wait_timeout` | When Claude API is slow or rate-limited |
-| Large temp files in same directory as input | User's video directory fills up with multi-GB temp files during pipeline | Use `std::env::temp_dir()` for truly temporary files, or a dedicated `{input_dir}/.contentops_tmp/` subdirectory | On SSDs with limited space (common on MacBooks) |
-
----
-
-## Security Mistakes
-
-Domain-specific security issues beyond general web security.
-
-| Mistake | Risk | Prevention |
-|---------|------|------------|
-| Passing user-provided text directly to FFmpeg `drawtext` filter without escaping | FFmpeg filter injection — a title like `foo':fontfile='/etc/passwd` could leak file contents into error output | Current `escape_drawtext()` in `overlay.rs:100` handles `\\`, `'`, `:`, `;` — preserve this during refactoring, add tests |
-| Passing user-provided file paths to `Command::new()` without validation | Path traversal in error logs written to `.contentops_error.log` | Paths are validated for existence before use (`args.input.exists()`); keep this pattern in pipeline |
-| Storing claude API key in environment and passing to subprocess | Claude CLI reads `CLAUDE_API_KEY` from env; a compromised subprocess could read it | This is inherent to the claude-cli design; note in documentation |
-| Shell injection via file paths with special characters | Spaces and special chars in filenames passed to FFmpeg as string args | All FFmpeg args are passed as `Vec<&str>` to `Command`, not via shell — no injection risk |
-| PAT with overly broad scope stored as Actions secret | Token compromise exposes all user repos to write access | Use fine-grained PAT scoped to `homebrew-contentops` repo only with `Contents: write` permission |
-
----
-
-## UX Pitfalls
-
-Common user experience mistakes in this domain.
-
-| Pitfall | User Impact | Better Approach |
-|---------|-------------|-----------------|
-| `doctor` exits 1 when deps missing | Scripted setup fails on `contentops doctor && contentops pipeline ...` | Exit 0 always; only exit 1 with `--strict` flag |
-| Pipeline produces no output and cleans up intermediates | User has no idea where 10 minutes of processing went | Always print each stage's output path; preserve temp dir on failure |
-| `doctor` doesn't check whisper model availability | User runs pipeline, waits through cut stage, then fails at caption with "model not found" | `doctor` should accept `--model` path and validate the model file exists and is a valid GGML file |
-| No `--dry-run` on pipeline | User can't preview what pipeline will do before committing 30 minutes of processing | Pipeline should support `--dry-run` that chains `cut --dry-run` output and skips actual encoding |
-| Progress bars from multiple stages interleave badly in CI logs | CI logs are unreadable with spinner escape codes | Detect non-TTY (`atty` crate or `std::io::IsTerminal`) and suppress progress bars; current code doesn't do this |
-| README install instructions use `brew tap user/tap && brew install tool` without `brew update` | User installs stale version from cached tap | Document `brew update` as step 2; explain that `brew update` refreshes formula cache |
-| README examples use flags that were renamed after docs were written | User gets "unexpected argument" error, loses trust in documentation | Write README from `--help` output after implementation is complete; never document before finalizing CLI |
+| Reinitializing ONNX model per audio chunk | Processing is 10-100x slower than expected | Initialize once, reuse session across all chunks | Immediately on first use |
+| Full audio in memory for VAD | OOM on large video files | Stream audio in chunk-sized increments from FFmpeg stdout | Files > 1GB or long recordings |
+| Synchronous FFmpeg decode + VAD inference | No pipelining; wall time = decode time + inference time | Decode audio via FFmpeg, buffer chunks, run inference | Long videos (>30 minutes) |
 
 ---
 
 ## "Looks Done But Isn't" Checklist
 
-Things that appear complete but are missing critical pieces.
-
-- [ ] **`doctor` subcommand:** Often missing version validation — verify it checks minimum FFmpeg version, not just presence.
-- [ ] **Pipeline subcommand:** Often missing intermediate file cleanup on success — verify the temp directory is deleted after a successful run.
-- [ ] **Pipeline error handling:** Often missing actionable failure messages — verify each stage failure prints the intermediate file path.
-- [ ] **CI/CD workflow:** Often missing `--locked` flag — verify `cargo build --release --locked` is used, not `cargo build --release`.
-- [ ] **Audit/cleanup:** Often declared done when `cargo build` passes — verify `cargo clippy -- -D warnings` also passes with no suppressions added.
-- [ ] **Refactored subcommands:** Often assumed working because they compile — verify each subcommand produces identical output before and after extraction (test with the same input file, diff the output).
-- [ ] **GitHub Release:** Often missing SHA256 checksums — verify the release workflow attaches `.sha256` files alongside binaries.
-- [ ] **`doctor` non-TTY output:** Often only tested interactively — verify `contentops doctor` output is readable in `| cat` (no broken escape codes).
-- [ ] **Homebrew formula SHA256:** Often computed from sidecar file — verify hash is computed directly from the binary URL, piped through `awk '{print $1}'`.
-- [ ] **Homebrew formula URL:** Often points to raw binary — verify release assets are tarballs (`.tar.gz`), not bare binaries; verify `def install` extracts and installs correctly.
-- [ ] **Homebrew formula architecture:** Often tested only on developer's ARM Mac — verify formula installs correctly on Intel Mac (or with `arch -x86_64 brew install`).
-- [ ] **Formula auto-update:** Often assumed working from GitHub Actions logs — verify by checking the tap repo for a new commit after a release, then running `brew upgrade contentops` to confirm version advances.
-- [ ] **README flag table:** Often written from memory — verify every flag in the README matches output of `contentops <subcommand> --help` exactly (flag names, short forms, defaults).
+- [ ] **ort linking:** Binary runs in CI but ships without ONNX Runtime dylib — verify `contentops --version` works on a clean machine with no dev tools installed.
+- [ ] **Model bundling:** Model file is included in `include_bytes!` but wrong version — verify with a known audio clip that VAD produces non-trivial predictions (not all 0.0 or all 1.0).
+- [ ] **Audio preprocessing:** VAD integration compiles and runs, but input audio was not resampled — verify with `ffprobe` that the audio fed to VAD is 16kHz mono.
+- [ ] **Windows distribution:** Binary builds and tests pass in CI, but `onnxruntime.dll` is not in the release zip — verify the release artifact structure includes the dylib.
+- [ ] **doctor subcommand:** Doctor does not check for ONNX Runtime — verify `contentops doctor` reports meaningful status about ONNX Runtime availability.
+- [ ] **Universal binary:** `lipo -info` shows both architectures, but Intel slice crashes at VAD inference — test on actual Intel Mac hardware, not just in CI.
 
 ---
 
 ## Recovery Strategies
 
-When pitfalls occur despite prevention, how to recover.
-
 | Pitfall | Recovery Cost | Recovery Steps |
 |---------|---------------|----------------|
-| Refactoring broke a subcommand | MEDIUM | `git revert` the extraction commit; re-extract one step at a time with tests at each step |
-| Pipeline left multi-GB temp files | LOW | Delete `.contentops_tmp_*` files in the video directory; add `contentops cleanup` subcommand for users |
-| CI/CD uploads wrong-arch binary | LOW | Delete the release, re-trigger the workflow with corrected matrix; add arch to artifact name |
-| `doctor` exits 1 in CI and blocks release | LOW | Add `|| true` to the CI step, or remove `contentops doctor` from CI entirely |
-| Dead code masking by `#[allow(dead_code)]` | LOW | Run `grep -r "allow(dead_code)" src/`; audit each; remove function or document intent |
-| Pipeline stage fails, no intermediate files | HIGH | No recovery without re-running from scratch; prevention (preserve on failure) is the only mitigation |
-| SHA256 mismatch in formula after release | LOW | Recompute hash with `curl -sL <URL> \| shasum -a 256 \| awk '{print $1}'`; push corrected formula; `brew update && brew install contentops` picks up fix immediately |
-| GITHUB_TOKEN rejected pushing to tap repo | LOW | Create PAT with `repo` scope; add as `HOMEBREW_TAP_TOKEN` secret; update workflow to use it |
-| Formula update raced with asset upload (404 SHA256) | LOW | Manually trigger formula-update workflow after release completes; embed update step inside release job going forward |
-| Formula class name mismatch (Ruby error on install) | LOW | Rename class to match filename per CamelCase rules; push to tap; `brew untap && brew tap` to clear cache |
-| Formula URL is raw binary (tar error on install) | MEDIUM | Update release workflow to package binaries as `.tar.gz`; republish release with tarballs; update formula URLs and SHA256 |
-| README flag drift discovered after release | LOW | Update README; push; no binary changes needed; add CI check for `--help` exit code to catch future regressions |
+| Wrong ONNX Runtime version in release | MEDIUM | Patch release with correct dylib bundled; re-trigger Homebrew auto-update |
+| Universal binary incompatible with dynamic ONNX | HIGH | Switch to static linking (rebuilds all architecture binaries) or drop universal binary |
+| VAD model version mismatch in production | LOW | Replace model file, no code changes needed if API is stable |
+| CI fails due to ort download strategy | LOW | Add pre-download step to CI YAML, switch to `system` or `load-dynamic` |
+| Binary size 10x larger than expected | MEDIUM | Switch from static to `load-dynamic`, restructure release archive |
 
 ---
 
 ## Pitfall-to-Phase Mapping
 
-How roadmap phases should address these pitfalls.
-
 | Pitfall | Prevention Phase | Verification |
 |---------|------------------|--------------|
-| Refactoring breaks subcommands (#14) | Audit/Cleanup Phase | Run each subcommand with a real video file before and after extraction; output files match |
-| `doctor` wrong exit code semantics (#15) | Doctor Phase — design before implementing | `contentops doctor` exits 0 on a machine without FFmpeg |
-| Pipeline intermediate file collisions (#16) | Pipeline Phase — design temp dir strategy first | After pipeline run, only final output is in the working directory |
-| Pipeline partial failure ambiguity (#17) | Pipeline Phase — error handling design | Intentionally kill pipeline at caption stage; verify cut intermediate is preserved and path is printed |
-| macOS-specific paths break CI (#18) | CI/CD Phase | CI `ubuntu-latest` job passes (compile + unit tests only, no overlay integration tests) |
-| No testable integration path (#19) | CI/CD Phase | CI installs FFmpeg and at least one integration test runs `contentops cut` end-to-end |
-| Wrong binary architecture in release (#20) | CI/CD Phase | Release artifacts are named with architecture suffix; both ARM and Intel binaries uploaded |
-| `#[allow(dead_code)]` accumulation (#21) | Audit/Cleanup Phase | `grep -r "allow(dead_code)" src/` shows 0 results after audit |
-| SHA256 mismatch in formula (#22) | v1.2 Homebrew tap setup | `brew install contentops` succeeds on fresh machine immediately after release |
-| Wrong architecture served by formula (#23) | v1.2 Homebrew tap setup | Verify ARM binary on M-series, x86_64 binary on Intel; check with `file $(which contentops)` |
-| GITHUB_TOKEN cross-repo push failure (#24) | v1.2 GitHub Actions integration | Formula-update step succeeds; tap repo shows new commit after release |
-| Formula Ruby class name mismatch (#25) | v1.2 Homebrew tap setup | `brew audit Formula/contentops.rb` passes; `brew install --formula` works locally |
-| Raw binary URL causes tar extraction failure (#26) | v1.2 Homebrew tap setup (requires release workflow change) | `brew install contentops` completes without tar error; binary is in PATH |
-| Auto-update race condition (#27) | v1.2 GitHub Actions integration | Inspect tap repo commit timing vs release asset upload completion; no SHA256 computed before assets available |
-| README flag drift (#28) | v1.2 Documentation phase | Every flag in README verified against `contentops <subcommand> --help` output; CI runs `--help` as smoke test |
-| Stale tap cache (#29) | v1.2 Homebrew tap setup (documentation) | Install instructions include `brew update`; version advances correctly after `brew upgrade contentops` |
-
----
-
-## Phase-Specific Warnings
-
-| Phase Topic | Likely Pitfall | Mitigation |
-|-------------|---------------|------------|
-| Foundation / FFmpeg runner | Pipe deadlock (#1), interactive hang (#2), exit code (#10) | Build FFmpeg runner abstraction with -y, -nostdin, proper pipe handling, exit code checks |
-| Silence detection | Trailing silence (#4), stderr parsing (#8), threshold (#11) | Robust parser with edge case handling, fallback boundaries |
-| Silence removal | A/V sync drift (#3), VFR input (#7) | Use select/aselect approach, test with real iPhone footage |
-| Output encoding | Pixel format (#9), rotation (#6) | Hard-code yuv420p, let FFmpeg auto-rotate, test portrait video |
-| Temp file management | Leak on crash (#5) | TempDir + ctrlc handler + predictable naming |
-| Audit/Cleanup | Behavioral regressions (#14), dead code masking (#21) | Extract one module at a time; run each subcommand against real video after each extraction |
-| Doctor subcommand | Wrong exit code semantics (#15), brittle version parsing | Design exit code contract first; use regex for version extraction |
-| Pipeline subcommand | File collisions (#16), partial failure (#17), performance (#table) | Temp dir for intermediates; preserve on failure; clear stage failure messages |
-| CI/CD | macOS-specific paths (#18), no integration tests (#19), wrong arch (#20) | Two-job CI: ubuntu compile/unit + macos integration; matrix release build |
-| v1.2 Homebrew tap | SHA256 mismatch (#22), arch detection (#23), class name (#25), raw binary (#26) | Validate formula locally with `brew install --formula` before any automation |
-| v1.2 GitHub Actions | Cross-repo push failure (#24), race condition (#27) | PAT before automation; embed update inside release job, not as separate triggered workflow |
-| v1.2 Documentation | Flag drift (#28), install instruction gaps (#29) | Write README from live `--help` output; include `brew update` in install steps |
+| ort download strategy fails in CI | v1.4 CI update (first phase) | CI passes on all three platforms without network calls during build |
+| Windows DLL version conflict | v1.4 release/distribution phase | Install binary on fresh Windows 11 VM; run `contentops cut` |
+| macOS universal binary + dynamic ONNX | v1.4 macOS build design (pre-implementation decision) | `lipo -info` on built binary; test on Intel Mac |
+| Silero VAD model version mismatch | v1.4 implementation phase | Run VAD on known clip; verify speech probability range is non-trivial |
+| Audio format mismatch (wrong sample rate) | v1.4 implementation phase | Assert `sample_rate == 16000` in code; test with 48kHz input video |
+| VAD state not reset | v1.4 implementation phase | Process two files sequentially; verify predictions are independent |
+| Binary size bloat from ort | v1.4 implementation phase | Check `ls -lh target/release/contentops` before and after adding ort |
+| load-dynamic dylib missing at runtime | v1.4 distribution phase | Install via Homebrew on clean machine; verify binary runs |
+| Linux musl incompatibility | v1.4 CI config phase | Do not add musl target; document in CI comments |
+| ONNX Runtime version pinning drift | v1.4 implementation phase | Pin versions in `Cargo.toml` comments; update all three together |
 
 ---
 
 ## Sources
 
-- [Rust std::process::Stdio docs — pipe deadlock warning](https://doc.rust-lang.org/std/process/struct.Stdio.html)
-- [Rust issue #45572 — Command hangs if piped stdout buffer fills](https://github.com/rust-lang/rust/issues/45572)
-- [Rust issue #73126 — Command output() error handling hazards](https://github.com/rust-lang/rust/issues/73126)
-- [FFmpeg silencedetect filter docs (7.1)](https://ayosec.github.io/ffmpeg-filters-docs/7.1/Filters/Audio/silencedetect.html)
-- [FFmpeg silencedetect source code](https://github.com/FFmpeg/FFmpeg/blob/master/libavfilter/af_silencedetect.c)
-- [FFmpeg Concatenate wiki](https://trac.ffmpeg.org/wiki/Concatenate)
-- [Remsi — silence removal approach](https://github.com/bambax/Remsi)
-- [ffmpeg-python split_silence.py — edge case handling](https://github.com/kkroening/ffmpeg-python/blob/master/examples/split_silence.py)
-- [tempfile crate docs](https://docs.rs/tempfile/latest/tempfile/)
-- [Rust CLI book — signal handling](https://rust-cli.github.io/book/in-depth/signals.html)
-- [ctrlc crate](https://docs.rs/ctrlc)
-- [TikTok video format guide](https://snaptiksave.online/tiktok-video-formats-explained/)
-- [taiki-e/upload-rust-binary-action — GitHub Actions Rust release](https://github.com/taiki-e/upload-rust-binary-action)
-- [GitHub Actions — macos-latest is now ARM64](https://github.com/actions/runner-images)
-- [Setting up effective CI/CD for Rust projects (Shuttle, Jan 2025)](https://www.shuttle.dev/blog/2025/01/23/setup-rust-ci-cd)
-- [Cross-platform Rust CI/CD pipeline with GitHub Actions (2025)](https://ahmedjama.com/blog/2025/12/cross-platform-rust-pipeline-github-actions/)
-- [Homebrew Releaser — automate formula updates from GitHub Actions](https://github.com/marketplace/actions/homebrew-releaser)
-- [Rust extract method refactoring — ownership challenges (OOPSLA 2023)](https://ilyasergey.net/assets/pdf/papers/rem-oopsla23.pdf)
-- [Clippy lints reference](https://rust-lang.github.io/rust-clippy/master/index.html)
-- [clap global args issue — positional requirements and breaking changes](https://github.com/clap-rs/clap/issues/1386)
-- [Homebrew: How to Create and Maintain a Tap](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap)
-- [Homebrew Formula Cookbook — on_arm/on_intel, Hardware::CPU.arm?, naming rules](https://docs.brew.sh/Formula-Cookbook)
-- [Homebrew SHA256 mismatch discussion](https://github.com/orgs/Homebrew/discussions/1312)
-- [Homebrew: What should sha256 be in a custom cask?](https://github.com/orgs/Homebrew/discussions/5077)
-- [Homebrew: Architecture-specific cask discussion](https://github.com/orgs/Homebrew/discussions/3096)
-- [GitHub Docs: Controlling permissions for GITHUB_TOKEN](https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/controlling-permissions-for-github_token)
-- [GitHub community: GITHUB_TOKEN cannot access other repos](https://github.com/orgs/community/discussions/46566)
-- [Automating Homebrew Tap Updates with GitHub Actions — BuiltFast](https://builtfast.dev/blog/automating-homebrew-tap-updates-with-github-actions/)
-- [Automate Homebrew formulae with GitHub Actions — josh.fail](https://josh.fail/2023/automate-updating-custom-homebrew-formulae-with-github-actions/)
-- [Distribute Open-Source Tools with Homebrew Taps — casraf.dev (Jan 2025)](https://casraf.dev/2025/01/distribute-open-source-tools-with-homebrew-taps-a-beginners-guide/)
-- [Creating Your First Homebrew Tap — kristoffer.dev](https://kristoffer.dev/blog/guide-to-creating-your-first-homebrew-tap/)
-- [sha256sum on macOS uses shasum, not sha256sum — format differs](https://github.com/sobolevn/git-secret/issues/124)
-- [Homebrew: brew install not respecting tap when formula name collides](https://github.com/Homebrew/brew/issues/16213)
-- Direct codebase audit of contentops v1.1 source (2026-02-20)
-- Direct analysis of `.github/workflows/release.yml` job structure (2026-02-20)
+- [ort linking documentation](https://ort.pyke.io/setup/linking) — MEDIUM confidence (official ort docs)
+- [Bundling ONNX Runtime in Rust with Nix, Docker and GitHub Actions](https://blog.stark.pub/posts/bundling-onnxruntime-rust-nix/) — MEDIUM confidence (verified external source)
+- [Silero VAD v5 release discussion #471](https://github.com/snakers4/silero-vad/discussions/471) — HIGH confidence (official maintainer announcement)
+- [Silero VAD version history wiki](https://github.com/snakers4/silero-vad/wiki/Version-history-and-Available-Models) — HIGH confidence (official project documentation)
+- [Silero VAD FAQ](https://github.com/snakers4/silero-vad/wiki/FAQ) — HIGH confidence (official project documentation)
+- [ONNX Runtime universal binary issue #12052](https://github.com/microsoft/onnxruntime/issues/12052) — MEDIUM confidence (GitHub issue, resolved workaround documented)
+- [Microsoft ONNX Runtime issue #11799 — Windows DLL conflict](https://github.com/microsoft/onnxruntime/issues/11799) — HIGH confidence (confirmed bug with documented workaround)
+- [silero-vad-rs docs.rs](https://docs.rs/silero-vad-rs/latest/silero_vad_rs/) — MEDIUM confidence (crate documentation, version-specific)
+- [ort crate GitHub (pykeio/ort)](https://github.com/pykeio/ort) — HIGH confidence (official source; current version v2.0.0-rc.11 as of 2026-01-07)
 
 ---
-*Pitfalls research for: Rust video processing CLI — v1.2 milestone (Homebrew tap, GitHub Actions auto-update, README documentation)*
-*Researched: 2026-02-20*
+
+*Pitfalls research for: Rust CLI (contentops) — Silero VAD / ONNX Runtime integration (v1.4)*
+*Researched: 2026-02-24*

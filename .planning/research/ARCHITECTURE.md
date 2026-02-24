@@ -1,755 +1,311 @@
 # Architecture Research
 
-**Domain:** Rust CLI video post-production — v1.1 integration audit + v1.2 Homebrew tap / README
-**Researched:** 2026-02-20
-**Confidence:** HIGH (direct codebase audit + verified Homebrew/GitHub Actions sources)
+**Domain:** Rust CLI video post-production — Silero VAD integration replacing FFmpeg silencedetect
+**Researched:** 2026-02-24
+**Confidence:** HIGH (direct codebase audit; MEDIUM on silero-vad-rust API specifics due to sparse docs.rs coverage)
 
-## Current Architecture (v1.0 — as built)
+## Integration Question: Where VAD Replaces silencedetect
 
-### System Overview
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                   main.rs (39 lines)                        │
-│  Cli::parse() → TempFileRegistry::new() → match Commands    │
-├──────────────┬───────────────────────────────────────────────┤
-│  cli.rs      │  Commands enum, *Args structs (clap derive)  │
-│              │  Cut | Caption | Overlay                      │
-├──────────────┴───────────────────────────────────────────────┤
-│  commands/   — Self-contained run() functions                │
-│  cut.rs      — normalize → silence-detect → concat filter   │
-│  caption.rs  — audio extract → whisper-cli → SRT/JSON/ASS   │
-│  overlay.rs  — (claude auto-title) → drawtext filter        │
-│  normalize.rs — loudnorm 2-pass (util, used only by cut)    │
-├─────────────────────────────────────────────────────────────┤
-│  Shared infrastructure                                       │
-│  ffmpeg.rs   — FFmpeg/ffprobe wrappers, progress bars       │
-│  silence.rs  — silence parsing, speech segment math         │
-│  temp.rs     — TempFileRegistry, make_temp_file, Ctrl-C     │
-│  error.rs    — AppError enum, require_ffmpeg/whisper        │
-├─────────────────────────────────────────────────────────────┤
-│  External tools (shelled via std::process::Command)         │
-│  ffmpeg / ffprobe     whisper-cli     claude (optional)     │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Component Responsibilities (actual, post-audit)
-
-| Component | Responsibility | LOC | Notes |
-|-----------|----------------|-----|-------|
-| `main.rs` | Parse CLI, dispatch, top-level error handler | 39 | Thin; all logic in commands |
-| `cli.rs` | Clap types: `Cli`, `Commands`, all `*Args` structs | ~109 | Single source of truth for CLI shape |
-| `commands/cut.rs` | Silence removal: normalize → detect → concat | ~231 | Owns `pub fn derive_output_path` (reused by overlay) |
-| `commands/caption.rs` | Audio extract → whisper → SRT/JSON/ASS generate | ~622 | Most complex; `derive_caption_output` is private |
-| `commands/overlay.rs` | Build drawtext filter, optional Claude auto-title | ~296 | Imports `derive_output_path` from cut |
-| `commands/normalize.rs` | Two-pass EBU R128 loudnorm to temp file | ~192 | Called only by cut; returns PathBuf |
-| `ffmpeg.rs` | `run_ffmpeg*`, `probe_duration*`, `run_silencedetect` | ~202 | All FFmpeg subprocess wrappers |
-| `silence.rs` | Parse silencedetect stderr, compute speech segments | ~? | Pure math, no I/O |
-| `temp.rs` | `TempFileRegistry`, `make_temp_file`, Ctrl-C handler | 56 | Registry is `Arc<Mutex<Vec<PathBuf>>>` |
-| `error.rs` | `AppError` thiserror enum, `require_ffmpeg/whisper`, `format_error` | 134 | Prerequisite checks live here |
-
-## v1.1 New Components
-
-### Source Tree Changes
+The existing call chain in both `cut.rs` and `pipeline.rs` is:
 
 ```
-src/
-├── main.rs                  MODIFIED — +2 match arms (Doctor, Pipeline)
-├── cli.rs                   MODIFIED — +2 Commands variants + DoctorArgs + PipelineArgs
-├── commands/
-│   ├── mod.rs               MODIFIED — pub mod doctor; pub mod pipeline;
-│   ├── cut.rs               NO CHANGE
-│   ├── caption.rs           MODIFIED — make derive_caption_output pub
-│   ├── overlay.rs           MODIFIED — add require_claude() call when args.auto.is_some()
-│   ├── normalize.rs         NO CHANGE
-│   ├── doctor.rs            NEW — ~80 lines
-│   └── pipeline.rs          NEW — ~70 lines
-├── error.rs                 MODIFIED — +ClaudeNotFound variant, +require_claude()
-├── ffmpeg.rs                NO CHANGE
-├── silence.rs               NO CHANGE
-└── temp.rs                  NO CHANGE
-
-.github/
-└── workflows/
-    └── release.yml          NEW — build matrix + GitHub Release upload
-```
-
-## Integration Pattern: Doctor Subcommand
-
-### Where It Hooks In
-
-`error.rs` already has `require_ffmpeg()` and `require_whisper()` using `which::which()`. Doctor is an additive user-facing diagnostic wrapper around the same mechanic — it does not replace the inline guards in each command's `run()`.
-
-### Dispatch Addition (main.rs)
-
-```rust
-Some(Commands::Doctor(args)) => commands::doctor::run(args, cli.verbose),
-```
-
-Doctor takes no `registry` argument — it creates no temp files.
-
-### DoctorArgs (cli.rs)
-
-```rust
-#[derive(Args)]
-pub struct DoctorArgs {}  // no fields — contentops doctor takes no arguments
-```
-
-### Implementation Pattern (doctor.rs)
-
-```rust
-pub fn run(_args: DoctorArgs, _verbose: bool) -> anyhow::Result<()> {
-    let mut all_ok = true;
-
-    all_ok &= check_required("ffmpeg",      "brew install ffmpeg");
-    all_ok &= check_required("ffprobe",     "brew install ffmpeg");
-    all_ok &= check_required("whisper-cli", "brew install whisper-cli");
-    check_optional("claude", "brew install claude");
-
-    if all_ok { Ok(()) } else { std::process::exit(1) }
-}
-
-fn check_required(tool: &str, hint: &str) -> bool {
-    match which::which(tool) {
-        Ok(path) => { eprintln!("  ok  {}  ({})", tool, path.display()); true }
-        Err(_)   => { eprintln!("  MISSING {}  hint: {}", tool, hint); false }
-    }
-}
-```
-
-Version reporting: call `Command::new(tool).arg("--version").output()` and print the first line of stdout/stderr. ffmpeg prints version to stderr; whisper-cli prints to stdout — handle both.
-
-### Auto-Prerequisite Checks in Normal Commands
-
-**Current state:** `require_ffmpeg()` and `require_whisper()` already run at the top of each command's `run()`. This IS the auto-prerequisite check pattern.
-
-**Gap to close:** Claude CLI is not checked. `overlay --auto` shells out to `claude` but fails with a generic `StageIo` error if the binary is missing.
-
-**Fix:** Add to `error.rs`:
-
-```rust
-#[error("claude not found on PATH\n  hint: brew install claude")]
-ClaudeNotFound,
-
-pub fn require_claude() -> Result<PathBuf, AppError> {
-    which::which("claude").map_err(|_| AppError::ClaudeNotFound)
-}
-```
-
-Add to `overlay::run()`:
-
-```rust
-if args.auto.is_some() {
-    require_claude()?;
-}
-```
-
-**Do not add a centralized pre-dispatch hook in main.rs.** Each command knows its own dependencies. Checking whisper before `cut` is misleading; checking claude before `caption` is wrong. Keep checks at the call site.
-
-## Integration Pattern: Pipeline Subcommand
-
-### Data Flow
-
-```
-contentops pipeline input.mp4 --model ggml-base.bin
+normalize_to_temp(input) → normalized.mp4
     ↓
-pipeline::run()
-    ├── require_ffmpeg() + require_whisper() upfront
-    │
-    ├── Step 1: cut::run(CutArgs { input, output: Some(cut_path), ... })
-    │       produces: input_cut.mp4
-    │
-    ├── Step 2: caption::run(CaptionArgs { input: cut_path, model, lang, burn: false, ... })
-    │       produces: input_cut_captioned.srt
-    │                 input_cut_captioned.json  ← needed by overlay --auto
-    │
-    └── Step 3: overlay::run(OverlayArgs { input: cut_path, auto: Some(json_path), ... })
-            produces: input_cut_overlay.mp4
-
-Final outputs:
-  input_cut_overlay.mp4       — ready to post
-  input_cut_captioned.srt     — sidecar for external editing
-  input_cut_captioned.json    — word-level timestamps (intermediate, keep for reference)
+ffmpeg::run_silencedetect(normalized_str, threshold, min_duration) → stderr String
+    ↓
+silence::parse_silencedetect(stderr, duration) → Vec<SilenceInterval>
+    ↓
+silence::silence_to_speech(silences, duration, padding) → Vec<SpeechInterval>
+    ↓
+silence::build_concat_filter(speeches) → String
+    ↓
+ffmpeg cut
 ```
 
-Note: Step 3 takes `cut_path` (silence-removed) as input, not the caption step's video output. This is correct — captions are a sidecar. The overlay goes on the clean cut, title auto-generated from the JSON transcript.
+VAD replaces steps 2 and 3 — the `run_silencedetect` call and `parse_silencedetect` call. The output type after those two steps is `Vec<SpeechInterval>`, which VAD produces directly. Everything from `silence_to_speech` onward is unchanged in the `cut` command.
 
-### How Pipeline Reuses Existing Logic
+In `pipeline.rs`, the flow adds `filter_silences_by_words` after `parse_silencedetect` (word-protection). With VAD, VAD already understands speech, so `filter_silences_by_words` is either removed or made optional.
 
-Pipeline calls the existing `run()` functions directly as Rust function calls. No subprocess shelling. Shared `TempFileRegistry` spans all three steps.
+## Audio Loading: WAV via FFmpeg, Not hound
+
+The existing codebase already extracts 16kHz mono WAV for Whisper in `caption::transcribe()`:
 
 ```rust
-// src/commands/pipeline.rs
-use crate::cli::{CaptionArgs, CutArgs, OverlayArgs, PipelineArgs};
-use crate::commands::{caption, cut, overlay};
-use crate::error::{require_ffmpeg, require_whisper};
-use crate::temp::TempFileRegistry;
+let ffmpeg_args = ["-i", &input_str, "-ar", "16000", "-ac", "1", "-f", "wav", &wav_str];
+```
 
-pub fn run(args: PipelineArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow::Result<()> {
-    require_ffmpeg()?;
-    require_whisper()?;
+This is the exact format Silero VAD requires: 16kHz, mono, WAV. The VAD module reuses this same extraction pattern — **no hound crate needed for reading from disk**.
 
-    let cut_path = cut::derive_output_path(&args.input, "cut");
-    let json_path = caption::derive_caption_output(&args.input_cut(), "captioned", "json");
-    //                                              ^^^^ see path derivation note below
+The audio loading approach for VAD is:
+1. FFmpeg extracts 16kHz mono WAV to a temp file (same as Whisper path)
+2. `src/vad.rs` reads the WAV samples using either `hound` (if bundled in silero-vad-rust) or reads raw PCM bytes directly
 
-    cut::run(CutArgs {
-        input: args.input.clone(),
-        output: Some(cut_path.clone()),
-        dry_run: false,
-        breaths: args.breaths,
-    }, verbose, registry)?;
+The `silero-vad-rust` crate provides a `read_audio(path, sample_rate)` helper that returns `Vec<f32>`. Using it avoids a `hound` dependency in our code. Alternatively, FFmpeg can pipe raw PCM (`-f f32le -ac 1 -ar 16000`) directly to stdin, skipping the WAV file entirely — but the WAV-file approach is simpler and already established in the codebase.
 
-    caption::run(CaptionArgs {
-        input: cut_path.clone(),
-        output: None,
-        model: args.model.clone(),
-        lang: args.lang.clone(),
-        burn: false,
-    }, verbose, registry)?;
+## Normalization: Still Needed in cut.rs, Not for VAD
 
-    overlay::run(OverlayArgs {
-        input: cut_path.clone(),
-        text: None,
-        auto: Some(json_path),
-        output: None,
-        font: args.font.clone(),
-        font_size: 44,
-        color: "black".to_string(),
-        position: "top".to_string(),
-        start: 0.3,
-        duration: 3.5,
-    }, verbose, registry)?;
+**cut.rs context:** Normalization (`normalize_to_temp`) was needed before amplitude-based silencedetect because silencedetect uses dB thresholds. Variable loudness video would produce inconsistent silence detection. With VAD, the neural model is robust to absolute amplitude levels — VAD detects speech patterns, not dB thresholds. Normalization is therefore **unnecessary for VAD itself**.
 
+However, in `cut.rs`, the normalized file is the source for the final FFmpeg cut operation (the `input_str` fed to the concat filter). Removing normalization would change cut quality. The choices are:
+
+1. **Keep normalize for cut quality, skip for VAD audio extraction** — extract a separate 16kHz mono WAV from the original input, run VAD on it, then cut the normalized video. This adds one extra FFmpeg pass.
+2. **Remove normalize entirely** — cut from the original input, lose audio loudness normalization in the output.
+3. **Keep normalize, reuse normalized file for VAD** — extract 16kHz mono WAV from the normalized file. VAD results are unchanged (VAD is amplitude-agnostic).
+
+Option 3 is the simplest integration: normalize first (as today), then extract 16kHz WAV from the normalized file, run VAD on it, cut the normalized file. No behavior change to cut quality.
+
+**For pipeline.rs:** Same reasoning. Keep normalization for output quality; run VAD on the 16kHz extraction from the normalized file.
+
+## New Module: src/vad.rs
+
+This module is the clean integration boundary. It owns all Silero VAD interaction and returns `Vec<SpeechInterval>` — the same type `silence_to_speech` returns today.
+
+```rust
+// src/vad.rs
+
+use crate::silence::SpeechInterval;
+
+pub fn detect_speech(
+    audio_path: &str,   // path to 16kHz mono WAV
+    duration: f64,      // total duration in seconds (for building final interval)
+) -> anyhow::Result<Vec<SpeechInterval>> {
+    // 1. load_silero_vad() — bundles ONNX, no external download needed
+    // 2. read_audio(audio_path, 16_000) → Vec<f32>
+    // 3. configure VadParameters { return_seconds: true, ... }
+    // 4. get_speech_timestamps(&audio, model, params) → Vec<{start, end}>
+    // 5. map to Vec<SpeechInterval>
+}
+```
+
+This signature is the exact replacement for:
+```rust
+// replaced call sequence (cut.rs / pipeline.rs):
+let stderr = ffmpeg::run_silencedetect(&normalized_str, threshold, min_duration)?;
+let silences = silence::parse_silencedetect(&stderr, video_duration);
+let speeches = silence::silence_to_speech(&silences, video_duration, SPEECH_PADDING);
+```
+
+Becomes:
+```rust
+// new call:
+let speeches = vad::detect_speech(&wav_16k_path, video_duration)?;
+```
+
+## New FFmpeg Helper: extract_16k_wav
+
+A new function in `ffmpeg.rs` extracts 16kHz mono WAV to a temp path. This is identical to what `caption::transcribe()` does internally — it should be lifted to a shared helper:
+
+```rust
+// src/ffmpeg.rs (new function)
+pub fn extract_16k_wav(input: &str, output: &str) -> Result<(), std::io::Error> {
+    let args = ["-i", input, "-ar", "16000", "-ac", "1", "-f", "wav", output];
+    let result = run_ffmpeg(&args)?;
+    if !result.success {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "audio extraction failed",
+        ));
+    }
     Ok(())
 }
 ```
 
-### Path Derivation Dependency (Required Change)
+This function already exists implicitly in `caption.rs` — promoting it to `ffmpeg.rs` serves both the caption and VAD paths.
 
-`derive_output_path` in `cut.rs` is already `pub`. Pipeline can call it directly.
+## Existing silence.rs Functions: Keep/Change/Remove
 
-`derive_caption_output` in `caption.rs` is currently `fn` (private). Pipeline needs to derive the JSON path that caption will produce. **Required change:** make it `pub fn derive_caption_output` in caption.rs.
+| Function | Status | Reason |
+|----------|--------|--------|
+| `parse_silencedetect` | **REMOVE** | Dead code once VAD is primary path. Keep only if fallback mode retained. |
+| `silence_to_speech` | **REMOVE** | VAD returns speech intervals directly; this conversion is no longer needed. |
+| `build_concat_filter` | **KEEP** | Unchanged — takes `Vec<SpeechInterval>`, builds the FFmpeg concat filter string. |
+| `adjust_timestamps` | **KEEP** | Used in pipeline.rs to shift word timestamps after cutting. Unchanged. |
+| `filter_silences_by_words` | **REMOVE** | Takes `Vec<SilenceInterval>` as input, which no longer exists in the VAD path. VAD inherently avoids cutting speech. |
+| `words_to_speech_intervals` | **KEEP IF USED** | Check if referenced anywhere — provides alternative path for word-based cutting. |
+| `total_silence_removed` | **REMOVE or ADAPT** | Takes `Vec<SilenceInterval>`. For reporting, compute removed time from speech intervals instead: `duration - speeches.iter().map(|s| s.end - s.start).sum::<f64>()`. |
+| `SilenceInterval` struct | **REMOVE** | No longer produced by any code path. |
+| `SpeechInterval` struct | **KEEP** | The shared currency between VAD output and build_concat_filter/adjust_timestamps. |
 
-The JSON path is: given `input_cut.mp4`, caption produces `input_cut_captioned.json` (suffix="captioned", ext="json"). Pipeline needs this path to pass as `args.auto` to overlay.
-
-### PipelineArgs (cli.rs addition)
-
-```rust
-#[derive(Args)]
-pub struct PipelineArgs {
-    /// Input video file
-    pub input: PathBuf,
-
-    /// Path to whisper model file
-    #[arg(long)]
-    pub model: PathBuf,
-
-    /// Language code for transcription
-    #[arg(long, default_value = "en")]
-    pub lang: String,
-
-    /// Also detect and remove breaths (forwarded to cut)
-    #[arg(long)]
-    pub breaths: bool,
-
-    /// Path to .ttf font file (forwarded to overlay)
-    #[arg(long)]
-    pub font: Option<PathBuf>,
-}
-```
-
-Overlay positioning, timing, font size, and color are hardcoded in pipeline to the same defaults as the individual command. Users who need control use individual commands.
-
-### OverlayArgs Construction
-
-`OverlayArgs` does not derive `Default` (clap required-field validation conflicts with Default for `text`). Pipeline constructs it with all fields explicit — this is fine since pipeline has a fixed, opinionated configuration.
-
-## Integration Pattern: GitHub Actions CI/CD
-
-### Scope
-
-New file only: `.github/workflows/release.yml`. Zero src/ changes.
-
-### Trigger
-
-```yaml
-on:
-  push:
-    tags:
-      - 'v*'
-```
-
-### Build Matrix
-
-Two targets cover macOS deployment:
-
-| Target | Runner | Notes |
-|--------|--------|-------|
-| `aarch64-apple-darwin` | `macos-latest` | Apple Silicon (M-series), default since ~2024 |
-| `x86_64-apple-darwin` | `macos-13` | Intel; macos-13 is last Intel runner in GHA |
-
-Cross-compilation (building arm64 on x86 or vice versa) is possible on macOS with `rustup target add` but same-arch builds are simpler and faster. Use the two-runner matrix.
-
-### Workflow Structure
-
-```yaml
-jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-apple-darwin
-            os: macos-13
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --target ${{ matrix.target }}
-      - run: mv target/${{ matrix.target }}/release/contentops contentops-${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: contentops-${{ matrix.target }}
-          path: contentops-${{ matrix.target }}
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: contentops-*
-          merge-multiple: true
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: contentops-*
-```
-
-### Caching
-
-`Swatinem/rust-cache@v2` caches the Cargo registry and target directory. On a ~2,400 LOC project: cold build ~3-4 min, cached build ~30s. Include it.
-
-### Binary Naming Convention
-
-`contentops-aarch64-apple-darwin` and `contentops-x86_64-apple-darwin` — users download the right one for their machine. No universal binary (lipo) needed; the two files are sufficient.
-
----
-
-## v1.2 New Components: Homebrew Tap + README
-
-### Two-Repository System Overview
+## Updated Source Tree
 
 ```
-┌──────────────────────────────────────────┐
-│  darrelltang/contentops  (existing repo) │
-│                                          │
-│  .github/workflows/release.yml           │
-│    ↓  on: push tags v*                   │
-│    ↓  jobs: build-arm64, build-x86_64    │
-│    ↓  job: release → softprops/release   │
-│    ↓                                     │
-│    ↓  NEW: job: update-tap               │
-│       gh workflow run bump-formula.yml   │
-│       --repo darrelltang/homebrew-contentops
-│       --field version=$TAG               │
-└───────────────────┬──────────────────────┘
-                    │  cross-repo workflow_dispatch
-                    │  (PAT_TOKEN secret required)
-                    ▼
-┌──────────────────────────────────────────┐
-│  darrelltang/homebrew-contentops  (NEW)  │
-│                                          │
-│  Formula/                                │
-│    contentops.rb       ← updated here    │
-│  .github/workflows/                      │
-│    bump-formula.yml    ← triggered above │
-│  .github/scripts/                        │
-│    update-formula      ← bash script     │
-└──────────────────────────────────────────┘
+src/
+├── main.rs                  NO CHANGE
+├── cli.rs                   NO CHANGE (unless adding --vad flag)
+├── commands/
+│   ├── mod.rs               NO CHANGE
+│   ├── cut.rs               MODIFIED — replace normalize→silencedetect→parse→speech with normalize→extract_wav→vad::detect_speech
+│   ├── caption.rs           MODIFIED — promote audio extraction to ffmpeg::extract_16k_wav
+│   ├── pipeline.rs          MODIFIED — same as cut.rs changes; remove filter_silences_by_words call
+│   ├── normalize.rs         NO CHANGE (kept for output quality, not for VAD)
+│   ├── doctor.rs            NO CHANGE (or add ort/onnx runtime check if needed)
+│   └── overlay.rs           NO CHANGE
+├── vad.rs                   NEW — silero-vad-rust wrapper returning Vec<SpeechInterval>
+├── ffmpeg.rs                MODIFIED — add extract_16k_wav() as shared helper
+├── silence.rs               MODIFIED — remove SilenceInterval, parse_silencedetect, silence_to_speech, filter_silences_by_words, total_silence_removed; keep build_concat_filter, adjust_timestamps, SpeechInterval
+├── temp.rs                  NO CHANGE
+├── error.rs                 NO CHANGE (or add VadError variant)
+└── ui.rs                    NO CHANGE
+
+Cargo.toml                   MODIFIED — add silero-vad-rust (and ndarray if needed)
 ```
 
-### New Repository: `darrelltang/homebrew-contentops`
+## Data Flow: Before and After
 
-**Naming:** The `homebrew-` prefix is required for the short `brew tap darrelltang/contentops` syntax. Without it, users must use `brew tap darrelltang/homebrew-contentops`.
-
-**Required structure:**
+### Before (current)
 
 ```
-homebrew-contentops/
-├── Formula/
-│   └── contentops.rb          # Homebrew formula
-├── .github/
-│   ├── workflows/
-│   │   └── bump-formula.yml   # workflow_dispatch target
-│   └── scripts/
-│       └── update-formula     # bash: download + sha256 + sed
-└── README.md                  # optional but expected
+cut input.mp4
+    ↓
+normalize_to_temp(input) → normalized.mp4   [loudnorm 2-pass, keeps video stream]
+    ↓
+ffmpeg::run_silencedetect(normalized)       [runs FFmpeg silencedetect filter, returns stderr]
+    ↓
+silence::parse_silencedetect(stderr)        [regex parse → Vec<SilenceInterval>]
+    ↓
+silence::silence_to_speech(silences)        [invert silences → Vec<SpeechInterval>]
+    ↓
+silence::build_concat_filter(speeches)      [build FFmpeg filter_complex string]
+    ↓
+ffmpeg cut normalized.mp4 → output.mp4
 ```
 
-### Formula File Structure (`Formula/contentops.rb`)
-
-The formula distributes architecture-specific pre-built binaries using `on_arm`/`on_intel` blocks with separate URLs and SHA256 values per arch:
-
-```ruby
-class Contentops < Formula
-  desc "Video post-production CLI: silence removal, captions, overlays"
-  homepage "https://github.com/darrelltang/contentops"
-  version "0.1.0"
-
-  on_arm do
-    url "https://github.com/darrelltang/contentops/releases/download/v0.1.0/contentops-aarch64-apple-darwin"
-    sha256 "PLACEHOLDER_ARM64_SHA256"
-  end
-
-  on_intel do
-    url "https://github.com/darrelltang/contentops/releases/download/v0.1.0/contentops-x86_64-apple-darwin"
-    sha256 "PLACEHOLDER_X86_SHA256"
-  end
-
-  def install
-    bin.install "contentops-aarch64-apple-darwin" => "contentops" if Hardware::CPU.arm?
-    bin.install "contentops-x86_64-apple-darwin" => "contentops" if Hardware::CPU.intel?
-  end
-
-  test do
-    system "#{bin}/contentops", "--version"
-  end
-end
-```
-
-**Note:** Homebrew bottles (the standard binary package format) require Homebrew infrastructure to build and sign. For a personal tap with pre-built Rust binaries, the `on_arm`/`on_intel` approach with direct release URLs is the correct pattern — bottles are for Homebrew/core, not personal taps.
-
-### Update Script (`.github/scripts/update-formula`)
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-VERSION="${VERSION:?VERSION not set}"
-REPO="darrelltang/contentops"
-
-ARM_URL="https://github.com/${REPO}/releases/download/v${VERSION}/contentops-aarch64-apple-darwin"
-X86_URL="https://github.com/${REPO}/releases/download/v${VERSION}/contentops-x86_64-apple-darwin"
-
-ARM_SHA=$(curl -fsSL "$ARM_URL" | shasum -a 256 | awk '{print $1}')
-X86_SHA=$(curl -fsSL "$X86_URL" | shasum -a 256 | awk '{print $1}')
-
-sed -i '' "s|releases/download/v.*/contentops-aarch64|releases/download/v${VERSION}/contentops-aarch64|g" Formula/contentops.rb
-sed -i '' "s|releases/download/v.*/contentops-x86_64|releases/download/v${VERSION}/contentops-x86_64|g" Formula/contentops.rb
-sed -i '' "s/version \".*\"/version \"${VERSION}\"/" Formula/contentops.rb
-# Replace SHA lines — order matters: arm first, intel second
-# (use line-specific replacement if sed -i '' pattern conflicts)
-```
-
-**Note on SHA replacement:** `sed` replacing two SHA256 values in the same file is fragile when both look identical in pattern. A more robust approach: use Python's `re.sub` or write the formula file from a template rather than patching in place.
-
-### Tap Workflow (`.github/workflows/bump-formula.yml`)
-
-```yaml
-name: Bump Formula
-
-on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Version (without v prefix, e.g. 0.2.0)"
-        required: true
-
-permissions:
-  contents: write
-
-jobs:
-  bump:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Update formula
-        env:
-          VERSION: ${{ github.event.inputs.version }}
-        run: bash .github/scripts/update-formula
-
-      - name: Commit and push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/contentops.rb
-          git commit -m "contentops ${{ github.event.inputs.version }}"
-          git push
-```
-
-### Modified: `release.yml` — New `update-tap` Job
-
-The existing `release` job in `contentops` repo completes successfully, then `update-tap` fires:
-
-```yaml
-  update-tap:
-    name: Update Homebrew Tap
-    needs: release          # runs after GitHub Release is published
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger tap formula update
-        env:
-          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"   # strip leading 'v' from tag
-          gh workflow run bump-formula.yml \
-            --repo darrelltang/homebrew-contentops \
-            --field version="${VERSION}"
-```
-
-**Why `needs: release` not `needs: [build-arm64, build-x86_64]`:** The tap script downloads binaries from the GitHub Release. The Release must exist and assets must be uploaded before the tap update downloads them to compute SHA256. The `release` job creates the release via `softprops/action-gh-release`; tap update must wait for it.
-
-### Authentication: `TAP_GITHUB_TOKEN` Secret
-
-| Requirement | Detail |
-|-------------|--------|
-| Type | Fine-grained PAT (or classic PAT) |
-| Owner | `darrelltang` account |
-| Repos | `darrelltang/homebrew-contentops` — read+write |
-| Permissions | Actions: read+write, Contents: read+write, Workflows: read+write |
-| Where stored | `contentops` repo → Settings → Secrets → `TAP_GITHUB_TOKEN` |
-
-**Do not use `GITHUB_TOKEN` for cross-repo triggers.** `GITHUB_TOKEN` is scoped to the current repo only. Cross-repo `workflow_dispatch` requires a PAT.
-
-### Data Flow: Tag Push to `brew install`
+### After (with VAD)
 
 ```
-1. Developer: git push tag v0.2.0
-      ↓
-2. release.yml triggers (on: push tags v*)
-      ↓
-3. build-arm64 job → artifact: contentops-aarch64-apple-darwin
-   build-x86_64 job → artifact: contentops-x86_64-apple-darwin
-      ↓
-4. release job:
-   - Downloads both artifacts
-   - Creates universal binary (lipo)
-   - Generates .sha256 files
-   - Uploads 6 files to GitHub Release via softprops
-      ↓
-5. update-tap job (needs: release):
-   - Strips 'v' prefix: "v0.2.0" → "0.2.0"
-   - gh workflow run bump-formula.yml --repo darrelltang/homebrew-contentops
-      ↓
-6. bump-formula.yml in homebrew-contentops triggers:
-   - Checks out homebrew-contentops
-   - update-formula script:
-       - curl downloads contentops-aarch64-apple-darwin from GitHub Release
-       - shasum → ARM64_SHA
-       - curl downloads contentops-x86_64-apple-darwin from GitHub Release
-       - shasum → X86_SHA
-       - sed patches version + both SHA256 values in Formula/contentops.rb
-   - git commit + push → Formula/contentops.rb updated
-      ↓
-7. User: brew tap darrelltang/contentops
-          brew install contentops
-   - Homebrew reads Formula/contentops.rb
-   - Downloads arch-specific binary from GitHub Release
-   - Verifies SHA256
-   - Installs to /opt/homebrew/bin/contentops (arm64)
-             or /usr/local/bin/contentops (intel)
+cut input.mp4
+    ↓
+normalize_to_temp(input) → normalized.mp4   [unchanged — needed for output quality]
+    ↓
+ffmpeg::extract_16k_wav(normalized) → temp.wav  [NEW: 16kHz mono WAV extraction]
+    ↓
+vad::detect_speech(temp.wav, duration)      [NEW: Silero VAD → Vec<SpeechInterval> directly]
+    ↓
+silence::build_concat_filter(speeches)      [UNCHANGED]
+    ↓
+ffmpeg cut normalized.mp4 → output.mp4      [UNCHANGED]
 ```
 
-### Component Inventory: New vs Modified
+The intermediate `Vec<SilenceInterval>` type is eliminated. VAD speaks `Vec<SpeechInterval>` natively.
 
-| Component | Status | Location | Notes |
-|-----------|--------|----------|-------|
-| `homebrew-contentops` repo | NEW | github.com/darrelltang/homebrew-contentops | Separate GitHub repo |
-| `Formula/contentops.rb` | NEW | homebrew-contentops | on_arm/on_intel binary formula |
-| `.github/workflows/bump-formula.yml` | NEW | homebrew-contentops | workflow_dispatch receiver |
-| `.github/scripts/update-formula` | NEW | homebrew-contentops | sha256 + sed script |
-| `release.yml` — `update-tap` job | MODIFIED | contentops/.github/workflows/ | Appended after existing `release` job |
-| `TAP_GITHUB_TOKEN` secret | NEW | contentops repo settings | Fine-grained PAT |
-| `README.md` | NEW | contentops repo root | Install + usage docs |
+### pipeline.rs Specific Change
 
-**Zero src/ changes required.** This milestone is pure distribution and documentation.
-
-### README Architecture
-
-The README is a single file at the contentops repo root. It is the only documentation file needed — no docs/ directory, no wiki.
+Current pipeline.rs after silencedetect has an extra step:
 
 ```
-README.md
-├── Install (brew tap + brew install + verify)
-├── Prerequisites (ffmpeg, whisper-cli, claude)
-├── Commands reference (table: command | purpose | key flags)
-├── Usage examples (contentops cut, caption, overlay, pipeline)
-└── Uninstall
+filter_silences_by_words(silences, word_times) → safe_silences
+silence_to_speech(safe_silences, ...) → speeches
 ```
 
-Target: ~60-80 lines. Scannable. No prose narrative. Commands are copy-pasteable.
+With VAD, word-protection (`filter_silences_by_words`) is dropped. VAD's neural detection already avoids cutting speech regions. Pipeline becomes:
 
-## Architectural Patterns (Existing — Confirmed by Audit)
+```
+vad::detect_speech(temp.wav, duration) → speeches
+adjust_timestamps(word_data, &speeches) → adjusted_words   [unchanged]
+```
 
-### Pattern 1: Self-Contained Command Modules
+## crate: silero-vad-rust
 
-Each command module imports its own `*Args` type, calls `require_*()` guards at entry, manages its own temp files via the shared registry, and returns `anyhow::Result<()>`. No shared state between commands at runtime.
+**Confidence: MEDIUM** — The `silero-vad-rust` crate (distinct from `silero-vad-rs`) is the one referenced in the project context. Key verified properties:
 
-**Doctor and Pipeline follow this same shape exactly.** Doctor skips the registry arg. Pipeline adds multi-command coordination.
+| Property | Value | Confidence |
+|----------|-------|------------|
+| ONNX model bundled | Yes — opset 15 & 16 in `src/silero_vad/data` | MEDIUM (search result claim, not direct docs verification) |
+| External download needed | No | MEDIUM |
+| Audio format | `Vec<f32>` at 16kHz or 8kHz | HIGH |
+| `get_speech_timestamps` exists | Yes | HIGH |
+| `VadParameters.return_seconds` | Yes — timestamps in seconds when true | MEDIUM |
+| `load_silero_vad()` | Yes | HIGH |
+| Import path | `silero_vad_rust::silero_vad::utils_vad` | MEDIUM |
 
-### Pattern 2: In-Process Command Chaining (Pipeline)
+The `silero-vad-rs` crate (different crate) requires a separate ONNX download and uses `ndarray::Array1<f32>` + `VADIterator`. The project context references `get_speech_timestamps()` and `SpeechInterval` matching `silero-vad-rust`, not `silero-vad-rs`.
 
-Pipeline calls `commands::cut::run()`, `commands::caption::run()`, `commands::overlay::run()` directly as Rust function calls. The shared `TempFileRegistry` handles Ctrl-C cleanup across all three steps automatically.
+**Flag for implementation phase:** Verify the exact import paths and struct field names against `docs.rs/silero-vad-rust` before coding. The API surface is confirmed at the function level but field names need verification.
 
-**Do not shell out to `contentops cut` as a subprocess.** This would lose the shared registry (Ctrl-C in a subprocess doesn't clean the parent's temp files), lose typed errors, and require the binary on PATH during development.
+## Component Boundaries
 
-### Pattern 3: Prerequisite Checks as Typed Errors
+| Boundary | Interface | Notes |
+|----------|-----------|-------|
+| `vad.rs` → `silence.rs` | Returns `Vec<SpeechInterval>` | SpeechInterval stays in silence.rs |
+| `vad.rs` → `ffmpeg.rs` | Calls `extract_16k_wav` | Or inlines it — either works |
+| `cut.rs` → `vad.rs` | Calls `vad::detect_speech(wav_path, duration)` | Replaces 3-function call sequence |
+| `pipeline.rs` → `vad.rs` | Same as cut.rs | Remove filter_silences_by_words call |
+| `caption.rs` → `ffmpeg.rs` | Use shared `extract_16k_wav` | Reduces duplication |
 
-`require_ffmpeg()` / `require_whisper()` return `AppError::FfmpegNotFound` / `AppError::WhisperNotFound`. The top-level error handler in main.rs catches `AppError` variants and formats them with install hints. New tools follow the same pattern.
+## Build Order for Implementation
 
-Checks are duplicated across commands that share deps. This is acceptable — `which::which` is a filesystem stat (cheap), and it keeps each command self-documenting.
-
-### Pattern 4: Cross-Repo Release Chain (NEW — v1.2)
-
-The release workflow is a linear dependency chain: build → release → tap update. Each step has an explicit `needs:` dependency. The tap update cannot run until GitHub Release assets exist (the tap script downloads them to compute SHA256). The PAT scoped to the tap repo is the authentication boundary between the two repositories.
+| Order | Task | Depends On | Why This Order |
+|-------|------|------------|----------------|
+| 1 | Add `silero-vad-rust` to `Cargo.toml`, verify it compiles | Nothing | Fail fast on dependency issues |
+| 2 | Add `ffmpeg::extract_16k_wav` | Step 1 (confirms dep compiles) | Shared helper needed by both vad.rs and caption.rs |
+| 3 | Create `src/vad.rs` with `detect_speech()` returning `Vec<SpeechInterval>` | Steps 1–2 | Core integration — verify VAD produces correct intervals on a real file |
+| 4 | Modify `cut.rs` — replace silencedetect call sequence with vad::detect_speech | Step 3 | Simplest integration point, no word-protection complexity |
+| 5 | Modify `pipeline.rs` — same replacement, drop filter_silences_by_words | Step 4 confirmed | More complex; word-timestamp adjustment must still work |
+| 6 | Update `caption.rs` — use shared extract_16k_wav | Step 2 | Cleanup; not functionally blocking |
+| 7 | Prune `silence.rs` — remove dead functions and SilenceInterval | Steps 4–5 confirmed working | Do not prune until end-to-end tests pass |
+| 8 | Update `Cargo.toml` — remove any newly dead transitive deps | Step 7 | Final cleanup |
 
 ## Anti-Patterns
 
-### Anti-Pattern 1: Pipeline as a Subprocess Chain
+### Anti-Pattern 1: Running VAD on the Original Video File
 
-**What people do:** `Command::new("contentops").arg("cut").arg(input).output()`
+**What:** Feeding the MP4 directly to `silero-vad-rust`'s `read_audio` instead of extracting WAV first.
 
-**Why it's wrong:** Loses TempFileRegistry. Error messages go through shell and lose typed AppError. Requires the binary on PATH during development builds.
+**Why wrong:** `read_audio` in silero-vad-rust expects a WAV file. Even if it accepted other formats, it would need to decode the video to get audio — FFmpeg already does this optimally.
 
-**Do this instead:** Call `commands::cut::run()` directly with constructed CutArgs.
+**Do this instead:** Always extract 16kHz mono WAV with FFmpeg first, then feed the WAV path to VAD.
 
-### Anti-Pattern 2: Centralized Pre-Dispatch Prerequisite Check
+### Anti-Pattern 2: Running VAD Before Normalization
 
-**What people do:** Before the match arm in main.rs, check all tools for every command.
+**What:** Skipping `normalize_to_temp` and running VAD on the raw input, then cutting the raw input.
 
-**Why it's wrong:** Whisper check fires for `contentops cut` (which never uses whisper). Claude check fires for `contentops caption`. Users see confusing "tool not found" errors for tools their command doesn't need.
+**Why wrong:** VAD results are the same either way (VAD is amplitude-agnostic), but the cut output loses loudness normalization. The normalize step is for output quality, not for VAD.
 
-**Do this instead:** Keep `require_*()` at the top of each command's `run()` — already the pattern.
+**Do this instead:** Normalize first, extract WAV from normalized file, run VAD, cut the normalized file.
 
-### Anti-Pattern 3: Over-Exposing Flags on Pipeline
+### Anti-Pattern 3: Keeping filter_silences_by_words in the VAD Path
 
-**What people do:** Re-expose every flag from cut, caption, and overlay on PipelineArgs.
+**What:** Continuing to use `filter_silences_by_words` after VAD replaces silencedetect.
 
-**Why it's wrong:** 15+ fields on PipelineArgs, duplicating three commands' worth of CLI surface. Users needing fine control should use individual commands.
+**Why wrong:** `filter_silences_by_words` takes `Vec<SilenceInterval>` — a type that no longer exists in the VAD path. VAD returns speech intervals directly; it inherently does not cut speech.
 
-**Do this instead:** Expose only `input`, `model`, `lang`, `breaths`, `font`. Hardcode overlay defaults. Pipeline is the happy path.
+**Do this instead:** Remove the filter call. VAD's neural detection handles speech protection natively.
 
-### Anti-Pattern 4: Tap Update Before Release Assets Exist (NEW)
+### Anti-Pattern 4: Adding a `--vad` Flag Instead of Replacing
 
-**What people do:** Trigger `bump-formula.yml` in parallel with or immediately after the `release` job starts, without waiting for `softprops/action-gh-release` to complete.
+**What:** Implementing VAD as an opt-in flag (`contentops cut --vad`) while keeping silencedetect as default.
 
-**Why it's wrong:** The update-formula script downloads binaries from the GitHub Release to compute SHA256. If triggered too early, the Release may not exist or assets may still be uploading. The script fails with a 404 or gets a wrong SHA.
+**Why wrong:** Two code paths, two sets of parameters to tune, two behaviors to document and test. The whole point of VAD is that it's better — make it the only path.
 
-**Do this instead:** `update-tap` job must declare `needs: release`. The release job does not complete until `softprops/action-gh-release` finishes uploading all 6 files.
+**Do this instead:** Replace silencedetect entirely. If a fallback is needed, that is a separate research decision requiring explicit justification.
 
-### Anti-Pattern 5: Using GITHUB_TOKEN for Cross-Repo Dispatch (NEW)
+## Integration Points
 
-**What people do:** Set `GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}` in the `update-tap` job.
+### External Libraries (New)
 
-**Why it's wrong:** `GITHUB_TOKEN` is automatically scoped to the current repository. It cannot trigger workflows in `darrelltang/homebrew-contentops`.
+| Library | Integration Pattern | Notes |
+|---------|---------------------|-------|
+| `silero-vad-rust` | `vad.rs` calls `load_silero_vad()` + `get_speech_timestamps()` | ONNX bundled — no runtime download |
+| `ort` (transitive) | Pulled in by silero-vad-rust for ONNX runtime | May require `ORT_DYLIB_PATH` on some platforms — verify |
 
-**Do this instead:** Create a fine-grained PAT with actions + contents + workflows write permissions on the tap repo. Store it as `TAP_GITHUB_TOKEN` in the contentops repo secrets.
+### Internal Boundaries
 
-### Anti-Pattern 6: Patching SHA256 with Ambiguous sed (NEW)
-
-**What people do:** `sed -i '' "s/OLDSHA/NEWSHA/"` when both ARM and Intel SHA placeholders share the same pattern.
-
-**Why it's wrong:** Two SHA256 values in the formula can't be distinguished by sed if the regex matches both. First substitution may replace the wrong line.
-
-**Do this instead:** Use line-number-aware replacement, or template the formula file (write it from scratch with interpolated values) rather than patching. Python's `re.sub` with named capture groups is more reliable than multi-line sed.
-
-## Data Flow Summary
-
-### Normal Commands
-
-```
-User → clap parse → *Args struct → command::run(*Args, verbose, &registry) → anyhow::Result<()>
-                                        ↓
-                               require_ffmpeg/whisper()
-                                        ↓
-                               std::process::Command (ffmpeg, whisper-cli, claude)
-                                        ↓
-                               output file on disk + eprintln progress
-```
-
-### Pipeline Command
-
-```
-User → clap parse → PipelineArgs → pipeline::run() → {
-    cut::run(CutArgs) → input_cut.mp4
-    caption::run(CaptionArgs { input: input_cut.mp4 }) → input_cut_captioned.{srt,json}
-    overlay::run(OverlayArgs { auto: input_cut_captioned.json }) → input_cut_overlay.mp4
-}
-```
-
-### Doctor Command
-
-```
-User → clap parse → DoctorArgs → doctor::run() → {
-    which("ffmpeg")      → ok/MISSING
-    which("ffprobe")     → ok/MISSING
-    which("whisper-cli") → ok/MISSING
-    which("claude")      → ok/MISSING (optional)
-    exit 0 or exit 1
-}
-```
-
-### Release + Tap Update (NEW — v1.2)
-
-```
-git push v0.2.0 tag
-    ↓
-release.yml
-    ├── build-arm64 job  ──────────────────────────┐
-    ├── build-x86_64 job ──────────────────────────┤
-    │                                              ↓
-    ├── release job (needs: build-arm64, build-x86_64)
-    │     softprops/action-gh-release uploads 6 files
-    │                                              ↓
-    └── update-tap job (needs: release)
-          gh workflow run bump-formula.yml \
-            --repo darrelltang/homebrew-contentops \
-            --field version=0.2.0
-              ↓
-          homebrew-contentops/bump-formula.yml
-            curl arm64 binary → shasum → ARM_SHA
-            curl x86_64 binary → shasum → X86_SHA
-            patch Formula/contentops.rb
-            git push
-              ↓
-          brew install contentops  [user]
-            reads updated formula → downloads binary → verifies SHA → installs
-```
-
-## Build Order Recommendation (v1.1 + v1.2)
-
-| Order | Task | Depends On | Rationale |
-|-------|------|------------|-----------|
-| 1 | `require_claude()` + overlay guard | `error.rs` existing pattern | One-liner additions; closes the missing check gap immediately |
-| 2 | `pub fn derive_caption_output` | `caption.rs` | One-line visibility change; prerequisite for pipeline |
-| 3 | `DoctorArgs` + `Commands::Doctor` in cli.rs | Nothing new | Isolated; no dependencies on other v1.1 features |
-| 4 | `commands/doctor.rs` | Step 3 + error.rs which/require pattern | Standalone, self-contained, validates check infrastructure |
-| 5 | `PipelineArgs` + `Commands::Pipeline` in cli.rs | Steps 1–2 complete | Can design args only after derivation API is confirmed |
-| 6 | `commands/pipeline.rs` | Steps 1–5 complete | Integrates all three existing commands |
-| 7 | `.github/workflows/release.yml` | None — independent | Can be written any time; test with a manual tag push |
-| 8 | Create `darrelltang/homebrew-contentops` repo | Step 7 complete and tag pushed | Tap repo needs a real release to test SHA download |
-| 9 | `Formula/contentops.rb` + `bump-formula.yml` + `update-formula` script | Step 8 | Core tap infrastructure |
-| 10 | `TAP_GITHUB_TOKEN` secret + `update-tap` job in `release.yml` | Steps 8–9 | Wires cross-repo trigger; test with another tag push |
-| 11 | `README.md` in contentops repo | Steps 8–10 (brew install must work) | README install section must reference working tap |
+| Boundary | Before | After |
+|----------|--------|-------|
+| `cut.rs` → speech detection | 3 calls: run_silencedetect → parse_silencedetect → silence_to_speech | 1 call: vad::detect_speech |
+| `pipeline.rs` → speech detection | 4 calls: same 3 + filter_silences_by_words | 1 call: vad::detect_speech |
+| `silence.rs` surface | 7 public functions + 2 structs | 3 public functions + 1 struct |
+| `ffmpeg.rs` surface | No WAV extraction helper | +1 extract_16k_wav |
 
 ## Sources
 
-- Direct codebase audit: all 12 source files in `/Users/darrelltang/darrelldoesdevops/contentops/src/`
-- Homebrew tap naming and structure: https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap
-- Homebrew formula on_arm/on_intel DSL: https://docs.brew.sh/Formula-Cookbook
-- Cross-repo workflow_dispatch pattern: https://builtfast.dev/blog/automating-homebrew-tap-updates-with-github-actions/
-- PAT permissions for cross-repo triggers: https://github.com/orgs/community/discussions/58868
-- Formula update automation pattern: https://josh.fail/2023/automate-updating-custom-homebrew-formulae-with-github-actions/
-- Binary formula structure: https://jonathanruiz.dev/deploy-app-homebrew-using-github-actions/
+- Direct codebase audit: all source files in `/Users/darrelltang/darrelldoesdevops/contentops/src/`
+- silero-vad-rust crate: https://crates.io/crates/silero-vad-rust
+- silero-vad-rs docs.rs: https://docs.rs/silero-vad-rs/latest/silero_vad_rs/
+- VADIterator API: https://docs.rs/silero-vad-rs/latest/silero_vad_rs/vad/struct.VADIterator.html
+- hound crate: https://crates.io/crates/hound
+- Silero VAD original: https://github.com/snakers4/silero-vad
 
 ---
-*Architecture research for: contentops v1.1 — doctor, pipeline, CI/CD; v1.2 — Homebrew tap, README*
-*Researched: 2026-02-20*
+*Architecture research for: Silero VAD integration into contentops Rust CLI*
+*Researched: 2026-02-24*

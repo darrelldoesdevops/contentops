@@ -1,331 +1,159 @@
 # Stack Research
 
-**Domain:** Homebrew personal tap + auto-update + CLI README
-**Researched:** 2026-02-20
-**Confidence:** HIGH — all formula patterns verified against locally installed tap formulas; workflow patterns verified against official action READMEs
+**Domain:** Silero VAD integration into existing Rust CLI (contentops)
+**Researched:** 2026-02-24
+**Confidence:** HIGH (all crate versions verified against crates.io API and GitHub source)
 
----
+## Recommended Stack
 
-## What This Milestone Adds
+### Core Addition: VAD Crate
 
-| Capability | Approach | New file? |
-|------------|----------|-----------|
-| Homebrew personal tap | New GitHub repo `darrelldoesdevops/homebrew-tap` | Yes — new repo |
-| Formula for pre-built binaries | Ruby `.rb` formula with `Hardware::CPU` conditionals | Yes — `Formula/contentops.rb` |
-| Auto-update formula on release | GitHub Actions workflow in `contentops` repo dispatching to tap repo | Yes — workflow in both repos |
-| Comprehensive README | Markdown in `contentops` repo root | Yes — `README.md` |
+| Technology | Version | Purpose | Why Recommended |
+|------------|---------|---------|-----------------|
+| `voice_activity_detector` | 0.2.1 | Silero VAD inference in Rust | Bundles model via `include_bytes!` (no runtime download), ships Silero VAD V5, verified on Windows/macOS/Linux, 42K total downloads. Only crate of the three candidates that supports static binary distribution without a runtime dylib dependency |
 
----
+### ONNX Runtime (transitive, managed by voice_activity_detector)
 
-## Homebrew Tap Repository
+| Technology | Version | Purpose | Notes |
+|------------|---------|---------|-------|
+| `ort` | =2.0.0-rc.10 (pinned exactly by voice_activity_detector) | ONNX Runtime Rust bindings | Wraps ONNX Runtime 1.22.0. Has prebuilt binaries for all four target platforms. Do NOT upgrade to rc.11 — it drops x86_64-apple-darwin from prebuilt support |
+| `ort-sys` | =2.0.0-rc.10 (transitive) | C FFI bindings layer | Pulled in automatically; no direct entry needed in contentops Cargo.toml |
 
-### Naming and Setup
+### Audio Input (optional, already FFmpeg-produced)
 
-| Requirement | Value | Why |
-|-------------|-------|-----|
-| Repo name | `homebrew-tap` | Homebrew convention: prefix `homebrew-` is mandatory for short-form tap command |
-| Install command | `brew tap darrelldoesdevops/tap` | Expands to `github.com/darrelldoesdevops/homebrew-tap` |
-| Formula location | `Formula/contentops.rb` | Standard `Formula/` subdirectory; first path Homebrew checks |
-| Visibility | Public | Required for unauthenticated `brew tap` to work |
+| Library | Version | Purpose | When to Use |
+|---------|---------|---------|-------------|
+| `hound` | 3.5.1 | WAV file reading for VAD input | Only needed if contentops reads the WAV file directly for VAD. If piping PCM bytes from FFmpeg stdout, hound is not required. hound is a dev-dependency of voice_activity_detector, not runtime |
 
-Create via: `brew tap-new darrelldoesdevops/tap` (scaffolds directory with default GitHub Actions — delete the default bottle-building workflows; they apply to source builds, not pre-built binaries).
+## Cargo.toml Addition
 
-**Confidence: HIGH** — Verified against Homebrew official tap documentation.
-
----
-
-## Homebrew Formula Syntax
-
-### Pattern: Bare Binary with Architecture Conditionals
-
-The release workflow produces bare binaries (not tarballs): `contentops-aarch64-apple-darwin`, `contentops-x86_64-apple-darwin`. Homebrew supports direct binary URLs. The install block renames the arch-suffixed binary to the canonical `contentops` name.
-
-**Verified pattern** from `loft-sh/tap/vcluster` (locally installed tap, macOS-only tool with same binary structure):
-
-```ruby
-# typed: false
-# frozen_string_literal: true
-
-class Contentops < Formula
-  desc "CLI for video post-production automation"
-  homepage "https://github.com/darrelldoesdevops/contentops"
-  version "1.1.0"
-  license "MIT"
-
-  on_macos do
-    if Hardware::CPU.arm?
-      url "https://github.com/darrelldoesdevops/contentops/releases/download/v1.1.0/contentops-aarch64-apple-darwin"
-      sha256 "ec58e2d8106c84de25ae20641a060cbf85a91bb7cab4f0f60f27577f8333f0ba"
-
-      def install
-        bin.install "contentops-aarch64-apple-darwin" => "contentops"
-      end
-    end
-    if Hardware::CPU.intel?
-      url "https://github.com/darrelldoesdevops/contentops/releases/download/v1.1.0/contentops-x86_64-apple-darwin"
-      sha256 "<X86_SHA256>"
-
-      def install
-        bin.install "contentops-x86_64-apple-darwin" => "contentops"
-      end
-    end
-  end
-
-  test do
-    assert_match "contentops", shell_output("#{bin}/contentops --help")
-  end
-end
+```toml
+[dependencies]
+voice_activity_detector = "0.2.1"
+# Do NOT add ort directly — voice_activity_detector pins ort = "=2.0.0-rc.10" exactly.
+# Adding ort at a different version will cause Cargo resolver conflict.
 ```
 
-**Key syntax decisions:**
+If reading the WAV from disk (simplest approach given existing FFmpeg extraction):
 
-| Decision | Rationale |
-|----------|-----------|
-| `Hardware::CPU.arm?` / `.intel?` inside `on_macos do` | Verified pattern from GoReleaser-generated formulas and `loft-sh/tap`. The `on_arm do` / `on_intel do` block syntax also exists but `Hardware::CPU` inside `on_macos` is more common for tools shipping bare binaries from GitHub Releases |
-| `def install` inside each conditional | Required when using bare binary URLs with different filenames per arch; the rename `=> "contentops"` maps the arch-named file to the installed binary name |
-| No `on_linux do` block | contentops is macOS-only by design; omitting Linux blocks is correct |
-| `version` explicit field | Required when URL doesn't contain a tag path (bare binary URL lacks version in path); Homebrew cannot infer version from the URL |
-| `# frozen_string_literal: true` | Homebrew linting convention; `brew style` will warn without it |
-
-**Confidence: HIGH** — Pattern verified from locally installed `loft-sh/tap/vcluster` which uses identical structure (GoReleaser-generated, bare binary, same arch conditional approach).
-
----
-
-## Auto-Update: Formula Patching on Release
-
-### Tool Decision: Custom Shell Script Over `mislav/bump-homebrew-formula-action`
-
-`mislav/bump-homebrew-formula-action@v3` (latest: v3.6) **explicitly cannot** update formulas with `if...else` or `Hardware::CPU` conditionals. From its README:
-
-> Cannot bump formulae which use Ruby `if...else` conditions to determine alternate download locations at runtime
-
-Since contentops requires per-architecture URLs and SHA256 values, this action is ruled out.
-
-**Recommended approach:** Custom script in the tap repo, triggered via `workflow_dispatch` from the main release workflow.
-
-### Architecture: Two-Repo Pattern
-
-```
-contentops repo (release.yml)
-    │
-    │  gh workflow run update-formula.yml \
-    │    -f version=$VERSION \
-    │    -R darrelldoesdevops/homebrew-tap
-    ▼
-homebrew-tap repo (update-formula.yml)
-    │
-    ├── Download contentops-aarch64-apple-darwin.sha256 from release
-    ├── Download contentops-x86_64-apple-darwin.sha256 from release
-    ├── Parse hash (awk '{print $1}') from "hash  filename" format
-    ├── sed replace version, ARM sha256, Intel sha256 in formula
-    └── git commit + push
+```toml
+[dependencies]
+voice_activity_detector = "0.2.1"
+hound = "3.5.1"
 ```
 
-### Workflow: contentops release.yml addition
+## Audio Format Requirements
 
-Add this step to the existing `release` job in `.github/workflows/release.yml`, after "Create GitHub Release":
+| Parameter | Required Value | contentops Status |
+|-----------|---------------|-------------------|
+| Sample rate | 16 kHz (or 8 kHz) | Already produced at 16 kHz by FFmpeg for Whisper — no change needed |
+| Channels | Mono (1 channel) | Already extracted mono via FFmpeg `-ac 1` — no change needed |
+| Encoding | LPCM i16, i8, u8, u16, or f32 | hound decodes WAV to i16 by default — compatible |
+| Chunk size | 512 samples at 16 kHz (= 32ms) | Enforced by Silero VAD V5 model; voice_activity_detector pads/truncates automatically |
+
+The existing FFmpeg extraction pass for Whisper (`-ar 16000 -ac 1`) produces a file that is directly valid VAD input. No additional FFmpeg pass is required.
+
+## Model Bundling Approach
+
+**Use `include_bytes!` — handled entirely by voice_activity_detector.**
+
+The Silero VAD V5 ONNX model is embedded in the `voice_activity_detector` crate source at `src/silero_vad.onnx` via:
+
+```rust
+// inside voice_activity_detector/src/vad.rs
+const MODEL: &[u8] = include_bytes!("silero_vad.onnx");
+
+static DEFAULT_SESSION: LazyLock<Arc<Mutex<Session>>> = LazyLock::new(|| {
+    Arc::new(Mutex::new(
+        Session::builder()
+            .unwrap()
+            .commit_from_memory(MODEL)
+            .unwrap()
+    ))
+});
+```
+
+Implications for contentops:
+- No `build.rs` modifications needed
+- No model file path to manage at runtime
+- Binary size increase: ~2MB (the ONNX model, embedded at link time)
+- Identical behavior on all platforms — the model is baked into the binary
+
+## Cross-Platform Prebuilt Binary Support (ort 2.0.0-rc.10)
+
+ort's `download-binaries` feature (enabled by default) downloads prebuilt ONNX Runtime 1.22.0 binaries at build time from `cdn.pyke.io`. All four contentops CI targets are covered:
+
+| Target Triple | ort rc.10 Support | Source |
+|--------------|-------------------|--------|
+| `aarch64-apple-darwin` (macOS ARM64) | YES | `ms@1.22.0/aarch64-apple-darwin.tgz` |
+| `x86_64-apple-darwin` (macOS Intel) | YES | `ms@1.22.0/x86_64-apple-darwin.tgz` |
+| `x86_64-pc-windows-msvc` (Windows) | YES | `ms@1.22.0/x86_64-pc-windows-msvc.tgz` |
+| `x86_64-unknown-linux-gnu` (Linux) | YES | `ms@1.22.0/x86_64-unknown-linux-gnu.tgz` |
+
+Verified directly from `github.com/pykeio/ort/blob/v2.0.0-rc.10/ort-sys/dist.txt`.
+
+**Note:** ort 2.0.0-rc.11 (the current latest) removed `x86_64-apple-darwin` from its prebuilt list. This is why voice_activity_detector pins `=2.0.0-rc.10` exactly. Do not attempt to update ort independently.
+
+## CI/CD Impact
+
+No new CI dependencies beyond internet access during the first `cargo build` per target.
+
+Add ort's binary cache directory to GitHub Actions cache:
 
 ```yaml
-- name: Update Homebrew formula
-  run: |
-    gh workflow run update-formula.yml \
-      -f version=${GITHUB_REF#refs/tags/v} \
-      -R darrelldoesdevops/homebrew-tap
-  env:
-    GITHUB_TOKEN: ${{ secrets.TAP_UPDATE_TOKEN }}
+- uses: actions/cache@v4
+  with:
+    path: |
+      ~/.cargo/registry
+      ~/.cargo/git
+      target
+      ~/.cache/ort        # ort prebuilt binary cache on Linux/macOS
+    key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 ```
 
-`TAP_UPDATE_TOKEN` must be a classic PAT with `repo` and `workflow` scopes (cross-repo workflow dispatch requires `workflow` scope; `GITHUB_TOKEN` is scoped to the current repo only).
+Windows caches `%LOCALAPPDATA%\pyke\ort` — handled by standard Cargo cache action configurations.
 
-### Workflow: homebrew-tap update-formula.yml
-
-```yaml
-name: Update Formula
-
-on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version (without v prefix, e.g. 1.2.0)'
-        required: true
-        type: string
-
-jobs:
-  update:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Compute SHA256 values
-        id: sha
-        run: |
-          ARM_SHA=$(curl -sL \
-            "https://github.com/darrelldoesdevops/contentops/releases/download/v${{ inputs.version }}/contentops-aarch64-apple-darwin.sha256" \
-            | awk '{print $1}')
-          X86_SHA=$(curl -sL \
-            "https://github.com/darrelldoesdevops/contentops/releases/download/v${{ inputs.version }}/contentops-x86_64-apple-darwin.sha256" \
-            | awk '{print $1}')
-          echo "arm_sha=$ARM_SHA" >> $GITHUB_OUTPUT
-          echo "x86_sha=$X86_SHA" >> $GITHUB_OUTPUT
-
-      - name: Patch formula
-        env:
-          VERSION: ${{ inputs.version }}
-          ARM_SHA: ${{ steps.sha.outputs.arm_sha }}
-          X86_SHA: ${{ steps.sha.outputs.x86_sha }}
-        run: |
-          FORMULA="Formula/contentops.rb"
-          sed -i "s|version \".*\"|version \"${VERSION}\"|" "$FORMULA"
-          sed -i "s|/v[0-9.]*/contentops-aarch64-apple-darwin\"|/v${VERSION}/contentops-aarch64-apple-darwin\"|" "$FORMULA"
-          sed -i "s|/v[0-9.]*/contentops-x86_64-apple-darwin\"|/v${VERSION}/contentops-x86_64-apple-darwin\"|" "$FORMULA"
-          # Replace SHA256 values - requires stable ordering in formula file
-          # Use line-number-anchored sed or maintain unique sentinel comments
-          python3 - <<'PYEOF'
-          import re, os
-          formula = open('Formula/contentops.rb').read()
-          arm_sha = os.environ['ARM_SHA']
-          x86_sha = os.environ['X86_SHA']
-          # ARM block comes first in formula - replace first sha256 occurrence
-          formula = re.sub(
-              r'(CPU\.arm\?.*?sha256 ")([a-f0-9]{64})(")',
-              lambda m: m.group(1) + arm_sha + m.group(3),
-              formula, count=1, flags=re.DOTALL
-          )
-          formula = re.sub(
-              r'(CPU\.intel\?.*?sha256 ")([a-f0-9]{64})(")',
-              lambda m: m.group(1) + x86_sha + m.group(3),
-              formula, count=1, flags=re.DOTALL
-          )
-          open('Formula/contentops.rb', 'w').write(formula)
-          PYEOF
-
-      - name: Commit and push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/contentops.rb
-          git commit -m "contentops ${{ inputs.version }}"
-          git push
-```
-
-**SHA256 file format:** The release workflow generates files with content `hash  filename` (standard `shasum -a 256` output). The `awk '{print $1}'` extracts just the hex hash. Verified against actual v1.1.0 release assets.
-
-**Why Python for SHA256 replacement:** `sed` regex for matching a 64-char hex string inside a multiline conditional block is fragile and platform-specific (macOS `sed -i ''` vs GNU `sed -i`). Since the tap's update workflow runs on `ubuntu-latest`, GNU sed is available, but the multiline match requirement makes Python cleaner and more robust. Python 3 is always available on GitHub Actions runners.
-
-**Why not re-download and compute SHA256 from the binary:** The `.sha256` files are already present in the GitHub Release (generated by the release workflow). Re-downloading the binary to re-compute the hash introduces a redundant 50-100MB download per run. Trust the pre-computed checksums.
-
-**Confidence: HIGH for workflow structure.** MEDIUM for the Python sed approach — the regex pattern depends on formula layout staying stable. An alternative is to use unique sentinel comments (`# ARM-SHA`, `# INTEL-SHA`) on the sha256 lines and sed on those, which is simpler and more brittle-proof.
-
-### Alternative: Simpler Sentinel Comment Approach
-
-If the Python regex feels over-engineered, add sentinel comments to the formula and use simple grep+sed:
-
-```ruby
-      sha256 "ec58e2d8106c84de25ae20641a060cbf85a91bb7cab4f0f60f27577f8333f0ba" # ARM-SHA
-      ...
-      sha256 "abc123..." # INTEL-SHA
-```
-
-Then in the update script:
-```bash
-sed -i "s|sha256 \"[a-f0-9]*\" # ARM-SHA|sha256 \"${ARM_SHA}\" # ARM-SHA|" Formula/contentops.rb
-sed -i "s|sha256 \"[a-f0-9]*\" # INTEL-SHA|sha256 \"${INTEL_SHA}\" # INTEL-SHA|" Formula/contentops.rb
-```
-
-This is the recommended approach — simpler, readable, no Python dependency.
-
-**Confidence: HIGH** — Pattern used by multiple real-world taps documented in builtfast.dev article (2025) and josh.fail (2023).
-
----
-
-## README Structure
-
-### Recommended Sections for a CLI Tool (personal, macOS, video production)
-
-| Section | Content | Notes |
-|---------|---------|-------|
-| Title + one-liner | Tool name, what it does in one sentence | No badges needed for personal tool |
-| Prerequisites | ffmpeg, whisper-cli, minimum versions | Critical UX: users hit this before install works |
-| Installation | `brew tap` + `brew install` as primary path | Direct download as fallback |
-| Subcommands reference | Table: command, purpose, key flags | Scannable over narrative |
-| Usage examples | One concrete example per subcommand | Show actual commands with real-ish filenames |
-| `contentops doctor` | Call out as the "start here if broken" command | Reduce support burden |
-| Configuration/output | Where files go, naming conventions | |
-
-### Section Order Rationale
-
-Prerequisites before Installation because Homebrew installs the binary but brew doesn't install ffmpeg/whisper. Users who install first, read docs second, will hit runtime errors from `doctor`. Frontloading prerequisites prevents confusion.
-
-### What NOT to Include
-
-| Avoid | Why |
-|-------|-----|
-| Contributing section | Personal tool, not open source project |
-| Badges (CI status, crates.io, etc.) | Adds noise, breaks if repo is private |
-| Architecture/internals documentation | Wrong audience for README; belongs in `.planning/` |
-| Changelog in README | Already generated by GitHub Releases; duplication |
-| License badge / full license text in README | Single line "MIT License" is sufficient |
-
-**Confidence: MEDIUM** — Derived from general CLI documentation best practices; no domain-specific source for video production CLI tools specifically.
-
----
+The ort binary download (~30MB compressed per platform) is a one-time cost per cache miss. No `apt-get install`, `brew install`, or `choco install` commands are required.
 
 ## Alternatives Considered
 
-| Category | Recommended | Alternative | Why Not |
-|----------|-------------|-------------|---------|
-| Formula architecture handling | `Hardware::CPU.arm?` inside `on_macos do` | `on_arm do` / `on_intel do` top-level blocks | `on_arm`/`on_intel` blocks work but `Hardware::CPU` inside `on_macos` is the pattern used by GoReleaser-generated formulas and matches the verified `loft-sh/tap/vcluster` example; either works |
-| Auto-update action | Custom script + workflow_dispatch | `mislav/bump-homebrew-formula-action@v3` | mislav action explicitly cannot handle `if...else` or `Hardware::CPU` conditionals; documented limitation in its own README |
-| Auto-update action | Custom script | `dawidd6/action-homebrew-bump-formula` | Wraps `brew bump-formula-pr`; designed for homebrew-core PRs, not direct-push personal taps; more complexity than needed |
-| SHA256 source | Download pre-computed `.sha256` from release | Re-compute by downloading binary | Binary assets are 10-30MB each; pre-computed files already exist in the release; re-downloading wastes bandwidth and adds latency |
-| Binary format | Bare binary (current) | Tarball `.tar.gz` | Current release workflow produces bare binaries; switching to tarballs would simplify URL version-embedding but requires release workflow change; not worth it |
-| Token for cross-repo dispatch | Classic PAT with `repo`+`workflow` scopes | Fine-grained PAT | Fine-grained PATs can grant repo-specific write access, but `workflow` scope (for triggering workflows) is only on classic PATs as of 2026-02 |
+| Recommended | Alternative | Why Not |
+|-------------|-------------|---------|
+| `voice_activity_detector` 0.2.1 | `silero-vad-rust` 6.2.1 | Requires `load-dynamic` ort feature — forces `libonnxruntime.dylib/.so/.dll` to ship alongside the binary at runtime. Incompatible with single-binary Homebrew distribution. Only 1.7K downloads total, published November 2025 |
+| `voice_activity_detector` 0.2.1 | `silero-vad-rs` 0.1.2 | Pins `ort = "=2.0.0-rc.9"` (one version older, rc.9 has different behavior), only 2.2K downloads, last updated April 2025. Also needs verification on x86_64-apple-darwin for rc.9 |
+| `include_bytes!` via voice_activity_detector | Download model at runtime | Runtime download fails in offline environments, adds startup latency, complicates distribution and error handling |
+| Single VAD crate dependency | Direct `ort` + manual model handling | voice_activity_detector handles model embedding, session lifecycle, chunk sizing, and the Sample trait conversion — saves substantial integration work |
 
----
+## What NOT to Use
 
-## Token Setup (One-Time)
+| Avoid | Why | Use Instead |
+|-------|-----|-------------|
+| `ort` 2.0.0-rc.11 directly | Dropped x86_64-apple-darwin prebuilt binary — requires compiling ONNX Runtime from source for macOS Intel CI, which takes 20+ minutes and requires cmake | voice_activity_detector which pins ort 2.0.0-rc.10 |
+| `silero-vad-rust` 6.2.1 `load-dynamic` mode | Requires `ORT_DYLIB_PATH` env var at runtime; dylib must ship alongside binary — incompatible with Homebrew single-binary formula | `voice_activity_detector` with static `download-binaries` approach |
+| Manually calling ort with a model file path | Requires bundling/shipping the ONNX model separately from the binary | `voice_activity_detector` with `include_bytes!` embedded model |
 
-```
-1. github.com/settings/tokens → Generate new token (classic)
-2. Scopes: repo, workflow
-3. Name: contentops-tap-update
-4. Add to contentops repo: Settings → Secrets → TAP_UPDATE_TOKEN
-```
+## Version Compatibility Matrix
 
----
-
-## Installation Commands (for README)
-
-```bash
-# Add tap (one-time)
-brew tap darrelldoesdevops/tap
-
-# Install
-brew install contentops
-
-# Upgrade
-brew upgrade contentops
-
-# Direct install without tapping first
-brew install darrelldoesdevops/tap/contentops
-```
-
----
+| Package | Version | Compatible With | Notes |
+|---------|---------|-----------------|-------|
+| `voice_activity_detector` | 0.2.1 | `ort` =2.0.0-rc.10 | Uses exact version pin |
+| `ort` | 2.0.0-rc.10 | ONNX Runtime 1.22.0 | Prebuilt binary wraps ORT 1.22.0 |
+| `ort` | 2.0.0-rc.10 | Rust 1.81+ | contentops uses edition 2024, requires recent Rust; no conflict |
+| `ndarray` | 0.16.x | `ort` rc.10 | ort rc.10 requires `ndarray ^0.16`; voice_activity_detector uses 0.16.1; resolved by Cargo automatically |
+| Silero VAD V5 ONNX model | bundled | ORT 1.22.0 | Model is opset 15/16 compatible; embedded in voice_activity_detector 0.2.1 |
 
 ## Sources
 
-- `brew cat loft-sh/tap/vcluster` — locally installed tap formula; verified `Hardware::CPU.arm?` / `.intel?` inside `on_macos do` with `bin.install "name" => "binary"` pattern; GoReleaser-generated; HIGH confidence
-- [Homebrew How-to-Create-and-Maintain-a-Tap](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap) — official docs; naming convention, directory structure; HIGH confidence
-- [Homebrew Taps documentation](https://docs.brew.sh/Taps) — `brew tap user/repo` convention, `homebrew-` prefix requirement; HIGH confidence
-- [Homebrew Formula Cookbook](https://docs.brew.sh/Formula-Cookbook) — `on_arm`, `on_intel`, `on_macos` block syntax, `bin.install` method; HIGH confidence
-- [mislav/bump-homebrew-formula-action README](https://raw.githubusercontent.com/mislav/bump-homebrew-formula-action/main/README.md) — v3.6 (latest); documented limitation re: `if...else` conditionals; HIGH confidence
-- [builtfast.dev: Automating Homebrew Tap Updates with GitHub Actions](https://builtfast.dev/blog/automating-homebrew-tap-updates-with-github-actions/) (2025) — two-repo pattern, `gh workflow run`, bash script with sed; MEDIUM confidence
-- [josh.fail: Automate updating custom Homebrew formulae](https://josh.fail/2023/automate-updating-custom-homebrew-formulae-with-github-actions/) — `workflow_dispatch` tap update approach; MEDIUM confidence
-- `gh release download v1.1.0 --pattern "*.sha256"` — verified SHA256 file format is `hash  filename` (shasum -a 256 output); awk '{print $1}' extracts hash; HIGH confidence
-- `gh release view v1.1.0 --json assets` — verified asset names: `contentops-aarch64-apple-darwin`, `contentops-x86_64-apple-darwin`, `contentops-universal-apple-darwin` (bare binaries, not tarballs); HIGH confidence
+- crates.io API `/api/v1/crates/voice_activity_detector/0.2.1/dependencies` — exact ort pin `=2.0.0-rc.10`, ndarray 0.16.1 — HIGH confidence
+- crates.io API `/api/v1/crates/silero-vad-rs/0.1.2/dependencies` — ort pin `=2.0.0-rc.9` — HIGH confidence
+- crates.io API `/api/v1/crates/silero-vad-rust/6.2.1/dependencies` — ort features `["load-dynamic", "ndarray"]` confirmed — HIGH confidence
+- GitHub `nkeenan38/voice_activity_detector` `src/vad.rs` — `include_bytes!("silero_vad.onnx")` and `commit_from_memory(MODEL)` confirmed — HIGH confidence
+- GitHub `nkeenan38/voice_activity_detector` `src/sample.rs` — LPCM i8/i16/u8/u16/f32 via Sample trait confirmed — HIGH confidence
+- GitHub `nkeenan38/voice_activity_detector` README — 16 kHz / 512-sample window, mono-only, Windows/macOS/Linux verified — HIGH confidence
+- GitHub `pykeio/ort` `ort-sys/dist.txt` at tag `v2.0.0-rc.10` — all four target triples confirmed with x86_64-apple-darwin — HIGH confidence
+- GitHub `pykeio/ort` `ort-sys/build/download/dist.txt` at `main` (rc.11) — x86_64-apple-darwin absent, ORT 1.23.2 — HIGH confidence
+- crates.io API `/api/v1/crates/ort/2.0.0-rc.10` — Rust 1.81 minimum, ndarray ^0.16 — HIGH confidence
 
 ---
-*Stack research for: Homebrew tap + auto-update + CLI README (Milestone 3)*
-*Researched: 2026-02-20*
+*Stack research for: Silero VAD integration into contentops Rust CLI*
+*Researched: 2026-02-24*
