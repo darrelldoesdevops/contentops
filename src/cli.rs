@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "contentops", about = "Video processing pipeline")]
+#[command(name = "contentops", about = "Video processing pipeline", version)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
