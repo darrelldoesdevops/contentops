@@ -1,4 +1,5 @@
 use std::io::BufRead;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -93,6 +94,23 @@ pub fn run_ffmpeg_verbose(args: &[&str]) -> Result<FfmpegOutput, std::io::Error>
         exit_code: output.status.code(),
         stderr: Vec::new(),
     })
+}
+
+pub fn extract_16k_wav(input: &str, dest: &Path, verbose: bool) -> Result<(), std::io::Error> {
+    let dest_str = dest.to_string_lossy();
+    let args = ["-i", input, "-ar", "16000", "-ac", "1", "-f", "wav", &dest_str];
+    let output = if verbose {
+        run_ffmpeg_verbose(&args)?
+    } else {
+        run_ffmpeg(&args)?
+    };
+    if !output.success {
+        return Err(std::io::Error::other(format!(
+            "ffmpeg WAV extraction failed with code {:?}",
+            output.exit_code
+        )));
+    }
+    Ok(())
 }
 
 pub fn run_silencedetect(

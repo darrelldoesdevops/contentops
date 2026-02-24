@@ -5,6 +5,7 @@ mod ffmpeg;
 pub mod silence;
 mod temp;
 mod ui;
+mod vad;
 
 use clap::{CommandFactory, Parser};
 use owo_colors::OwoColorize;
