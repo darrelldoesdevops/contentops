@@ -5,19 +5,20 @@
 See: .planning/PROJECT.md (updated 2026-02-25)
 
 **Core value:** Take a raw video file and remove dead air automatically
-**Current focus:** Planning next milestone
+**Current focus:** v1.5 Upload Ready -- defining requirements
 
 ## Current Position
 
-Milestone: v1.4 Silero VAD -- COMPLETE
-Status: All 5 milestones shipped (v1.0-v1.4)
-Last activity: 2026-02-25 -- v1.4 milestone archived
+Milestone: v1.5 Upload Ready
+Phase: Not started (defining requirements)
+Plan: --
+Status: Defining requirements
+Last activity: 2026-02-25 -- Milestone v1.5 started
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 26 (v1.0: 8, v1.1: 3 formal + 3 quick, v1.2: 3, v1.3: 3, v1.4: 5)
-- Total execution time: 7 days
+- Total plans completed: 26 (v1.0: 8, v1.1: 3+3 quick, v1.2: 3, v1.3: 3, v1.4: 5)
 - Milestones shipped: 5 (v1.0, v1.1, v1.2, v1.3, v1.4)
 
 **By Milestone:**
@@ -47,5 +48,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: v1.4 milestone complete, ready for next milestone
+Stopped at: v1.5 milestone started, defining requirements
 Resume file: None

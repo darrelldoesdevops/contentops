@@ -34,7 +34,15 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 
 ### Active
 
-(No active requirements -- planning next milestone)
+## Current Milestone: v1.5 Upload Ready
+
+**Goal:** Pipeline outputs everything needed to upload a TikTok -- approved title overlay, auto-generated description, sidecar file with copy-paste metadata.
+
+**Target features:**
+- Interactive title approval: Claude generates 2-3 title options from transcript, user picks/edits inline during pipeline processing
+- TikTok description auto-generation from transcript via Claude
+- Sidecar metadata file (.txt) next to output video with title + description
+- Transcript fix prompt hardening to enforce exact word count
 
 ### Out of Scope
 
@@ -98,4 +106,4 @@ CI/CD via GitHub Actions: fmt, clippy, test, audit on 4 platforms; five architec
 | Default 0.5/300ms tuning | Balanced threshold with 300ms min-silence; tuned on real talking-head video | Good |
 
 ---
-*Last updated: 2026-02-25 after v1.4 milestone*
+*Last updated: 2026-02-25 after v1.5 milestone started*
