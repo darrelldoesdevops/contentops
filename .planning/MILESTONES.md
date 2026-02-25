@@ -71,3 +71,31 @@
 
 ---
 
+
+## v1.4 Silero VAD (Shipped: 2026-02-25)
+
+**Phases completed:** 3 phases (16-18), 5 plans
+**Timeline:** 2 days (2026-02-24 → 2026-02-25)
+**Codebase:** 3,273 lines of Rust, 34 files changed (+2,668/-664)
+
+**Key accomplishments:**
+- Silero VAD V5 neural network replacing FFmpeg silencedetect for speech/silence detection across all commands
+- 4-platform CI matrix (macOS ARM64/Intel, Linux x86_64, Windows x86_64) with ORT binary caching
+- Shared `extract_16k_wav` helper reused by VAD, Whisper transcription, and pipeline
+- `--vad-threshold` and `--min-silence-ms` tuning flags on cut and pipeline commands
+- VAD doctor health check verifying ONNX Runtime initialization
+- Removed --breaths flag and all dead amplitude-based silencedetect code
+- Normalize-first pipeline ensuring single audio timeline for VAD/Whisper/concat
+- 100ms speech padding preventing VAD boundary clipping into speech
+
+**Post-plan iterations:**
+- Fixed subtitle overlap from non-monotonic timestamps at speech interval boundaries
+- Fixed cross-group ASS event overlap in caption generation
+- Fixed breath audio bleed by restructuring pipeline to normalize before WAV extraction
+- Added speech padding (100ms) to prevent VAD boundary clipping
+- Tuned defaults from 0.5/400 to 0.5/300 based on real-world testing
+
+**Git range:** `feat(16-01)` → `feat(18-02)`
+
+---
+

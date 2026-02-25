@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A Rust CLI tool that replaces CapCut for TikTok/short-form video post-production. Orchestrates FFmpeg and Whisper to handle silence removal, auto-captioning with word-by-word highlighting, animated title overlays, and a one-command pipeline -- the repetitive editing tasks between shooting and publishing. Runs on macOS, Linux, and Windows. Installable via Homebrew (`brew install darrelldoesdevops/tap/contentops`) with auto-updating formula, or direct binary download.
+A Rust CLI tool that replaces CapCut for TikTok/short-form video post-production. Orchestrates FFmpeg, Whisper, and Silero VAD to handle neural silence removal, auto-captioning with word-by-word highlighting, animated title overlays, and a one-command pipeline -- the repetitive editing tasks between shooting and publishing. Runs on macOS, Linux, and Windows. Installable via Homebrew (`brew install darrelldoesdevops/tap/contentops`) with auto-updating formula, or direct binary download.
 
 ## Core Value
 
@@ -24,47 +24,44 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 - Tag-triggered releases with ARM64, Intel, and universal macOS binaries -- v1.1
 - Homebrew tap with architecture-conditional formula and cross-repo auto-update on release -- v1.2
 - Comprehensive README with hero example, flag reference tables, and troubleshooting -- v1.2
-
 - Platform-conditional font paths, cross-platform null muxer, OS-aware error hints -- v1.3
 - Linux and Windows binaries in GitHub Releases with three-platform CI -- v1.3
 - Cross-platform README with Linux/Windows install paths and prerequisites -- v1.3
+- Silero VAD V5 neural speech detection replacing amplitude-based silencedetect -- v1.4
+- Shared 16kHz WAV extraction for VAD and Whisper with normalize-first pipeline -- v1.4
+- --vad-threshold and --min-silence-ms tuning flags with 100ms speech padding -- v1.4
+- VAD doctor health check and dead amplitude code cleanup -- v1.4
 
 ### Active
 
-## Current Milestone: v1.4 Silero VAD
-
-**Goal:** Replace amplitude-based silence detection with Silero VAD neural network for accurate silence and breath removal.
-
-**Target features:**
-- Silero VAD integration via `silero-vad-rust` crate with ONNX model bundled in binary
-- Replace `silencedetect` in both `cut` and `pipeline` commands
-- Remove `--breaths` flag — VAD inherently detects all non-speech
-- Update `doctor` to verify ONNX runtime availability
+(No active requirements -- planning next milestone)
 
 ### Out of Scope
 
 - GUI or web interface -- CLI-only personal tool
 - Cloud/API transcription -- local Whisper only for privacy and cost
 - Resolution/aspect ratio conversion -- TikTok standard only
-- Configurable silence thresholds -- VAD handles detection automatically
 - Pipeline config files (YAML/TOML) -- subcommands are sufficient
 - Batch processing -- single file at a time
 - Homebrew formula in homebrew-core -- review overhead, personal tap is sufficient
 - crates.io publish -- application binary, not a library
 - Auto-installing missing tools -- surprising behavior, print hints instead
+- All 5 VAD parameters as CLI flags -- threshold + min-silence covers 95% of tuning
+- Custom ONNX model path -- bundled model eliminates setup
+- GPU/CUDA execution provider for ONNX Runtime -- CPU inference fast enough for single files
 
 ## Context
 
-Shipped v1.3 with ~850 LOC Rust.
-Tech stack: Rust (clap, serde, indicatif, owo-colors, thiserror), FFmpeg, whisper-cli.
-Five subcommands: `cut` (silence removal + normalize), `caption` (generate + burn), `overlay` (title cards), `doctor` (prerequisite checks), `pipeline` (one-command workflow).
+Shipped v1.4 with ~3,273 LOC Rust.
+Tech stack: Rust (clap, serde, indicatif, owo-colors, thiserror, voice_activity_detector, hound), FFmpeg, whisper-cli.
+Five subcommands: `cut` (VAD silence removal + normalize), `caption` (generate + burn), `overlay` (title cards), `doctor` (prerequisite checks + VAD health), `pipeline` (one-command workflow).
 Platforms: macOS (ARM64 + Intel + universal), Linux (x86_64), Windows (x86_64).
 Distribution: Homebrew tap (`darrelldoesdevops/tap/contentops`) with auto-updating formula, plus direct download one-liners for all platforms.
-CI/CD via GitHub Actions: fmt, clippy, test, audit on macOS/Linux/Windows; five architecture binaries on tag; cross-repo workflow_dispatch updates tap formula on release.
+CI/CD via GitHub Actions: fmt, clippy, test, audit on 4 platforms; five architecture binaries on tag; cross-repo workflow_dispatch updates tap formula on release.
 
 ## Constraints
 
-- **Tech stack**: Rust with clap, serde, anyhow, indicatif, owo-colors
+- **Tech stack**: Rust with clap, serde, anyhow, indicatif, owo-colors, voice_activity_detector
 - **Dependencies**: FFmpeg (external), whisper-cli (external), claude CLI (optional, for auto-titles)
 - **Platform**: macOS, Linux, Windows
 - **Output format**: H.264/AAC, CRF 14, preset slow
@@ -74,7 +71,6 @@ CI/CD via GitHub Actions: fmt, clippy, test, audit on macOS/Linux/Windows; five 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
 | Subcommands over feature flags | Cleaner UX, each command is self-contained | Good |
-| Hardcoded silence defaults (-30dB, 0.5s, 75ms pad) | Ship fast, tune later; defaults work well | Good |
 | Concat filter over select/aselect | Avoids A/V sync drift from frame-based selection | Good |
 | whisper-cli over whisper-rs | Shell out for stability, avoid native binding complexity | Good |
 | ASS subtitles over SRT | Required for word-by-word styling and karaoke effects | Good |
@@ -85,26 +81,21 @@ CI/CD via GitHub Actions: fmt, clippy, test, audit on macOS/Linux/Windows; five 
 | Impact font + slide animation | Matches existing CapCut title card aesthetic | Good |
 | Shared spinner in src/ui.rs | Eliminates 5 duplicate factories, single place to change spinner style | Good |
 | Typed AppError for all errors | Consistent colored output, compiler-enforced exhaustiveness | Good |
-| Delete cleanup_all() | Pipeline shares TempFileRegistry directly, dead code removed | Good |
 | Pipeline calls run() directly | Preserves TempFileRegistry and typed errors, no subprocess overhead | Good |
 | Doctor exits 0 by default | Diagnostic tool, not prerequisite enforcer; --strict for exit 1 | Good |
 | macos-latest for x86_64 cross-compile | macos-13 deprecated; cross-compile from ARM runner works | Good |
-| on_arm/on_intel DSL + Hardware::CPU in install | Two scopes: DSL for top-level url/sha256, Hardware::CPU for runtime binary rename | Good |
-| Sentinel comments for sed patching | Inline `# === AUTO-UPDATE: FIELD ===` enables simple sed-based formula updates | Good |
-| asset.digest for SHA256 | No binary download needed; gh api returns digest directly | Good |
 | Cross-repo workflow_dispatch | Classic PAT with repo+workflow scopes triggers tap update from release.yml | Good |
 | README from live --help output | Flag tables match CLI exactly; prevents documentation drift | Good |
 | #[cfg(target_os)] for font constants | Compile-time branching avoids runtime overhead on macOS/Windows; Linux probes at runtime | Good |
 | `-f null -` over `/dev/null` | FFmpeg cross-platform null muxer, no cfg needed | Good |
-| whisper non-macOS hint links to source | No canonical apt/choco package for whisper-cli | Good |
-| Per-architecture release jobs over matrix | Less risk to working macOS flow; release job stays on macos-latest for lipo | Good |
-| Three-column prerequisites table in README | Side-by-side macOS/Linux/Windows install commands at a glance | Good |
-| ORT_CACHE_DIR: ~/.ort-cache for CI | Normalizes ONNX Runtime cache path across all platforms; avoids platform-conditional logic | Good |
-| 4-platform CI matrix with cross-compile | macOS Intel via cross-compile on ARM64 runner; tests skip cross target (exec format error) | Good |
-
-| Silero VAD over silencedetect | Neural network trained for speech/non-speech; amplitude thresholds can't distinguish breaths from quiet speech | -- Pending |
-| Bundle ONNX model in binary | Zero setup for users; 1.8MB size acceptable for accurate VAD | -- Pending |
-| Remove --breaths flag | VAD inherently detects all non-speech; flag adds complexity without value | -- Pending |
+| ORT_CACHE_DIR: ~/.ort-cache for CI | Normalizes ONNX Runtime cache path across all platforms | Good |
+| 4-platform CI matrix with cross-compile | macOS Intel via cross-compile on ARM64 runner; tests skip cross target | Good |
+| Silero VAD over silencedetect | Neural network trained for speech/non-speech; amplitude thresholds can't distinguish breaths from quiet speech | Good |
+| Bundle ONNX model in binary | Zero setup for users; 1.8MB size acceptable for accurate VAD | Good |
+| Remove --breaths flag | VAD inherently detects all non-speech; flag adds complexity without value | Good |
+| Normalize-first pipeline | Ensures single audio timeline for VAD/Whisper/concat; prevents breath audio bleed | Good |
+| 100ms speech padding | VAD chunk boundaries lag actual speech onset; padding prevents clipping | Good |
+| Default 0.5/300ms tuning | Balanced threshold with 300ms min-silence; tuned on real talking-head video | Good |
 
 ---
-*Last updated: 2026-02-24 after Phase 16*
+*Last updated: 2026-02-25 after v1.4 milestone*
