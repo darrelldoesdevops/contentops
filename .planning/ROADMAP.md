@@ -112,7 +112,8 @@ See: `.planning/milestones/v1.4-ROADMAP.md` for full details.
   2. After picking a title, the user can type a custom edit before the overlay encodes
   3. Running pipeline in a non-TTY environment (CI, script) auto-selects the first title without prompting
   4. The spinner clears before the prompt renders and the prompt is not corrupted by indicatif output
-**Plans**: TBD
+**Plans**: 1 plan
+- [ ] 21-01-PLAN.md -- Add --no-interactive flag, refactor title generation to multi-option, add interactive approval with dialoguer, integrate into pipeline
 
 ### Phase 22: TikTok Metadata Generation
 **Goal**: Pipeline writes a sidecar file with copy-paste-ready title and description next to the output video
@@ -148,5 +149,5 @@ See: `.planning/milestones/v1.4-ROADMAP.md` for full details.
 | 18. Tuning Flags & Cleanup | v1.4 | 2/2 | Complete | 2026-02-24 |
 | 19. Safe Zone Fixes | v1.5 | 0/TBD | Not started | - |
 | 20. Transcript Fix Hardening | 1/1 | Complete    | 2026-02-25 | - |
-| 21. Interactive Title Approval | v1.5 | 0/TBD | Not started | - |
+| 21. Interactive Title Approval | v1.5 | 0/1 | Planned | - |
 | 22. TikTok Metadata Generation | v1.5 | 0/TBD | Not started | - |
