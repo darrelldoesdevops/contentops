@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A Rust CLI tool that replaces CapCut for TikTok/short-form video post-production. Orchestrates FFmpeg, Whisper, and Silero VAD to handle neural silence removal, auto-captioning with word-by-word highlighting, animated title overlays, and a one-command pipeline -- the repetitive editing tasks between shooting and publishing. Runs on macOS, Linux, and Windows. Installable via Homebrew (`brew install darrelldoesdevops/tap/contentops`) with auto-updating formula, or direct binary download.
+A Rust CLI tool that replaces CapCut for TikTok/short-form video post-production. Orchestrates FFmpeg, Whisper, Silero VAD, and Claude to handle neural silence removal, auto-captioning with word-by-word highlighting, animated title overlays with interactive approval, TikTok metadata generation, and a one-command pipeline -- the repetitive editing tasks between shooting and publishing. Pipeline outputs everything needed to upload: captioned video with safe-zone-correct overlays plus a sidecar file with copy-paste title and description. Runs on macOS, Linux, and Windows. Installable via Homebrew (`brew install darrelldoesdevops/tap/contentops`) with auto-updating formula, or direct binary download.
 
 ## Core Value
 
@@ -34,18 +34,12 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 - Interactive transcript fix mismatch handling with dialoguer prompts and non-TTY hard fail -- v1.5
 - Interactive title approval with multi-option Claude generation, dialoguer selection, custom edit, and --no-interactive flag -- v1.5
 - TikTok metadata sidecar generation with Claude description and hashtags -- v1.5
+- TikTok safe zone constants with overlay/subtitle margin correction and title word wrapping -- v1.5
+- Scale-to-fill pipeline stage ensuring 1080x1920 output with center crop -- v1.5
 
 ### Active
 
-## Current Milestone: v1.5 Upload Ready
-
-**Goal:** Pipeline outputs everything needed to upload a TikTok -- approved title overlay, auto-generated description, sidecar file with copy-paste metadata.
-
-**Target features:**
-- Interactive title approval: Claude generates 2-3 title options from transcript, user picks/edits inline during pipeline processing
-- TikTok description auto-generation from transcript via Claude
-- Sidecar metadata file (.txt) next to output video with title + description
-- Transcript fix prompt hardening to enforce exact word count
+(None -- planning next milestone)
 
 ### Out of Scope
 
@@ -63,9 +57,9 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 
 ## Context
 
-Shipped v1.4 with ~3,273 LOC Rust.
-Tech stack: Rust (clap, serde, indicatif, owo-colors, thiserror, voice_activity_detector, hound, dialoguer), FFmpeg, whisper-cli.
-Five subcommands: `cut` (VAD silence removal + normalize), `caption` (generate + burn), `overlay` (title cards), `doctor` (prerequisite checks + VAD health), `pipeline` (one-command workflow).
+Shipped v1.5 with 3,924 LOC Rust.
+Tech stack: Rust (clap, serde, indicatif, owo-colors, thiserror, voice_activity_detector, hound, dialoguer), FFmpeg, whisper-cli, claude CLI.
+Five subcommands: `cut` (VAD silence removal + normalize), `caption` (generate + burn), `overlay` (title cards with interactive approval), `doctor` (prerequisite checks + VAD health), `pipeline` (one-command workflow with metadata sidecar output).
 Platforms: macOS (ARM64 + Intel + universal), Linux (x86_64), Windows (x86_64).
 Distribution: Homebrew tap (`darrelldoesdevops/tap/contentops`) with auto-updating formula, plus direct download one-liners for all platforms.
 CI/CD via GitHub Actions: fmt, clippy, test, audit on 4 platforms; five architecture binaries on tag; cross-repo workflow_dispatch updates tap formula on release.
@@ -115,4 +109,4 @@ CI/CD via GitHub Actions: fmt, clippy, test, audit on 4 platforms; five architec
 | Single Claude call for description+hashtags | JSON response with both fields; reduces API calls and latency | Good |
 
 ---
-*Last updated: 2026-02-25 after Phase 22*
+*Last updated: 2026-02-25 after v1.5 milestone*

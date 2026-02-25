@@ -99,3 +99,21 @@
 
 ---
 
+
+## v1.5 Upload Ready (Shipped: 2026-02-25)
+
+**Phases completed:** 4 phases (19-22), 5 plans
+**Timeline:** 1 day (2026-02-25)
+**Codebase:** 3,924 lines of Rust, 9 files changed (+727/-75)
+
+**Key accomplishments:**
+- TikTok safe zone constants (tiktok.rs) with overlay left-margin fix, title word wrapping, and ASS subtitle margin correction
+- Scale-to-fill pipeline stage ensuring all output is exactly 1080x1920 with center crop
+- Interactive transcript fix mismatch handling with dialoguer prompts, diff context, retry policy, and non-TTY hard fail
+- Multi-option Claude title generation with interactive approval (select + custom edit) and --no-interactive flag
+- TikTok metadata sidecar generation ({stem}_tiktok.json) with Claude-generated description and hashtags
+
+**Git range:** `feat(19-01)` → `feat(22-01)`
+
+---
+
