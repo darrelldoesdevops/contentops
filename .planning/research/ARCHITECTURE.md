@@ -1,311 +1,358 @@
-# Architecture Research
+# Architecture Patterns
 
-**Domain:** Rust CLI video post-production — Silero VAD integration replacing FFmpeg silencedetect
-**Researched:** 2026-02-24
-**Confidence:** HIGH (direct codebase audit; MEDIUM on silero-vad-rust API specifics due to sparse docs.rs coverage)
+**Domain:** TikTok metadata generation and safe zone compliance — Rust CLI integration
+**Researched:** 2026-02-25
+**Confidence:** HIGH (direct codebase audit) / MEDIUM (TikTok safe zone pixel values from multiple third-party sources; no official pixel spec published)
 
-## Integration Question: Where VAD Replaces silencedetect
+---
 
-The existing call chain in both `cut.rs` and `pipeline.rs` is:
+## Integration Question Summary
 
-```
-normalize_to_temp(input) → normalized.mp4
-    ↓
-ffmpeg::run_silencedetect(normalized_str, threshold, min_duration) → stderr String
-    ↓
-silence::parse_silencedetect(stderr, duration) → Vec<SilenceInterval>
-    ↓
-silence::silence_to_speech(silences, duration, padding) → Vec<SpeechInterval>
-    ↓
-silence::build_concat_filter(speeches) → String
-    ↓
-ffmpeg cut
-```
+Four new capabilities integrate into the existing 6-stage pipeline:
 
-VAD replaces steps 2 and 3 — the `run_silencedetect` call and `parse_silencedetect` call. The output type after those two steps is `Vec<SpeechInterval>`, which VAD produces directly. Everything from `silence_to_speech` onward is unchanged in the `cut` command.
+1. **Title approval** — interactive user confirmation before overlay burns
+2. **Safe zone margins** — ASS subtitle positioning + overlay drawtext must stay inside TikTok UI-free area
+3. **Description generation** — Claude generates TikTok description/hashtags from transcript
+4. **Sidecar file** — metadata written next to output file at pipeline completion
 
-In `pipeline.rs`, the flow adds `filter_silences_by_words` after `parse_silencedetect` (word-protection). With VAD, VAD already understands speech, so `filter_silences_by_words` is either removed or made optional.
+---
 
-## Audio Loading: WAV via FFmpeg, Not hound
+## TikTok Safe Zone: Concrete Numbers
 
-The existing codebase already extracts 16kHz mono WAV for Whisper in `caption::transcribe()`:
+For 1080x1920 video (the pipeline's reference resolution):
 
-```rust
-let ffmpeg_args = ["-i", &input_str, "-ar", "16000", "-ac", "1", "-f", "wav", &wav_str];
-```
+| Area | Danger Zone | Safe Threshold (conservative) |
+|------|-------------|-------------------------------|
+| Top | ~150px (username, sound label) | 200px minimum; 250px recommended |
+| Bottom | 250–370px (caption bar, engagement icons) | 420px minimum clearance |
+| Left | 60px | 60px |
+| Right | 120px (like/comment/share stack) | 120px |
 
-This is the exact format Silero VAD requires: 16kHz, mono, WAV. The VAD module reuses this same extraction pattern — **no hound crate needed for reading from disk**.
+Source confidence: MEDIUM. No official pixel spec exists. Numbers synthesized from three independent third-party guides that cluster around these values. The variance between sources (bottom ranges from 250 to 480px) reflects device-to-device UI differences. Use the conservative bound (420px from bottom, 120px from right).
 
-The audio loading approach for VAD is:
-1. FFmpeg extracts 16kHz mono WAV to a temp file (same as Whisper path)
-2. `src/vad.rs` reads the WAV samples using either `hound` (if bundled in silero-vad-rust) or reads raw PCM bytes directly
-
-The `silero-vad-rust` crate provides a `read_audio(path, sample_rate)` helper that returns `Vec<f32>`. Using it avoids a `hound` dependency in our code. Alternatively, FFmpeg can pipe raw PCM (`-f f32le -ac 1 -ar 16000`) directly to stdin, skipping the WAV file entirely — but the WAV-file approach is simpler and already established in the codebase.
-
-## Normalization: Still Needed in cut.rs, Not for VAD
-
-**cut.rs context:** Normalization (`normalize_to_temp`) was needed before amplitude-based silencedetect because silencedetect uses dB thresholds. Variable loudness video would produce inconsistent silence detection. With VAD, the neural model is robust to absolute amplitude levels — VAD detects speech patterns, not dB thresholds. Normalization is therefore **unnecessary for VAD itself**.
-
-However, in `cut.rs`, the normalized file is the source for the final FFmpeg cut operation (the `input_str` fed to the concat filter). Removing normalization would change cut quality. The choices are:
-
-1. **Keep normalize for cut quality, skip for VAD audio extraction** — extract a separate 16kHz mono WAV from the original input, run VAD on it, then cut the normalized video. This adds one extra FFmpeg pass.
-2. **Remove normalize entirely** — cut from the original input, lose audio loudness normalization in the output.
-3. **Keep normalize, reuse normalized file for VAD** — extract 16kHz mono WAV from the normalized file. VAD results are unchanged (VAD is amplitude-agnostic).
-
-Option 3 is the simplest integration: normalize first (as today), then extract 16kHz WAV from the normalized file, run VAD on it, cut the normalized file. No behavior change to cut quality.
-
-**For pipeline.rs:** Same reasoning. Keep normalization for output quality; run VAD on the 16kHz extraction from the normalized file.
-
-## New Module: src/vad.rs
-
-This module is the clean integration boundary. It owns all Silero VAD interaction and returns `Vec<SpeechInterval>` — the same type `silence_to_speech` returns today.
-
-```rust
-// src/vad.rs
-
-use crate::silence::SpeechInterval;
-
-pub fn detect_speech(
-    audio_path: &str,   // path to 16kHz mono WAV
-    duration: f64,      // total duration in seconds (for building final interval)
-) -> anyhow::Result<Vec<SpeechInterval>> {
-    // 1. load_silero_vad() — bundles ONNX, no external download needed
-    // 2. read_audio(audio_path, 16_000) → Vec<f32>
-    // 3. configure VadParameters { return_seconds: true, ... }
-    // 4. get_speech_timestamps(&audio, model, params) → Vec<{start, end}>
-    // 5. map to Vec<SpeechInterval>
-}
-```
-
-This signature is the exact replacement for:
-```rust
-// replaced call sequence (cut.rs / pipeline.rs):
-let stderr = ffmpeg::run_silencedetect(&normalized_str, threshold, min_duration)?;
-let silences = silence::parse_silencedetect(&stderr, video_duration);
-let speeches = silence::silence_to_speech(&silences, video_duration, SPEECH_PADDING);
-```
-
-Becomes:
-```rust
-// new call:
-let speeches = vad::detect_speech(&wav_16k_path, video_duration)?;
-```
-
-## New FFmpeg Helper: extract_16k_wav
-
-A new function in `ffmpeg.rs` extracts 16kHz mono WAV to a temp path. This is identical to what `caption::transcribe()` does internally — it should be lifted to a shared helper:
-
-```rust
-// src/ffmpeg.rs (new function)
-pub fn extract_16k_wav(input: &str, output: &str) -> Result<(), std::io::Error> {
-    let args = ["-i", input, "-ar", "16000", "-ac", "1", "-f", "wav", output];
-    let result = run_ffmpeg(&args)?;
-    if !result.success {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "audio extraction failed",
-        ));
-    }
-    Ok(())
-}
-```
-
-This function already exists implicitly in `caption.rs` — promoting it to `ffmpeg.rs` serves both the caption and VAD paths.
-
-## Existing silence.rs Functions: Keep/Change/Remove
-
-| Function | Status | Reason |
-|----------|--------|--------|
-| `parse_silencedetect` | **REMOVE** | Dead code once VAD is primary path. Keep only if fallback mode retained. |
-| `silence_to_speech` | **REMOVE** | VAD returns speech intervals directly; this conversion is no longer needed. |
-| `build_concat_filter` | **KEEP** | Unchanged — takes `Vec<SpeechInterval>`, builds the FFmpeg concat filter string. |
-| `adjust_timestamps` | **KEEP** | Used in pipeline.rs to shift word timestamps after cutting. Unchanged. |
-| `filter_silences_by_words` | **REMOVE** | Takes `Vec<SilenceInterval>` as input, which no longer exists in the VAD path. VAD inherently avoids cutting speech. |
-| `words_to_speech_intervals` | **KEEP IF USED** | Check if referenced anywhere — provides alternative path for word-based cutting. |
-| `total_silence_removed` | **REMOVE or ADAPT** | Takes `Vec<SilenceInterval>`. For reporting, compute removed time from speech intervals instead: `duration - speeches.iter().map(|s| s.end - s.start).sum::<f64>()`. |
-| `SilenceInterval` struct | **REMOVE** | No longer produced by any code path. |
-| `SpeechInterval` struct | **KEEP** | The shared currency between VAD output and build_concat_filter/adjust_timestamps. |
-
-## Updated Source Tree
-
-```
-src/
-├── main.rs                  NO CHANGE
-├── cli.rs                   NO CHANGE (unless adding --vad flag)
-├── commands/
-│   ├── mod.rs               NO CHANGE
-│   ├── cut.rs               MODIFIED — replace normalize→silencedetect→parse→speech with normalize→extract_wav→vad::detect_speech
-│   ├── caption.rs           MODIFIED — promote audio extraction to ffmpeg::extract_16k_wav
-│   ├── pipeline.rs          MODIFIED — same as cut.rs changes; remove filter_silences_by_words call
-│   ├── normalize.rs         NO CHANGE (kept for output quality, not for VAD)
-│   ├── doctor.rs            NO CHANGE (or add ort/onnx runtime check if needed)
-│   └── overlay.rs           NO CHANGE
-├── vad.rs                   NEW — silero-vad-rust wrapper returning Vec<SpeechInterval>
-├── ffmpeg.rs                MODIFIED — add extract_16k_wav() as shared helper
-├── silence.rs               MODIFIED — remove SilenceInterval, parse_silencedetect, silence_to_speech, filter_silences_by_words, total_silence_removed; keep build_concat_filter, adjust_timestamps, SpeechInterval
-├── temp.rs                  NO CHANGE
-├── error.rs                 NO CHANGE (or add VadError variant)
-└── ui.rs                    NO CHANGE
-
-Cargo.toml                   MODIFIED — add silero-vad-rust (and ndarray if needed)
-```
-
-## Data Flow: Before and After
-
-### Before (current)
-
-```
-cut input.mp4
-    ↓
-normalize_to_temp(input) → normalized.mp4   [loudnorm 2-pass, keeps video stream]
-    ↓
-ffmpeg::run_silencedetect(normalized)       [runs FFmpeg silencedetect filter, returns stderr]
-    ↓
-silence::parse_silencedetect(stderr)        [regex parse → Vec<SilenceInterval>]
-    ↓
-silence::silence_to_speech(silences)        [invert silences → Vec<SpeechInterval>]
-    ↓
-silence::build_concat_filter(speeches)      [build FFmpeg filter_complex string]
-    ↓
-ffmpeg cut normalized.mp4 → output.mp4
-```
-
-### After (with VAD)
-
-```
-cut input.mp4
-    ↓
-normalize_to_temp(input) → normalized.mp4   [unchanged — needed for output quality]
-    ↓
-ffmpeg::extract_16k_wav(normalized) → temp.wav  [NEW: 16kHz mono WAV extraction]
-    ↓
-vad::detect_speech(temp.wav, duration)      [NEW: Silero VAD → Vec<SpeechInterval> directly]
-    ↓
-silence::build_concat_filter(speeches)      [UNCHANGED]
-    ↓
-ffmpeg cut normalized.mp4 → output.mp4      [UNCHANGED]
-```
-
-The intermediate `Vec<SilenceInterval>` type is eliminated. VAD speaks `Vec<SpeechInterval>` natively.
-
-### pipeline.rs Specific Change
-
-Current pipeline.rs after silencedetect has an extra step:
-
-```
-filter_silences_by_words(silences, word_times) → safe_silences
-silence_to_speech(safe_silences, ...) → speeches
-```
-
-With VAD, word-protection (`filter_silences_by_words`) is dropped. VAD's neural detection already avoids cutting speech regions. Pipeline becomes:
-
-```
-vad::detect_speech(temp.wav, duration) → speeches
-adjust_timestamps(word_data, &speeches) → adjusted_words   [unchanged]
-```
-
-## crate: silero-vad-rust
-
-**Confidence: MEDIUM** — The `silero-vad-rust` crate (distinct from `silero-vad-rs`) is the one referenced in the project context. Key verified properties:
-
-| Property | Value | Confidence |
-|----------|-------|------------|
-| ONNX model bundled | Yes — opset 15 & 16 in `src/silero_vad/data` | MEDIUM (search result claim, not direct docs verification) |
-| External download needed | No | MEDIUM |
-| Audio format | `Vec<f32>` at 16kHz or 8kHz | HIGH |
-| `get_speech_timestamps` exists | Yes | HIGH |
-| `VadParameters.return_seconds` | Yes — timestamps in seconds when true | MEDIUM |
-| `load_silero_vad()` | Yes | HIGH |
-| Import path | `silero_vad_rust::silero_vad::utils_vad` | MEDIUM |
-
-The `silero-vad-rs` crate (different crate) requires a separate ONNX download and uses `ndarray::Array1<f32>` + `VADIterator`. The project context references `get_speech_timestamps()` and `SpeechInterval` matching `silero-vad-rust`, not `silero-vad-rs`.
-
-**Flag for implementation phase:** Verify the exact import paths and struct field names against `docs.rs/silero-vad-rust` before coding. The API surface is confirmed at the function level but field names need verification.
+---
 
 ## Component Boundaries
 
-| Boundary | Interface | Notes |
-|----------|-----------|-------|
-| `vad.rs` → `silence.rs` | Returns `Vec<SpeechInterval>` | SpeechInterval stays in silence.rs |
-| `vad.rs` → `ffmpeg.rs` | Calls `extract_16k_wav` | Or inlines it — either works |
-| `cut.rs` → `vad.rs` | Calls `vad::detect_speech(wav_path, duration)` | Replaces 3-function call sequence |
-| `pipeline.rs` → `vad.rs` | Same as cut.rs | Remove filter_silences_by_words call |
-| `caption.rs` → `ffmpeg.rs` | Use shared `extract_16k_wav` | Reduces duplication |
+### Current State (post-Phase 18)
 
-## Build Order for Implementation
+```
+pipeline.rs::finish_stages()
+    ├── [5] caption::burn_captions()   → captioned.mp4
+    └── [6] overlay::run()
+            ├── generate_title() → claude haiku call → title string
+            └── build_title_filter() + ffmpeg → output.mp4
+```
 
-| Order | Task | Depends On | Why This Order |
-|-------|------|------------|----------------|
-| 1 | Add `silero-vad-rust` to `Cargo.toml`, verify it compiles | Nothing | Fail fast on dependency issues |
-| 2 | Add `ffmpeg::extract_16k_wav` | Step 1 (confirms dep compiles) | Shared helper needed by both vad.rs and caption.rs |
-| 3 | Create `src/vad.rs` with `detect_speech()` returning `Vec<SpeechInterval>` | Steps 1–2 | Core integration — verify VAD produces correct intervals on a real file |
-| 4 | Modify `cut.rs` — replace silencedetect call sequence with vad::detect_speech | Step 3 | Simplest integration point, no word-protection complexity |
-| 5 | Modify `pipeline.rs` — same replacement, drop filter_silences_by_words | Step 4 confirmed | More complex; word-timestamp adjustment must still work |
-| 6 | Update `caption.rs` — use shared extract_16k_wav | Step 2 | Cleanup; not functionally blocking |
-| 7 | Prune `silence.rs` — remove dead functions and SilenceInterval | Steps 4–5 confirmed working | Do not prune until end-to-end tests pass |
-| 8 | Update `Cargo.toml` — remove any newly dead transitive deps | Step 7 | Final cleanup |
+### New State (TikTok milestone)
 
-## Anti-Patterns
+```
+pipeline.rs::finish_stages()
+    ├── [5] caption::burn_captions()   → captioned.mp4       [MODIFIED: safe zone margins]
+    ├── [5.5] APPROVAL GATE            → approved title       [NEW: interactive prompt]
+    │         generate_title() moved here (before encoding, not during)
+    ├── [6] overlay::run()             → output.mp4           [MODIFIED: safe zone margins]
+    └── [7] metadata::generate()       → sidecar .json        [NEW: description + hashtags]
+```
 
-### Anti-Pattern 1: Running VAD on the Original Video File
+**Key insight:** Title approval is currently buried inside `overlay::run()` inside `generate_title()`. It must move to `finish_stages()` in `pipeline.rs`, before `overlay::run()` is called. This way:
+- Caption encoding (Stage 5) runs uninterrupted
+- While caption encodes, there is no opportunity to prompt — it's a good time for Claude to generate the title concurrently (but Rust's single-threaded pipeline does not currently do this)
+- Prompt appears immediately after caption encoding completes, before overlay begins
+- User reads/edits title, then overlay encoding starts
 
-**What:** Feeding the MP4 directly to `silero-vad-rust`'s `read_audio` instead of extracting WAV first.
+This is the maximum parallelism achievable without threading: caption encode → prompt → overlay encode.
 
-**Why wrong:** `read_audio` in silero-vad-rust expects a WAV file. Even if it accepted other formats, it would need to decode the video to get audio — FFmpeg already does this optimally.
+---
 
-**Do this instead:** Always extract 16kHz mono WAV with FFmpeg first, then feed the WAV path to VAD.
+## Where Title Approval Fits in the Pipeline
 
-### Anti-Pattern 2: Running VAD Before Normalization
+**Between Stage 5 (caption burn) and Stage 6 (overlay).**
 
-**What:** Skipping `normalize_to_temp` and running VAD on the raw input, then cutting the raw input.
+In `pipeline.rs::finish_stages()`, the sequence becomes:
 
-**Why wrong:** VAD results are the same either way (VAD is amplitude-agnostic), but the cut output loses loudness normalization. The normalize step is for output quality, not for VAD.
+```rust
+// Stage 5: burn captions (unchanged encoding)
+caption::burn_captions(cut_video, words, &captioned_video, verbose, registry)?;
 
-**Do this instead:** Normalize first, extract WAV from normalized file, run VAD, cut the normalized file.
+// Stage 5.5: generate title and get approval (NEW — moved from overlay::run)
+let title = generate_title_with_approval(&caption_json, verbose)?;
 
-### Anti-Pattern 3: Keeping filter_silences_by_words in the VAD Path
+// Stage 6: overlay (title already approved, no Claude call inside)
+overlay::run(OverlayArgs {
+    text: Some(title),  // always pass as text now, not auto
+    auto: None,
+    ...
+}, verbose, registry)?;
+```
 
-**What:** Continuing to use `filter_silences_by_words` after VAD replaces silencedetect.
+`overlay::run()` already handles `text: Some(...)` — the pipeline just switches from passing `auto: Some(json_path)` to `text: Some(approved_title)`. No changes needed inside `overlay.rs` for the approval flow.
 
-**Why wrong:** `filter_silences_by_words` takes `Vec<SilenceInterval>` — a type that no longer exists in the VAD path. VAD returns speech intervals directly; it inherently does not cut speech.
+The `generate_title()` function in `overlay.rs` can remain for the standalone `overlay` subcommand's `--auto` path. In the pipeline, it is called at the `finish_stages` level instead.
 
-**Do this instead:** Remove the filter call. VAD's neural detection handles speech protection natively.
+---
 
-### Anti-Pattern 4: Adding a `--vad` Flag Instead of Replacing
+## How Safe Zone Margins Affect ASS Positioning
 
-**What:** Implementing VAD as an opt-in flag (`contentops cut --vad`) while keeping silencedetect as default.
+### Current ASS Style Line (caption.rs line 204)
 
-**Why wrong:** Two code paths, two sets of parameters to tune, two behaviors to document and test. The whole point of VAD is that it's better — make it the only path.
+```
+Style: Default,Arial,58,&H00FFFFFF,...,Alignment,MarginL,MarginR,MarginV,...
+Style: Default,Arial,58,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,40,40,480,1
+```
 
-**Do this instead:** Replace silencedetect entirely. If a fallback is needed, that is a separate research decision requiring explicit justification.
+Decoded:
+- `Alignment: 2` = bottom-center (ASS alignment: 1=BL, 2=BC, 3=BR, 4=ML, 5=MC, 6=MR, 7=TL, 8=TC, 9=TR)
+- `MarginL: 40` — left margin in ASS coordinate space (PlayResX=1080)
+- `MarginR: 40` — right margin
+- `MarginV: 480` — vertical margin from bottom edge (because Alignment=2 is bottom)
 
-## Integration Points
+**Analysis against safe zone:**
+- `MarginV: 480` — at 1920 reference, 480px from bottom is already above the 420px danger zone. SAFE.
+- `MarginL: 40, MarginR: 40` — too thin. Right side needs 120px clear. Change to `MarginL: 80, MarginR: 120`.
 
-### External Libraries (New)
+**Recommended change to `generate_ass()`:**
 
-| Library | Integration Pattern | Notes |
-|---------|---------------------|-------|
-| `silero-vad-rust` | `vad.rs` calls `load_silero_vad()` + `get_speech_timestamps()` | ONNX bundled — no runtime download |
-| `ort` (transitive) | Pulled in by silero-vad-rust for ONNX runtime | May require `ORT_DYLIB_PATH` on some platforms — verify |
+```rust
+// Before:
+output.push_str("Style: Default,Arial,58,...,2,40,40,480,1\n");
+//                                              MarginL MarginR MarginV
 
-### Internal Boundaries
+// After:
+output.push_str("Style: Default,Arial,58,...,2,80,120,480,1\n");
+//                                               ^L  ^R   ^V stays same
+```
 
-| Boundary | Before | After |
-|----------|--------|-------|
-| `cut.rs` → speech detection | 3 calls: run_silencedetect → parse_silencedetect → silence_to_speech | 1 call: vad::detect_speech |
-| `pipeline.rs` → speech detection | 4 calls: same 3 + filter_silences_by_words | 1 call: vad::detect_speech |
-| `silence.rs` surface | 7 public functions + 2 structs | 3 public functions + 1 struct |
-| `ffmpeg.rs` surface | No WAV extraction helper | +1 extract_16k_wav |
+The MarginV of 480 already clears the bottom safe zone. Only the left/right margins need adjustment.
+
+Note: ASS `PlayResX/PlayResY` are 1080/1920 hardcoded. These are ASS coordinate space values, not pixels. When ffmpeg burns `ass=` with a different resolution video, ffmpeg scales the ASS coordinates proportionally. The margin values scale correctly.
+
+---
+
+## How Safe Zone Margins Affect Overlay drawtext
+
+### Current overlay.rs positioning
+
+```rust
+let y_base: u32 = match args.position.as_str() {
+    "bottom" => scale(1400, video_height),  // 1400/1920 = 72.9% from top = 27% from bottom
+    "center" => scale(760, video_height),
+    _ => scale(200, video_height),          // "top" = 200px from top in 1920 ref space
+};
+
+let final_x: i32 = scale_i32(30, video_height);  // 30px left margin — UNSAFE
+```
+
+**Analysis:**
+- `"top"` position: y=200px. TikTok top danger zone is 150-250px. Current 200px is marginal; 250px is safer.
+- `final_x = 30px`: TikTok left margin is 60px minimum. Current 30px is UNSAFE.
+- `"bottom"` position: y=1400px. Bottom of overlay text lands around y=1400+(3 lines * ~170px) ≈ 1910px. That is UNSAFE — fully inside the bottom danger zone (bottom 370-420px = y > 1500px in 1920 ref). Bottom position needs to move up to ~y=1050 to clear.
+
+**Recommended changes to `build_title_filter()` constants:**
+
+```rust
+// Safe zone aligned values (reference: 1920px height)
+let final_x: i32 = scale_i32(60, video_height);      // was 30 → 60 (left safe zone)
+
+let y_base: u32 = match args.position.as_str() {
+    "bottom" => scale(1050, video_height),  // was 1400 → 1050 (clears bottom danger zone)
+    "center" => scale(760, video_height),   // unchanged — already in safe zone
+    _ => scale(250, video_height),          // was 200 → 250 (clears top danger zone)
+};
+```
+
+The accent bar `accent_x` will adjust automatically since it is computed relative to `final_x`.
+
+---
+
+## Where Description Generation Happens
+
+**After Stage 6 (overlay completes), as Stage 7.**
+
+Description generation is a read-only Claude call that does not modify the video. It runs after the final video file is written. This placement:
+- Does not block any encoding
+- Has access to the final approved title (needed for description coherence)
+- Has access to the full transcript from `caption_json`
+
+In `finish_stages()`:
+
+```rust
+// Stage 7: generate TikTok metadata (NEW)
+let metadata = metadata::generate(&caption_json, &approved_title, verbose)?;
+let sidecar_path = output.with_extension("json");
+metadata::write_sidecar(&metadata, &sidecar_path)?;
+```
+
+A new module `src/metadata.rs` owns this. It takes the transcript JSON path and approved title, shells out to `claude -p --model haiku`, returns a `TikTokMetadata` struct.
+
+---
+
+## Sidecar File: Format and Timing
+
+**Written:** After Stage 6 completes (overlay done), at end of `finish_stages()`.
+
+**Location:** Same directory as output file, same stem, `.json` extension.
+- Example: `video_pipeline.mp4` → `video_pipeline.json`
+- Uses `output.with_extension("json")` in Rust.
+
+**Format:** JSON
+
+```json
+{
+  "title": "The approved title text\nwith newlines preserved",
+  "description": "Full TikTok caption text up to 2200 chars",
+  "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"]
+}
+```
+
+Rationale for this schema:
+- `title` is the string shown in overlay — useful for reference/editing
+- `description` is ready-to-paste into TikTok's caption field
+- `hashtags` as array (not embedded in description) allows caller to join with spaces, pick a subset, or format differently
+- TikTok limits: 2200 chars total description, max 5 hashtags recommended
+- No `video_path`, `duration`, or timestamps — those are derivable; keep the sidecar minimal
+
+**Struct in Rust:**
+
+```rust
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct TikTokMetadata {
+    pub title: String,
+    pub description: String,
+    pub hashtags: Vec<String>,
+}
+```
+
+---
+
+## New vs Modified Components
+
+| Component | Status | Change |
+|-----------|--------|--------|
+| `src/metadata.rs` | NEW | Claude call → TikTokMetadata, sidecar write |
+| `src/commands/pipeline.rs::finish_stages()` | MODIFIED | Add approval gate, move generate_title call, call metadata::generate |
+| `src/commands/caption.rs::generate_ass()` | MODIFIED | MarginL 40→80, MarginR 40→120 |
+| `src/commands/overlay.rs::build_title_filter()` | MODIFIED | final_x 30→60, top y_base 200→250, bottom y_base 1400→1050 |
+| `src/commands/overlay.rs::generate_title()` | UNCHANGED | Still used by standalone `overlay --auto` path |
+| `src/cli.rs::PipelineArgs` | NO CHANGE | No new flags needed for this milestone |
+
+---
+
+## Data Flow: New Pipeline End Sequence
+
+```
+[Stage 4 complete] cut.mp4 + adjusted_words[] in memory
+
+finish_stages():
+    write captioned.json (transcript for overlay auto-title)   [UNCHANGED]
+
+[Stage 5] caption::burn_captions(cut.mp4, words) → captioned.mp4   [MODIFIED: ASS margins]
+
+[Stage 5.5] generate_title(captioned.json) → raw_title              [NEW in pipeline.rs]
+            prompt user: "Title: {raw_title}\n[Enter to accept / type replacement]:"
+            → approved_title: String
+
+[Stage 6] overlay::run(captioned.mp4, text=approved_title) → output.mp4  [MODIFIED: drawtext margins]
+
+[Stage 7] metadata::generate(captioned.json, approved_title) → TikTokMetadata  [NEW]
+           write output.with_extension("json") → sidecar                         [NEW]
+
+finish_stages() returns Ok(())
+```
+
+---
+
+## Title Approval: Making It Non-Blocking During Encoding
+
+The only opportunity to run title generation concurrently with encoding is during Stage 5 (caption burn). This requires threading or async. The current pipeline is single-threaded and synchronous.
+
+**Recommendation: do not introduce threading for this milestone.** The simpler approach:
+
+```
+Stage 5 encodes → Stage 5 completes → Claude generates title → user approves → Stage 6 encodes
+```
+
+The wait for user approval typically exceeds the difference between "title generated during encode" and "title generated after encode." For a 3-minute video, caption encoding takes ~60-90 seconds; title generation takes ~2-5 seconds. The sequential overhead is ~5 seconds — not worth threading complexity.
+
+If future milestones add threading, the `generate_title()` call could be spawned as a `std::thread::spawn` before the `burn_captions()` call, with a `JoinHandle` resolved after encoding completes. But this is out of scope.
+
+---
+
+## Approval UX Pattern
+
+Use `stdin` readline, print to `stderr` (consistent with all other pipeline output):
+
+```rust
+// Prompt on stderr; read from stdin
+eprint!("Title: {}\n[Enter] accept  [type replacement + Enter] override: ", raw_title);
+let mut input = String::new();
+std::io::stdin().read_line(&mut input)?;
+let approved = input.trim();
+if approved.is_empty() {
+    raw_title  // accept as-is
+} else {
+    approved.to_string()  // use replacement
+}
+```
+
+This pattern:
+- Works in terminal environments (no TTY detection needed for initial milestone)
+- Matches existing pipeline UX (all output to stderr)
+- Does not require a new dependency (no `dialoguer` or `inquire` needed)
+
+---
+
+## Anti-Patterns to Avoid
+
+### Anti-Pattern 1: Moving generate_title Into metadata.rs
+
+**What:** Combining title generation and description generation in one module.
+**Why wrong:** `generate_title()` is called by both `overlay.rs` (standalone `--auto` path) and `pipeline.rs` (for approval). Putting it in `metadata.rs` creates an import dependency from `overlay.rs` to `metadata.rs`, which is awkward. Title generation belongs in `overlay.rs`; description generation belongs in `metadata.rs`.
+**Do this instead:** Keep `generate_title()` in `overlay.rs`. Call it from `pipeline.rs` directly before `overlay::run()`. `metadata::generate()` receives the already-approved title as a parameter.
+
+### Anti-Pattern 2: Embedding Hashtags in the Description String
+
+**What:** Generating description as one blob: `"Here's why...\n\n#tiktok #content #creator"`.
+**Why wrong:** Makes it impossible to pick a subset of hashtags, reformat, or apply per-platform hashtag limits without string parsing.
+**Do this instead:** Separate `hashtags: Vec<String>` field in the sidecar. The description field contains only prose text. Caller concatenates as needed.
+
+### Anti-Pattern 3: Writing Sidecar to Temp Dir
+
+**What:** Writing the `.json` sidecar into `temp_dir` alongside `captioned.mp4` and `cut.mp4`.
+**Why wrong:** `temp_dir` is cleaned up on error (or retained for debugging). The sidecar is a user-facing output that should survive next to the final video, not be buried in temp.
+**Do this instead:** `output.with_extension("json")` — sibling to the final output file.
+
+### Anti-Pattern 4: Hardcoding Safe Zone Pixel Values in ASS
+
+**What:** Using absolute pixel values (e.g., `MarginV: 480`) without documenting they assume `PlayResY: 1920`.
+**Why wrong:** If someone changes `PlayResX/PlayResY`, the absolute margins break.
+**Do this instead:** Keep the current approach (ASS coordinate space with fixed PlayRes), but document that `PlayResY: 1920` is the reference. The values are in ASS coordinate space, not screen pixels. FFmpeg scales them when burning onto videos of other resolutions. This is already correct behavior — just document it.
+
+---
+
+## Build Order for This Milestone
+
+| Order | Task | Depends On | Notes |
+|-------|------|------------|-------|
+| 1 | Fix `generate_ass()` margins (MarginL/MarginR) | Nothing | 2-line change; verify with test video that captions clear right edge |
+| 2 | Fix `build_title_filter()` x and y_base values | Nothing | Independent of ASS change; verify top/bottom position visually |
+| 3 | Extract title generation call from `finish_stages()` + add approval prompt | Steps 1-2 proven | Refactor only — no new deps; test with `--text` bypass to confirm overlay still works |
+| 4 | Create `src/metadata.rs` with `generate()` + `write_sidecar()` | Step 3 (needs approved_title param) | New Claude call; test with real transcript |
+| 5 | Wire `metadata::generate()` into `finish_stages()` | Steps 3-4 | Final integration; verify sidecar location and content |
+| 6 | Add `metadata` module to `src/commands/mod.rs` or `src/lib.rs` | Step 4 | Module registration |
+
+---
 
 ## Sources
 
-- Direct codebase audit: all source files in `/Users/darrelltang/darrelldoesdevops/contentops/src/`
-- silero-vad-rust crate: https://crates.io/crates/silero-vad-rust
-- silero-vad-rs docs.rs: https://docs.rs/silero-vad-rs/latest/silero_vad_rs/
-- VADIterator API: https://docs.rs/silero-vad-rs/latest/silero_vad_rs/vad/struct.VADIterator.html
-- hound crate: https://crates.io/crates/hound
-- Silero VAD original: https://github.com/snakers4/silero-vad
+- Direct codebase audit: `/Users/darrelltang/darrelldoesdevops/contentops/src/`
+- TikTok safe zone third-party consensus: https://zeely.ai/blog/tiktok-safe-zones/ (MEDIUM)
+- TikTok safe zone checker tool context: https://postplanify.com/tools/tiktok-safe-zone-checker (MEDIUM)
+- TikTok description character limits: https://tlinky.com/tiktok-ad-copy-character-limit/ (MEDIUM)
+- ASS subtitle format specification: https://aegi.moe/docs/ASS_Tags.htm (alignment/margin semantics)
+- Existing pipeline architecture: phases 17-18 context files, direct source audit
 
 ---
-*Architecture research for: Silero VAD integration into contentops Rust CLI*
-*Researched: 2026-02-24*
+
+*Architecture research for: TikTok metadata generation and safe zone compliance integration*
+*Researched: 2026-02-25*

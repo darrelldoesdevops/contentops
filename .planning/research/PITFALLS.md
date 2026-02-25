@@ -1,652 +1,162 @@
 # Pitfalls Research
 
-**Domain:** Rust CLI orchestrating FFmpeg for video processing (silence removal, captioning, overlays)
-**Researched:** 2026-02-20, updated 2026-02-24 for v1.4 Silero VAD milestone
-**Confidence:** HIGH (v1.0 pitfalls) / MEDIUM (new-milestone pitfalls, grounded in codebase audit)
+**Domain:** Rust CLI video processing pipeline — adding interactive approval, safe zone compliance, and AI metadata
+**Researched:** 2026-02-25
+**Confidence:** HIGH (grounded in direct codebase audit of src/)
 
-> **Scope note:** This file was updated for the v1.1 milestone. Pitfalls 1-13 cover the v1.0 domain
-> (FFmpeg piping, silence removal, temp files). Pitfalls 14+ cover the new work: codebase audit,
-> `doctor` subcommand, `pipeline` subcommand, and GitHub Actions CI/CD.
->
-> Pitfalls 20+ cover the v1.4 Silero VAD milestone: ort/ONNX Runtime linking, model versioning,
-> cross-platform distribution, CI integration, binary size, and audio format requirements.
-
----
-
-## Critical Pitfalls — v1.0 Domain (Existing)
-
-### Pitfall 1: Pipe Deadlock When Capturing FFmpeg stderr
-
-**What goes wrong:** FFmpeg writes progress and filter output (including silencedetect timestamps) to stderr. If you pipe both stdout and stderr from `std::process::Command` and read them sequentially, the process deadlocks. The child fills the OS pipe buffer (~64KB on macOS) on one stream while the parent blocks waiting on the other. Both processes freeze permanently.
-
-**Why it happens:** Rust's `Command::output()` handles this internally by reading both streams, but if you use `Command::spawn()` with `.stdout(Stdio::piped())` and `.stderr(Stdio::piped())` and then read them one at a time (e.g., `child.stderr.read_to_string()` then `child.stdout.read_to_string()`), you hit the classic pipe deadlock. FFmpeg is especially prone because it writes heavily to stderr (progress, filter logs) while potentially writing decoded data to stdout.
-
-**Consequences:** The CLI hangs indefinitely. No error message. Users think the tool crashed or the video is too large.
-
-**Prevention:**
-- For silencedetect (where you need stderr output after completion): use `Command::output()` which reads both streams concurrently, or redirect stdout to `Stdio::null()` since silencedetect output goes to stderr and you don't need stdout.
-- For any pipe-based data flow: read stdout and stderr from separate threads, or use `Stdio::null()` / `Stdio::inherit()` for streams you don't need.
-- Never sequentially read two piped streams from a spawned child.
-
-**Detection:** The CLI hangs on any non-trivial video (pipe buffer fills within seconds). Easy to catch in basic testing but only if you test with real video files, not tiny test clips.
-
-**Phase:** Foundation (Phase 1). This is the first code you write and the first bug you'll hit.
-
-**Confidence:** HIGH — documented in Rust's [std::process::Stdio](https://doc.rust-lang.org/std/process/struct.Stdio.html) docs and [rust-lang issue #45572](https://github.com/rust-lang/rust/issues/45572).
+> **Scope note:** This file was added for the TikTok metadata/safe zone milestone.
+> It covers pitfalls specific to ADDING interactive prompts, safe zone margin changes,
+> multi-option Claude title generation, metadata sidecars, and transcript fix changes
+> to the existing headless pipeline. Previous pitfalls (1–22) live in this file's
+> predecessor from the VAD milestone.
 
 ---
 
-### Pitfall 2: FFmpeg Hangs Waiting for Interactive Input
+## Critical Pitfalls
 
-**What goes wrong:** FFmpeg prompts "Overwrite? [y/N]" on stderr and reads stdin when the output file already exists. When spawned from a Rust process with default stdin (inherited from parent or piped), FFmpeg blocks waiting for user input that never comes. The CLI hangs silently.
+### Pitfall 1: Interactive Prompt Blocks Headless Pipeline
 
-**Why it happens:** Forgetting the `-y` (overwrite without asking) flag. This is especially insidious because it works fine on first run (no file to overwrite) and only fails on re-runs.
+**What goes wrong:**
+`pipeline.rs::run_stages()` runs entirely non-interactively — all `Stdio::null()` on stdin, all user feedback via `eprintln!` spinners. Adding a `dialoguer` or raw `stdin().read_line()` call inside `run_stages` or `finish_stages` blocks indefinitely when the tool is called from a shell script, CI, or any context where stdin is not a TTY (e.g., `contentops pipeline ... < /dev/null`).
 
-**Consequences:** Silent hang. No error. The user re-runs the tool on the same file and it appears frozen.
-
-**Prevention:**
-- Always pass `-y` to every FFmpeg invocation.
-- Also pass `-nostdin` to prevent FFmpeg from reading stdin for any reason.
-- Combine: `Command::new("ffmpeg").args(["-y", "-nostdin", ...])`.
-
-**Detection:** Run any FFmpeg command twice against the same output path.
-
-**Phase:** Foundation (Phase 1). Test this in your very first FFmpeg integration.
-
-**Confidence:** HIGH — FFmpeg documented behavior.
-
----
-
-### Pitfall 3: Silencedetect Timestamp Parsing Fails on Non-English Locales
-
-**What goes wrong:** FFmpeg's silencedetect filter outputs timestamps as decimal numbers with `.` as the decimal separator (e.g., `silence_end: 2.34`). On systems with a locale that uses `,` as the decimal separator (common in Europe), FFmpeg may output `2,34` instead, causing float parsing to fail.
-
-**Why it happens:** FFmpeg respects the system locale for number formatting in some output contexts. Rust's `str::parse::<f64>()` expects `.` as the decimal separator regardless of locale.
-
-**Consequences:** Silence timestamp parsing panics or returns no timestamps, causing the entire silent segment removal to fail silently (the output video has no cuts made).
-
-**Prevention:**
-- Use `LC_ALL=C` or `LANG=C` when invoking FFmpeg from Rust if you intend to parse its output.
-- In Rust: set `.env("LC_ALL", "C")` on the `Command`.
-- Alternatively, replace `,` with `.` before parsing.
-
-**Detection:** Test on a machine with a non-English locale, or temporarily `export LANG=de_DE` before running.
-
-**Phase:** Silence Removal (Phase 2).
-
-**Confidence:** MEDIUM — documented locale issue, verified through community reports.
-
----
-
-### Pitfall 4: Float Precision in Silence Timestamp Arithmetic Causes A/V Sync Drift
-
-**What goes wrong:** When calculating silence segment boundaries (start/end), floating-point arithmetic on ffmpeg timestamps accumulates error over many segments. After 50+ cuts in a long video, the concat filter's segment boundaries drift from the actual audio waveform, causing A/V desync.
-
-**Why it happens:** FFmpeg timestamps are floating-point. Adding/subtracting the silence pad duration (e.g., 0.075 seconds) many times accumulates binary floating-point representation error. The concat filter is sensitive to sub-millisecond timing precision.
-
-**Consequences:** A/V sync drift increases with video length and number of cuts. Imperceptible for short videos with few cuts; noticeable (50-100ms drift) for 10-minute videos with 100+ cuts.
-
-**Prevention:**
-- Use i64 milliseconds internally, not f64 seconds.
-- Convert to float only when building the FFmpeg filter expression.
-- Round pad calculations to 3 decimal places maximum.
-
-**Detection:** Run silence removal on a 30-minute lecture with frequent cuts. Compare the audio waveform of a specific word in the input vs. output.
-
-**Phase:** Silence Removal (Phase 2).
-
-**Confidence:** MEDIUM — general float arithmetic issue; specific drift threshold is an estimate.
-
----
-
-### Pitfall 5: Concat Filter Fails With Zero-Duration Segments
-
-**What goes wrong:** When speech is immediately adjacent to the start or end of the file, the silence pad calculation can produce a segment with a duration of 0 seconds or negative duration. FFmpeg's concat filter rejects zero-duration segments and exits with an error.
-
-**Why it happens:** If the first silence ends at 0.05s and your pad is 0.075s, the segment start calculates to -0.025s, which is clamped to 0. If the next silence starts at 0.0s, you get a 0-duration first segment.
-
-**Consequences:** `ffmpeg: Error while opening encoder for output stream` or similar. The output file is not produced.
-
-**Prevention:**
-- Filter out segments where `end - start <= 0.001` before building the concat filter.
-- Clamp segment start to `max(0.0, silence_end - pad)`.
-- Clamp segment end to `min(total_duration, silence_start + pad)`.
-
-**Detection:** Test with a video that starts speaking immediately (no silence at the beginning), or a video where all content is speech (no silence at all).
-
-**Phase:** Silence Removal (Phase 2).
-
-**Confidence:** HIGH — directly observed failure mode.
-
----
-
-### Pitfall 6: Temp File Cleanup Fails on Process Kill
-
-**What goes wrong:** When the user Ctrl+C's the process, the temp directory is not cleaned up. On subsequent runs, stale temp files accumulate and can be hundreds of MB.
-
-**Why it happens:** Rust's `Drop` trait is not called on SIGTERM/SIGKILL. `ctrlc::set_handler` can work for SIGINT but not for kills.
-
-**Consequences:** Disk fills up over time. Especially problematic on CI where workspace cleanup is expected.
-
-**Prevention:**
-- Use `tempfile::TempDir` which registers cleanup even on panic (but not on kill).
-- Accept that kill-level signals cannot be handled cleanly; document this.
-- Don't register the temp dir in any global state that would prevent GC.
-- Add a cleanup message on normal exit so users know where temp files live.
-
-**Detection:** Start a long encode and kill -9 the process. Check for leftover temp directories.
-
-**Phase:** Foundation (Phase 1).
-
-**Confidence:** HIGH — standard systems programming constraint.
-
----
-
-### Pitfall 7: Progress Bar Interferes With stderr Logging
-
-**What goes wrong:** When using `indicatif` progress bars while also writing to stderr (e.g., for debug output or error messages), the progress bar and text output interleave incorrectly. The progress bar overwrites error messages, or error messages are partially rendered.
-
-**Why it happens:** indicatif uses ANSI escape codes to move the cursor and redraw the progress bar on the same terminal lines. Any other writes to stderr during this time corrupt the display.
-
-**Consequences:** Error messages from FFmpeg or the Rust code are invisible or garbled. Users see corrupted output.
-
-**Prevention:**
-- Never write to stderr directly while a progress bar is active. Use `println_below()` or `bar.println()` to write messages that interleave correctly with the bar.
-- For error output: finish the bar first, then write the error.
-- Use `ProgressBar::suspend()` around any print calls.
-
-**Detection:** Run any command that produces stderr output while a progress bar is active.
-
-**Phase:** Overlays and Polish (Phase 5).
-
-**Confidence:** HIGH — documented indicatif behavior.
-
----
-
-### Pitfall 8: Whisper Timestamps Are Word-Level But Not Sub-Word
-
-**What goes wrong:** Whisper's word-level timestamps (`--word-timestamps true`) give one timestamp per token, but tokens are not always whole words. Contractions like "don't" become two tokens ("don" and "'t") each with timestamps. This produces subtitles where punctuation splits incorrectly across word boundaries.
-
-**Why it happens:** Whisper tokenizes text using a byte-pair encoding that doesn't respect English word boundaries. The `--word-timestamps` flag gives timestamps per BPE token, not per orthographic word.
-
-**Consequences:** Caption highlighting splits at apostrophes, creating visual glitches. "don" lights up, then "'t" lights up as a separate word.
-
-**Prevention:**
-- Post-process: merge tokens that start with punctuation (apostrophe, comma, period) with the previous token.
-- Specifically: if a word starts with `'`, merge it with the preceding word's span.
-
-**Detection:** Transcribe any audio containing contractions or possessives. Look for split words in the generated ASS subtitles.
-
-**Phase:** Caption Generation (Phase 3).
-
-**Confidence:** HIGH — directly observed, fixed in v1.0 implementation.
-
----
-
-### Pitfall 9: ASS Subtitle Rendering Misaligns With Fonts Not Present
-
-**What goes wrong:** The ASS subtitle style specifies a font family (e.g., "Arial"). If that font is not installed on the render machine, FFmpeg silently substitutes a different font. The substitution font has different metrics (character widths, line heights), causing text overflow, incorrect positioning, or visual misalignment.
-
-**Why it happens:** FFmpeg delegates font rendering to libass, which uses fontconfig on Linux/macOS and GDI on Windows. Missing fonts are substituted without any warning or error.
-
-**Consequences:** Captions are cut off at edges, positioned incorrectly, or look completely different from what was tested.
-
-**Prevention:**
-- Use fonts that are universally available on all platforms (Arial on macOS/Windows; DejaVu Sans on Linux).
-- Or bundle a specific font and pass it explicitly to ffmpeg via `-vf subtitles=file.ass:fontsdir=/path/to/fonts`.
-- Test on all three platforms.
-
-**Detection:** Test on a fresh Linux machine where common fonts may not be installed.
-
-**Phase:** Caption Rendering (Phase 4).
-
-**Confidence:** HIGH — documented libass behavior.
-
----
-
-### Pitfall 10: Impact Font Not Available on Non-macOS Systems
-
-**What goes wrong:** The Impact font used for overlay title cards is not universally installed. It's a Microsoft font present on macOS and Windows by default, but absent on most Linux distributions.
-
-**Why it happens:** Impact is a proprietary Microsoft font. Linux distributions typically only include open-source fonts (Liberation, DejaVu, Noto) by default.
-
-**Consequences:** On Linux, FFmpeg exits with "No such file or directory: Impact" or silently renders with a different font.
-
-**Prevention:**
-- Use `#[cfg(target_os = "linux")]` to select a different font.
-- Or probe font availability at runtime and fall back.
-- Implemented in v1.3: `#[cfg]` blocks select the right font constant per platform.
-
-**Detection:** Run `contentops overlay` on a fresh Linux machine.
-
-**Phase:** Platform-Portable Code (Phase 13). Fixed in v1.3.
-
-**Confidence:** HIGH — directly verified in v1.3 implementation.
-
----
-
-### Pitfall 11: GitHub Actions Cache Invalidates on Rust Toolchain Update
-
-**What goes wrong:** The Rust toolchain updates frequently. If the cache key only uses `Cargo.lock`, it won't invalidate when the toolchain version changes. Cached compilation artifacts from an old toolchain can cause spurious build failures or incorrect behavior when the toolchain updates.
-
-**Why it happens:** Cargo's artifact format is not guaranteed to be forward-compatible across toolchain versions. Using cached `.d` files and `.rlib` files from a different rustc version can produce link errors.
-
-**Consequences:** CI fails on toolchain updates with opaque errors. The fix (clearing cache) is non-obvious.
-
-**Prevention:**
-- Include the Rust toolchain version in the cache key: `${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-${{ steps.toolchain.outputs.rustc_hash }}`.
-- Or simply accept occasional cache misses by using `restore-keys` as fallback.
-
-**Detection:** Update the Rust toolchain version and observe whether CI builds correctly on cached runs.
-
-**Phase:** CI/CD (Phase 9).
-
-**Confidence:** MEDIUM — common pattern in GitHub Actions Rust CI.
-
----
-
-### Pitfall 12: Universal Binary `lipo` Step Fails if Architecture Builds Run in Parallel
-
-**What goes wrong:** The macOS `lipo` step that combines ARM64 and Intel binaries into a universal binary fails if either architecture binary is not present (e.g., one build job failed silently, or artifacts were not downloaded correctly).
-
-**Why it happens:** GitHub Actions matrix jobs run in parallel. If the ARM64 or Intel job fails but is configured as `continue-on-error`, the `lipo` job still runs but receives only one binary. `lipo -create` with one input just copies the file; the output appears valid but is not universal.
-
-**Consequences:** A "universal" binary is published that is actually single-architecture. Homebrew silently installs the wrong architecture for half of users.
-
-**Prevention:**
-- Do not use `continue-on-error` on architecture build jobs.
-- Add a verification step after `lipo`: run `lipo -info ./contentops-universal` and verify the output contains both `x86_64` and `arm64`.
-- Fail the release job if verification fails.
-
-**Detection:** Run `lipo -info` on any published universal binary before releasing.
-
-**Phase:** CI/CD (Phase 9), Release (Phase 14 for multi-platform).
-
-**Confidence:** HIGH — documented release workflow risk.
-
----
-
-### Pitfall 13: Homebrew Formula SHA256 Mismatch After Re-Release
-
-**What goes wrong:** If a GitHub Release is edited (assets deleted and re-uploaded), the SHA256 of the new asset differs from what was originally computed and stored in the Homebrew formula. Users see `sha256 mismatch` errors on `brew upgrade`.
-
-**Why it happens:** GitHub generates new binary content even for identically-named assets. The formula's auto-update workflow captures the SHA256 at release time; re-uploaded assets have different hashes.
-
-**Consequences:** Homebrew install fails for all users until the formula is manually corrected.
-
-**Prevention:**
-- Never delete and re-upload release assets. Create a new patch release instead.
-- The release workflow should be treated as immutable once published.
-
-**Detection:** Check `brew audit --formula contentops` after any release correction.
-
-**Phase:** GitHub Actions Auto-Update (Phase 11).
-
-**Confidence:** HIGH — fundamental constraint of Homebrew formula versioning.
-
----
-
-## Critical Pitfalls — v1.1 Domain (Audit, Doctor, Pipeline, CI)
-
-### Pitfall 14: Typed Error Variants Can't Be Added Without Touching All Match Arms
-
-**What goes wrong:** When adding a new `AppError` variant, the compiler forces you to update every `match` statement that covers `AppError`. This is good for exhaustiveness, but it means adding one variant requires touching many files simultaneously.
-
-**Why it happens:** Rust's exhaustive pattern matching is a feature, not a bug. But when the error enum grows across multiple milestones, it creates merge conflicts if multiple people work on it simultaneously.
-
-**Consequences:** Large diffs when adding error variants. In a solo project, this is manageable. In a team, it creates merge conflicts.
-
-**Prevention:**
-- Keep `AppError` variants coarse-grained (one per subcommand/domain, not one per error case).
-- Use `#[non_exhaustive]` if you expect to add variants frequently.
-
-**Detection:** Count the number of match arms touching `AppError` before adding a new variant.
-
-**Phase:** Audit & Cleanup (Phase 6).
-
-**Confidence:** HIGH — standard Rust enum exhaustiveness constraint.
-
----
-
-### Pitfall 15: Doctor Subcommand Checks the Wrong Binary
-
-**What goes wrong:** `contentops doctor` checks whether `ffmpeg` is on `PATH`, but when users install FFmpeg via a non-standard path (e.g., `/opt/homebrew/bin/ffmpeg` vs `/usr/local/bin/ffmpeg`), the check passes but the actual `cut` command fails because `cut` uses a hardcoded path.
-
-**Why it happens:** The doctor check and the actual invocation must resolve binaries the same way. If doctor uses `which ffmpeg` and cut uses `Command::new("ffmpeg")`, they agree on PATH resolution. But if cut ever uses an absolute path, they diverge.
-
-**Consequences:** `doctor` reports green, but `cut` fails. Users are confused.
-
-**Prevention:**
-- Always use `Command::new("ffmpeg")` (PATH-relative) for both the doctor check and the actual invocations.
-- Doctor should check using the same resolution mechanism as the actual commands.
-
-**Detection:** Set `PATH` to a custom location with FFmpeg and run both `doctor` and `cut`.
-
-**Phase:** Doctor Subcommand (Phase 7).
-
-**Confidence:** HIGH — design constraint verified in v1.1.
-
----
-
-### Pitfall 16: Pipeline Subcommand Shares TempFileRegistry Incorrectly
-
-**What goes wrong:** If `pipeline` creates a new `TempFileRegistry` per sub-step instead of passing a shared registry, temp files from intermediate steps (e.g., the `cut` output used as `caption` input) are deleted before the next step runs.
-
-**Why it happens:** Each subcommand's `run()` function creates its own `TempFileRegistry` with `Drop` cleanup. If `pipeline` calls `cut::run()` and `caption::run()` as separate function calls without sharing state, the temp files from `cut` are deleted when `cut::run()` returns.
-
-**Consequences:** Caption fails with "file not found" on the intermediate cut video.
-
-**Prevention:**
-- Pass a shared `TempFileRegistry` into each subcommand's `run()` function.
-- Or structure pipeline to use named intermediate files that live until pipeline completion.
-
-**Detection:** Run `contentops pipeline` and verify the intermediate files exist during the caption step.
-
-**Phase:** Pipeline Subcommand (Phase 8).
-
-**Confidence:** HIGH — directly verified in v1.1 implementation.
-
----
-
-### Pitfall 17: cargo-audit Blocks CI on Every New Advisory
-
-**What goes wrong:** `cargo audit` exits non-zero when any advisory is published for any dependency, including transitive ones. A new advisory for a dep you don't control (e.g., a patch to `libc` or `ring`) breaks CI immediately.
-
-**Why it happens:** cargo-audit treats all advisories as errors by default. Security advisories are published continuously.
-
-**Consequences:** CI breaks on an unrelated dependency update. The fix is often "bump a dep" but cargo update might not immediately pull in the fix if the fix isn't yet released.
-
-**Prevention:**
-- Use `cargo audit --ignore RUSTSEC-XXXX-XXXX` for advisories you've triaged and accepted.
-- Or configure `.cargo/audit.toml` with `[advisories] ignore = [...]`.
-- Consider whether cargo-audit should be a hard gate vs. a warning-only check.
-
-**Detection:** Watch for CI failures not caused by your code changes. Check `cargo audit` output for advisory IDs.
-
-**Phase:** CI/CD (Phase 9).
-
-**Confidence:** HIGH — common cargo-audit operational experience.
-
----
-
-### Pitfall 18: Release Workflow Triggers on Any Tag, Not Just Version Tags
-
-**What goes wrong:** If the `release.yml` GitHub Actions workflow triggers on `on: push: tags: ['*']`, pushing any tag (e.g., a date-based tag or a test tag) triggers a full release build and potentially publishes artifacts.
-
-**Why it happens:** Wildcards in tag filters match everything. It's easy to accidentally push a non-version tag.
-
-**Consequences:** Spurious releases appear in GitHub Releases. Homebrew auto-update triggers on every tag push.
-
-**Prevention:**
-- Use semantic version tags only: `tags: ['v[0-9]+.[0-9]+.[0-9]+']`.
-- Protect release tags with branch protection rules.
-
-**Detection:** Push a non-semver tag and observe whether the release workflow triggers.
-
-**Phase:** CI/CD (Phase 9).
-
-**Confidence:** HIGH — documented GitHub Actions tag filter behavior.
-
----
-
-### Pitfall 19: Cross-Platform CI Matrix Masks Platform-Specific Failures
-
-**What goes wrong:** When a CI matrix job fails on one platform (e.g., Windows), the overall CI check may appear to pass if the matrix is configured with `fail-fast: false` and the successful jobs are what the PR branch protection checks.
-
-**Why it happens:** GitHub PR status checks can be configured to require only the overall matrix check (pass if any job passes) rather than requiring all matrix entries to pass.
-
-**Consequences:** Windows-specific bugs ship undetected. Users file bugs; the Windows CI was never actually passing.
-
-**Prevention:**
-- Configure branch protection to require each matrix job individually, or use `fail-fast: true`.
-- Alternatively, add a synthetic "all-pass" job that depends on all matrix jobs with `needs: [job-matrix-ids]`.
-
-**Detection:** Deliberately break Windows-only code and verify CI fails on PRs.
-
-**Phase:** CI/CD (Phase 9).
-
-**Confidence:** MEDIUM — GitHub Actions matrix behavior depends on configuration.
-
----
-
-## Critical Pitfalls — v1.4 Domain (Silero VAD / ONNX Runtime)
-
-### Pitfall 20: ort `download` Strategy Fails in Sandboxed CI Environments
-
-**What goes wrong:** The `ort` crate's default `download` linking strategy downloads ONNX Runtime prebuilt binaries during `cargo build` via the build script (`build.rs`). This network call fails in sandboxed or network-restricted CI environments (restricted GitHub Actions runners, Nix builds, Docker with `--network=none`), producing a build error with no useful message about the root cause.
-
-**Why it happens:** Build scripts run during compilation and are permitted to access the network by default, but some CI configurations block external HTTP from build scripts. The crate downloads from Microsoft CDN URLs; any proxy or network restriction breaks this silently.
-
-**Consequences:** CI fails on every runner with an opaque network or I/O error from within the build script. Local builds work fine, CI does not.
+**Why it happens:**
+Interactive approval feels natural to add at the end of the Claude title generation step (overlay.rs line 99 region), right after `generate_title()` returns. But `pipeline.rs` passes through `finish_stages → overlay::run` without any TTY check. The prompt renders, gets no input, and hangs.
 
 **How to avoid:**
-- Do not rely on the `download` strategy in CI. Instead, pre-download ONNX Runtime binaries as a CI step before `cargo build`, then use the `system` strategy with `ORT_LIB_LOCATION` set.
-- Or use the `load-dynamic` feature with a pre-staged dylib, setting `ORT_DYLIB_PATH`.
-- For GitHub Actions, add a download step per platform before the cargo build step:
+Gate interactive prompts behind a TTY check before rendering. In Rust, use `atty::is(atty::Stream::Stdin)` or `std::io::IsTerminal::is_terminal(&std::io::stdin())` (stable since Rust 1.70). If not a TTY, skip approval and proceed with the first generated option. Document this behavior: `--approve` flag has no effect in non-interactive mode.
 
-```yaml
-- name: Download ONNX Runtime
-  run: |
-    ORT_VERSION="1.20.1"
-    # Linux x86_64 example:
-    curl -L "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz" -o ort.tgz
-    tar xzf ort.tgz
-    echo "ORT_DYLIB_PATH=$(pwd)/onnxruntime-linux-x64-${ORT_VERSION}/lib/libonnxruntime.so" >> $GITHUB_ENV
-```
+**Warning signs:**
+- Any `stdin().read_line()` call not wrapped in an `is_terminal()` check
+- `dialoguer::Select` or `dialoguer::Confirm` used without a TTY guard
+- Integration tests hang when piping stdin from `/dev/null`
 
-**Warning signs:** Build log contains "download" or "fetch" errors from within `build.rs`. The error message does not mention ONNX Runtime by name — it shows as a generic download failure.
-
-**Phase to address:** CI/CD update phase (first phase of v1.4).
-
-**Confidence:** HIGH — documented in [Bundling ONNX Runtime in Rust with Nix, Docker and GitHub Actions](https://blog.stark.pub/posts/bundling-onnxruntime-rust-nix/) and [ort linking docs](https://ort.pyke.io/setup/linking).
+**Phase to address:**
+Interactive approval phase — first thing verified before any other approval logic is wired up.
 
 ---
 
-### Pitfall 21: Windows DLL Version Conflict with System32 onnxruntime.dll
+### Pitfall 2: Safe Zone Margin Change Silently Breaks Existing Videos
 
-**What goes wrong:** Windows 11 ships with `onnxruntime.dll` in `C:\Windows\System32`. When the binary is executed, Windows' DLL search order finds the system copy first. The system copy is typically version 1.10.x; your binary was built against 1.20.x. The version mismatch causes a runtime assertion: "The given version [N] is not supported."
+**What goes wrong:**
+The ASS style in `generate_ass()` (caption.rs line 204) has `MarginV: 480` hardcoded. This is 480px from the bottom of the 1920px reference frame — about 25% up. TikTok's bottom UI overlay (like button, share, caption bar) covers roughly the bottom 20–25% (~384–480px). Changing `MarginV` to fix safe zone compliance changes the position of ALL subtitles retroactively on any video that re-runs the pipeline, silently producing different output from an identical command.
 
-**Why it happens:** Windows DLL search order: executable directory → system directories. If the correct version of `onnxruntime.dll` is not in the same directory as the binary, and the system has an older version, the wrong one loads.
-
-**Consequences:** The binary crashes at startup on Windows systems where ONNX Runtime is pre-installed (common on Windows 11 with WSL2 or ML tools).
+**Why it happens:**
+`MarginV` is set once in the style block and applies globally. Developers increasing it to 540–600 to clear the TikTok UI don't realize that the existing value was already the "intended" position for non-TikTok use, and that increasing it shifts text higher into the video frame where it may cover the subject's face.
 
 **How to avoid:**
-- Use the `load-dynamic` feature of `ort` instead of compile-time dynamic linking. With `load-dynamic`, `ort` uses `dlopen()`/`LoadLibrary()` and you control the exact path.
-- For distribution, bundle `onnxruntime.dll` alongside the binary in the same directory.
-- Or statically link ONNX Runtime to avoid DLL conflicts entirely (increases binary size by ~20-30MB).
-- The `copy-dylibs` feature helps during development (`cargo run`) but does not solve the deployment problem.
+Add a `--safe-zone` flag (default: off) that activates TikTok-compliant margins rather than changing the default. The flag computes safe margins from platform presets (TikTok 9:16 bottom UI = ~480px, top nav = ~120px). Keep the existing default unchanged so existing videos reproduce identically.
 
-**Warning signs:** Works in CI (where no system ONNX Runtime exists) but crashes on end-user Windows machines. Error message mentions "version" and "not supported."
+**Warning signs:**
+- PRs that change the numeric literal on caption.rs line 204 without a flag gate
+- Any change to `MarginV` in `generate_ass()` without a corresponding CLI flag
+- Test that diffs ASS output before/after: any change to the default style line is a regression
 
-**Phase to address:** Binary distribution phase (same phase as cross-platform release build).
-
-**Confidence:** HIGH — documented in [ort linking docs](https://ort.pyke.io/setup/linking) and [Microsoft ONNX Runtime issue #11799](https://github.com/microsoft/onnxruntime/issues/11799).
+**Phase to address:**
+Safe zone implementation phase — define the flag interface before touching any margin numbers.
 
 ---
 
-### Pitfall 22: macOS Universal Binary Cannot Use Dynamic ONNX Runtime
+### Pitfall 3: ASS MarginV Is Bottom Margin, Not Top Position
 
-**What goes wrong:** The current release workflow creates a universal macOS binary by running `lipo` to combine ARM64 and Intel binaries. If the binary dynamically links to `libonnxruntime.dylib`, the universal binary requires a universal `libonnxruntime.dylib` at runtime — which Microsoft does not distribute. They provide separate ARM64 and x86_64 dylibs.
+**What goes wrong:**
+ASS subtitle `Alignment: 2` (bottom-center) means `MarginV` is the distance from the **bottom** of the video frame. If you treat it as a top-Y coordinate and compute "I want subtitles at 1400px from top in a 1920px frame, so MarginV = 1400," you get subtitles 1400px from the bottom — completely off-screen above the video.
 
-**Why it happens:** A universal binary that dynamically loads a fat dylib requires the dylib to also be universal (contain both slices). Microsoft's prebuilt ONNX Runtime releases for macOS are single-architecture. Creating a universal dylib via `lipo` of two separate prebuilt dylibs is possible but adds significant CI complexity.
-
-**Consequences:** The universal binary works on ARM64 Macs (because the ARM64 dylib is found), fails on Intel Macs (dylib architecture mismatch), or fails on both if the dylib is not distributed alongside the binary.
+**Why it happens:**
+The ASS spec alignment numbering (numpad layout) is non-obvious. Alignment 2 = bottom-center. The `y_base` logic in `overlay.rs::build_title_filter()` uses a different coordinate system (drawtext `y=` is top-origin), which reinforces the confusion when developers work across both caption and overlay code in the same PR.
 
 **How to avoid:**
-- Use static linking for macOS: build ONNX Runtime as a static library for each architecture, link statically into each architecture binary, then `lipo` the resulting static-linked binaries together. This is the only clean path to a truly universal, self-contained macOS binary.
-- Alternatively, abandon the universal binary and distribute separate ARM64 and Intel binaries (the Homebrew formula already supports this via `on_arm`/`on_intel` DSL — use it).
-- Do not attempt to `lipo` two single-arch dynamic binaries that depend on different dylibs.
+Annotate the `MarginV` line with a comment: `// MarginV: pixels from BOTTOM of frame (Alignment=2, bottom-center)`. When computing safe zone values, work backward: `safe_margin_v = frame_height - tiktok_ui_height` is wrong; `safe_margin_v = tiktok_ui_top_zone_px` is correct.
 
-**Warning signs:** `lipo -info ./contentops-universal` shows both architectures, but the binary crashes on Intel Macs with a dylib load error. `otool -L ./contentops-universal` shows `libonnxruntime.dylib` as a dependency.
+**Warning signs:**
+- Subtitle text disappearing from the frame entirely after margin change
+- Safe zone calculation that references frame height minus a UI overlay height as the MarginV value
 
-**Phase to address:** The macOS build phase of v1.4. Decision needed before implementation: static link or drop universal binary.
-
-**Confidence:** HIGH — derived from [ONNX Runtime universal binary issue #12052](https://github.com/microsoft/onnxruntime/issues/12052) and macOS dynamic linking fundamentals. MEDIUM on exact behavior of lipo'd binaries with mismatched dylibs.
+**Phase to address:**
+Safe zone implementation phase — add the comment before computing any new values.
 
 ---
 
-### Pitfall 23: Silero VAD Model Version Mismatch (v4 vs v5 Chunk Size)
+### Pitfall 4: Multi-Option Claude Response Parsed as Single Title
 
-**What goes wrong:** Silero VAD v4 and v5 ONNX models are not interchangeable. V5 enforces a strict chunk size of exactly 512 samples at 16kHz (or 256 at 8kHz). V4 was more flexible. If code written for v4 (or a Rust crate targeting v4) is used with a v5 model file, inference fails silently or returns garbage probabilities.
+**What goes wrong:**
+The existing `generate_title()` in `overlay.rs` prompts Claude to return a single title (lines 38–43). If the new milestone asks Claude to return 3 options for user selection, the prompt and parser must both change atomically. If the prompt changes to request a numbered list but the parser still does `String::from_utf8_lossy(&output.stdout).trim().to_string()`, option 2 and 3 text gets used verbatim as the title, including the numbering ("2. THE HOOK\n3. ANOTHER HOOK").
 
-**Why it happens:** The ONNX model's input tensor shape is version-specific. V5's model expects a fixed `[1, 512]` input. Providing a different size causes the ONNX Runtime to reject the input or pad/truncate in ways the model wasn't designed for.
-
-**Consequences:** VAD detects either all-silence or all-speech across the entire audio. The output video is either empty (all cut) or uncut (no silence removed).
+**Why it happens:**
+The prompt and the parser are separate concerns written in different parts of the code. It's easy to update the prompt wording without updating the downstream parsing logic, especially if the code is refactored across a new function.
 
 **How to avoid:**
-- Pin the model version explicitly. If using `silero-vad-rs` or `silero-vad-rust`, check which model version the crate was built for and use only that model file.
-- For v5: chunk size must be exactly 512 samples at 16kHz. Never pass partial chunks — pad with zeros to exactly 512 samples.
-- Name model files explicitly: `silero_vad_v5.onnx` not `silero_vad.onnx` to avoid ambiguity.
-- Check the Rust crate's `Cargo.toml` or README for which model version it supports before downloading any model file.
+When changing to multi-option generation, define a structured response format first (e.g., newline-delimited, or JSON array). Write the parser before the prompt. Test with a mocked Claude response that includes numbering, preamble text ("Here are 3 options:"), trailing explanation — all of which Claude can produce even when instructed not to. The existing codebase already strips markdown fences (caption.rs lines 326–336) — replicate that defensive parsing for multi-option responses.
 
-**Warning signs:** VAD returns constant probability values (near 0.0 or near 1.0) across all chunks regardless of audio content. Input tensor shape errors in ONNX Runtime error output.
+**Warning signs:**
+- Numbering or bullet characters appearing in the final rendered title overlay
+- Empty first option when Claude returns "Here are your options:\n1. ..."
+- Title truncated at first newline when options are newline-separated
 
-**Phase to address:** Implementation phase (Silero VAD integration).
-
-**Confidence:** HIGH — documented v5 breaking changes in [Silero VAD v5 discussion #471](https://github.com/snakers4/silero-vad/discussions/471) and [version history wiki](https://github.com/snakers4/silero-vad/wiki/Version-history-and-Available-Models).
+**Phase to address:**
+Claude multi-option generation phase — write parser tests before wiring to real Claude.
 
 ---
 
-### Pitfall 24: Audio Format Mismatch — Wrong Sample Rate or Channel Count
+### Pitfall 5: Word-Count Mismatch Guard Breaks If Metadata Prompt Reuses fix_transcription
 
-**What goes wrong:** Silero VAD requires 16kHz mono f32 audio (normalized to [-1.0, 1.0]). Video files typically have 44.1kHz or 48kHz stereo audio in AAC or Opus format. Feeding raw audio bytes from the source video directly to VAD produces garbage predictions.
+**What goes wrong:**
+`fix_transcription()` (caption.rs lines 352–362) has a strict guard: if `corrected.len() != words.len()`, it silently falls back to original words. This is intentional for transcription fixing. If the metadata generation milestone reuses or extends `fix_transcription()` to also generate TikTok hashtags or descriptions inline (e.g., by appending metadata as extra fields), Claude's response will always have a different element count and the guard will silently discard all corrections.
 
-**Why it happens:** Audio format conversion is often treated as a detail rather than a prerequisite. The ONNX model does not error — it accepts any f32 array of the right chunk size. It simply produces wrong speech probabilities when the sample rate is wrong.
-
-**Consequences:** VAD detects no speech in a video containing clear speech, or detects speech in pure silence. The silence removal either cuts everything or cuts nothing.
+**Why it happens:**
+`fix_transcription` has a clean public API that developers may try to extend rather than duplicate. Adding a metadata field to the response object seems like a natural extension. But the word-count guard was designed for a contract where the array length is invariant.
 
 **How to avoid:**
-- Always decode to 16kHz mono f32 PCM before VAD inference. Use FFmpeg to extract audio:
-  ```bash
-  ffmpeg -i input.mp4 -ac 1 -ar 16000 -f f32le output.raw
-  ```
-- Verify the format before inference: assert `sample_rate == 16000` and `channels == 1`.
-- Do not rely on the ONNX model to reject wrong-format input — it won't.
+Keep metadata generation entirely separate from `fix_transcription`. New metadata goes into a dedicated function with its own Claude call and its own response parser. The word-count guard in `fix_transcription` is load-bearing correctness — do not modify it or add additional fields to the Word struct that get populated by Claude responses.
 
-**Warning signs:** VAD probability for all chunks is very low (< 0.1) even for clearly voiced audio. Or very high (> 0.9) for silent audio.
+**Warning signs:**
+- Any modification to `fix_transcription()` signature or its response parsing
+- Adding fields to the `Word` struct that are populated by LLM output
+- Log output showing "Warning: LLM returned N words, expected M" more frequently than before
 
-**Phase to address:** Implementation phase (audio decoding pipeline).
-
-**Confidence:** HIGH — confirmed by [Silero VAD FAQ](https://github.com/snakers4/silero-vad/wiki/FAQ) and official model requirements.
+**Phase to address:**
+Metadata generation phase — explicitly note in the phase plan that `fix_transcription` is off-limits.
 
 ---
 
-### Pitfall 25: Silero VAD State Not Reset Between Invocations
+### Pitfall 6: Sidecar JSON Path Collides With Existing caption Command Output
 
-**What goes wrong:** Silero VAD is a stateful RNN — it carries hidden state from chunk to chunk within a single audio stream. When processing multiple videos sequentially (e.g., in a batch), if the model's internal state is not reset between files, the model's perception of "is speech happening?" bleeds across file boundaries. The first few seconds of each subsequent file are mispredicted based on the previous file's end state.
+**What goes wrong:**
+`caption::run()` already writes a JSON sidecar at `{stem}_captioned.json` (caption.rs lines 622–629). If the new milestone writes a TikTok metadata sidecar using a similar path derivation, two different commands can write to the same path, silently overwriting each other. Specifically: running `contentops caption` on a file then `contentops pipeline` on the same file, or running `pipeline` twice, could produce a metadata JSON that overwrites the word-level transcript JSON or vice versa.
 
-**Why it happens:** The `VADIterator` and the underlying model session maintain LSTM hidden state. Developers initialize the model once and reuse it across files for performance, forgetting to call `reset_states()`.
-
-**Consequences:** The second video processed in a session shows incorrect VAD at the start. This is subtle because it only manifests when processing multiple videos in one process lifecycle. Single-video use (the current `contentops` design) is unaffected.
+**Why it happens:**
+`derive_caption_output()` (caption.rs line 68) is the shared path derivation function. Any new sidecar that uses the same stem + suffix pattern risks collision unless the suffix is explicitly unique. The pattern `{stem}_captioned.json` is used by both `caption` command and `pipeline`'s `finish_stages` (pipeline.rs line 284, `captioned.json` in temp dir). These happen to not collide today because pipeline uses a temp dir. A new metadata file using the same naming in the final output dir would collide with the caption command's output.
 
 **How to avoid:**
-- Even though contentops currently processes one video per invocation, the model initialization and reset pattern should be correct from the start.
-- Call `model.reset_states()` before processing each file.
-- Or re-initialize the model per file — slightly slower but avoids the state management concern.
+Use a distinct suffix for metadata sidecars: `{stem}_tiktok.json` or `{stem}_metadata.json`, never `{stem}_captioned.json`. Audit all sidecar writes before adding a new one to confirm there is no suffix overlap. Add the output path to the function's docstring once established.
 
-**Warning signs:** VAD predictions for the first few seconds of a file differ between single-run and sequential-run benchmarks.
+**Warning signs:**
+- New sidecar write using `derive_caption_output(&args.input, "captioned", "json")`
+- Any path computation that produces `{stem}_captioned.json` from a non-caption command
+- User reports that re-running pipeline overwrites their word-level transcript
 
-**Phase to address:** Implementation phase (Silero VAD integration).
-
-**Confidence:** HIGH — confirmed in [Silero VAD streaming documentation](https://github.com/snakers4/silero-vad/discussions/572) and silero-vad-rs docs.
+**Phase to address:**
+Metadata sidecar phase — define path convention as first task.
 
 ---
 
-### Pitfall 26: Binary Size Bloat From ort Default Features
+### Pitfall 7: Indicatif Spinner Corrupts Interactive Prompt Rendering
 
-**What goes wrong:** Adding `ort` to `Cargo.toml` with default features and static linking increases the binary size from ~5MB to 30-50MB depending on linking strategy and ONNX Runtime version. Users who previously installed a 5MB binary via Homebrew would need to download a 35MB binary.
+**What goes wrong:**
+`ui::make_spinner()` creates an `indicatif::ProgressBar` with `enable_steady_tick`. When an interactive prompt (dialoguer, raw stdin readline) is displayed while a spinner is active, the spinner's tick overwrites the prompt line at 80ms intervals. The user sees their cursor position jumping or the prompt disappearing as the spinner redraws. On some terminals, the prompt becomes unresponsive.
 
-**Why it happens:** ONNX Runtime is a large C++ library (~25MB static). Default ort features pull in training ops, model zoo fetchers, and RTTI support. Static linking embeds all of this in the Rust binary.
-
-**Consequences:** Homebrew tap download time increases 7x. Direct download install time increases 7x. CI artifact upload time increases.
-
-**How to avoid:**
-- Explicitly disable default features: `ort = { version = "2", default-features = false, features = ["load-dynamic"] }`.
-- Use the `load-dynamic` feature to keep ONNX Runtime as a separate dylib — the Rust binary itself stays small (~5-8MB), but the dylib must be distributed alongside it.
-- If static linking is chosen, use `minimal-build` feature on ort to strip unused ONNX Runtime components.
-- The Silero VAD model file itself is ~1.8MB (v5) — use `include_bytes!` for the model (acceptable size), but do not statically link ONNX Runtime.
-
-**Warning signs:** Release binary grows from ~5MB to >20MB after adding `ort`. `ls -lh target/release/contentops` shows unexpected size.
-
-**Phase to address:** Implementation phase (ort integration setup).
-
-**Confidence:** HIGH — confirmed by ort documentation on `minimal-build` and `default-features`. Binary size estimates are MEDIUM confidence (estimates based on typical ONNX Runtime static link sizes).
-
----
-
-### Pitfall 27: ort `load-dynamic` Requires dylib Present at Runtime — Distribution Problem
-
-**What goes wrong:** Using `load-dynamic` keeps the Rust binary small but requires `libonnxruntime.so`/`libonnxruntime.dylib`/`onnxruntime.dll` to be present on the user's system at runtime. If it's not found, the binary crashes with a cryptic `dlopen` error, not a helpful "install ONNX Runtime" message.
-
-**Why it happens:** `load-dynamic` defers the library load to runtime. If `ORT_DYLIB_PATH` is not set, `ort` searches in standard library paths, which will not contain ONNX Runtime on most systems.
-
-**Consequences:** End users get an unhelpful error about a missing `.so`/`.dylib`. The tool appeared to install correctly (the binary downloaded fine) but fails on first run.
+**Why it happens:**
+The existing spinner pattern in `fix_transcription()` and `generate_title()` is "start spinner, do work, finish spinner." Interactive approval adds a third state: "start spinner, generate options, finish spinner, then show prompt." If the spinner is not fully finished (not `finish_and_clear()`) before the prompt renders, the steady tick is still running.
 
 **How to avoid:**
-- If using `load-dynamic`, distribute the dylib alongside the binary in the release archive.
-- The release archive structure should be:
-  ```
-  contentops-linux-x86_64.tar.gz/
-    contentops          # the binary
-    lib/
-      libonnxruntime.so  # the dylib
-  ```
-- The binary finds the dylib via `ort::init_from("./lib/libonnxruntime.so").commit()` called at startup.
-- Update the Homebrew formula to include the dylib as a resource, or use the `keg_only` ONNX Runtime formula if one exists.
-- Update `contentops doctor` to check for ONNX Runtime availability and print a helpful error if absent.
+Always call `pb.finish_and_clear()` (not `finish_with_message()`) on any spinner before displaying an interactive prompt. Treat spinner completion and prompt display as a required sequence, not concurrent operations. Test by inserting an artificial sleep after `finish_and_clear()` and verifying the terminal is clean before the prompt appears.
 
-**Warning signs:** The binary works for developers (who have `ORT_DYLIB_PATH` set) but fails for users. Error message is `cannot open shared object file: No such file or directory` or `image not found`.
+**Warning signs:**
+- Prompt text flickering or disappearing immediately after appearing
+- User input echoed on wrong terminal line
+- Works fine in `--verbose` mode (no spinner) but breaks in normal mode
 
-**Phase to address:** Binary distribution phase and doctor subcommand update.
-
-**Confidence:** HIGH — standard dynamic library distribution problem. Specific distribution structure is a recommendation, not verified in contentops CI.
-
----
-
-### Pitfall 28: Linux musl Static Build Incompatible With ONNX Runtime
-
-**What goes wrong:** If you attempt to target `x86_64-unknown-linux-musl` (fully static Linux binary) while linking ONNX Runtime, the build fails. ONNX Runtime's C++ runtime and its dependencies (openmp, etc.) are not compatible with musl libc.
-
-**Why it happens:** The current contentops Linux builds target glibc (`x86_64-unknown-linux-gnu`). ONNX Runtime is built against glibc. Musl libc has different symbol names and ABI. ONNX Runtime does not provide musl builds.
-
-**Consequences:** If anyone attempts to port contentops to Alpine Linux or another musl-based system, the build fails at link time with undefined symbol errors.
-
-**How to avoid:**
-- Keep the Linux target as `x86_64-unknown-linux-gnu` (already the case).
-- Do not attempt musl builds for contentops once ONNX Runtime is added.
-- Document this limitation if Alpine/musl support is ever requested.
-
-**Warning signs:** "undefined reference to `__stack_chk_fail`" or similar musl/glibc ABI mismatch errors during link.
-
-**Phase to address:** CI build configuration phase.
-
-**Confidence:** HIGH — ONNX Runtime musl incompatibility is a known constraint.
-
----
-
-### Pitfall 29: ONNX Runtime Version Pinning Drift
-
-**What goes wrong:** The `ort` crate pins to a specific ONNX Runtime version. The bundled model and the crate's ONNX opset compatibility are linked. If you update the `ort` crate version, it may require a different ONNX Runtime version than what's pre-downloaded in CI. If you update the model file, it may use ONNX opsets not supported by the current `ort` version.
-
-**Why it happens:** ONNX Runtime has a strict C ABI version contract. The `ort` crate's version number tracks the ONNX Runtime version it was built for. Mismatches produce runtime panics or "unsupported opset" errors.
-
-**Consequences:** CI builds pass (they download the correct ONNX Runtime version), but if the downloaded artifact version and the crate's expected version diverge, runtime failures occur only during actual inference.
-
-**How to avoid:**
-- Pin all three versions together: `ort` crate version, ONNX Runtime dylib version, and model ONNX opset version.
-- Keep a comment in `Cargo.toml` documenting the expected ONNX Runtime version:
-  ```toml
-  # ort 2.0.0-rc.9 requires ONNX Runtime 1.20.x
-  ort = { version = "=2.0.0-rc.9", ... }
-  ```
-- Pin the ONNX Runtime download URL to an exact version in CI, not `latest`.
-- When upgrading, update all three simultaneously.
-
-**Warning signs:** Runtime panic in `ort::init()` with a version assertion message. Or "unsupported opset" from ONNX Runtime when loading the model.
-
-**Phase to address:** Implementation phase (ort integration setup).
-
-**Confidence:** HIGH — standard version pinning constraint for native library bindings.
+**Phase to address:**
+Interactive approval phase — tested before merging any prompt code.
 
 ---
 
@@ -654,13 +164,10 @@
 
 | Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
 |----------|-------------------|----------------|-----------------|
-| Dynamic ONNX Runtime linking | Smaller binary, faster CI | Dylib must be distributed alongside binary; Homebrew formula complexity | Only if binary size is a hard constraint |
-| Static ONNX Runtime linking | Single self-contained binary | ~25MB binary size increase | Acceptable for most CLI tools |
-| Bundle `silero_vad.onnx` via `include_bytes!` | No external model file | ~1.8MB binary size increase (acceptable); compile time increases | Always acceptable for small models |
-| Skip model version verification at startup | Simpler code | Cryptic failures if wrong model is used | Never; always verify model version |
-| Hardcode chunk size = 512 | Simple code | Breaks silently if model version changes to different chunk requirement | Only if model version is pinned |
-| Use `download` strategy in CI | Zero CI configuration | Fails in sandboxed runners, slow builds | Only in permissive CI (no sandbox) |
-| Single universal macOS binary | Simpler Homebrew formula | Cannot dynamically link ONNX Runtime; forces static link | Acceptable if static linking is chosen |
+| Hardcode safe zone margins as constants | Ship faster | Every new platform (YouTube Shorts, Instagram Reels) requires code change + rebuild | Never — use a `--platform` flag with presets |
+| Single Claude call for both fix + metadata | One fewer subprocess | Breaks word-count guard, forces complex response parsing | Never — keep them separate |
+| Skip TTY check on interactive prompts | Simpler code | CI/scripted use hangs indefinitely | Never |
+| Reuse `_captioned.json` suffix for metadata | Familiar naming | Silent overwrite of word-level transcript | Never |
 
 ---
 
@@ -668,45 +175,22 @@
 
 | Integration | Common Mistake | Correct Approach |
 |-------------|----------------|------------------|
-| ort + GitHub Actions | Using default `download` strategy, expecting network access in build script | Pre-download ONNX Runtime before `cargo build`, use `system` or `load-dynamic` strategy |
-| Silero VAD ONNX model | Using `silero_vad.onnx` (v4) with v5 chunk sizes | Match model file version to crate expectations; use explicitly versioned model files |
-| Audio decoding for VAD | Passing compressed audio bytes or wrong-rate PCM to VAD | Always FFmpeg-decode to 16kHz mono f32le PCM before inference |
-| Homebrew + dylib distribution | Formula installs binary but not the required dylib | Bundle dylib in the release archive; formula installs both |
-| Windows DLL search | Relying on PATH resolution for `onnxruntime.dll` | Place DLL next to binary, or use `load-dynamic` with explicit path |
-| Universal macOS binary + ONNX | `lipo`-ing dynamic-linked binaries from two architectures | Static link each architecture binary, then `lipo` the static-linked results |
-
----
-
-## Performance Traps
-
-| Trap | Symptoms | Prevention | When It Breaks |
-|------|----------|------------|----------------|
-| Reinitializing ONNX model per audio chunk | Processing is 10-100x slower than expected | Initialize once, reuse session across all chunks | Immediately on first use |
-| Full audio in memory for VAD | OOM on large video files | Stream audio in chunk-sized increments from FFmpeg stdout | Files > 1GB or long recordings |
-| Synchronous FFmpeg decode + VAD inference | No pipelining; wall time = decode time + inference time | Decode audio via FFmpeg, buffer chunks, run inference | Long videos (>30 minutes) |
+| Claude CLI multi-option | Asking for "a numbered list" — Claude adds preamble "Here are 3 options:" | Ask for bare newline-separated values; strip any non-option lines defensively |
+| Claude CLI multi-option | Parsing on `\n` split, getting empty strings from trailing newlines | `split('\n').filter(|s| !s.trim().is_empty())` |
+| ASS MarginV | Computing as distance from top (drawtext `y=` style) | MarginV for Alignment=2 is distance from bottom of frame |
+| dialoguer in pipeline | Using `dialoguer::Select` without TTY check | Wrap in `std::io::IsTerminal::is_terminal(&std::io::stdin())` guard |
+| Indicatif + dialoguer | Showing prompt while spinner is ticking | `pb.finish_and_clear()` before any prompt |
 
 ---
 
 ## "Looks Done But Isn't" Checklist
 
-- [ ] **ort linking:** Binary runs in CI but ships without ONNX Runtime dylib — verify `contentops --version` works on a clean machine with no dev tools installed.
-- [ ] **Model bundling:** Model file is included in `include_bytes!` but wrong version — verify with a known audio clip that VAD produces non-trivial predictions (not all 0.0 or all 1.0).
-- [ ] **Audio preprocessing:** VAD integration compiles and runs, but input audio was not resampled — verify with `ffprobe` that the audio fed to VAD is 16kHz mono.
-- [ ] **Windows distribution:** Binary builds and tests pass in CI, but `onnxruntime.dll` is not in the release zip — verify the release artifact structure includes the dylib.
-- [ ] **doctor subcommand:** Doctor does not check for ONNX Runtime — verify `contentops doctor` reports meaningful status about ONNX Runtime availability.
-- [ ] **Universal binary:** `lipo -info` shows both architectures, but Intel slice crashes at VAD inference — test on actual Intel Mac hardware, not just in CI.
-
----
-
-## Recovery Strategies
-
-| Pitfall | Recovery Cost | Recovery Steps |
-|---------|---------------|----------------|
-| Wrong ONNX Runtime version in release | MEDIUM | Patch release with correct dylib bundled; re-trigger Homebrew auto-update |
-| Universal binary incompatible with dynamic ONNX | HIGH | Switch to static linking (rebuilds all architecture binaries) or drop universal binary |
-| VAD model version mismatch in production | LOW | Replace model file, no code changes needed if API is stable |
-| CI fails due to ort download strategy | LOW | Add pre-download step to CI YAML, switch to `system` or `load-dynamic` |
-| Binary size 10x larger than expected | MEDIUM | Switch from static to `load-dynamic`, restructure release archive |
+- [ ] **Interactive approval:** Verify the flow works when `stdin` is `/dev/null` (pipe test: `contentops pipeline ... < /dev/null`)
+- [ ] **Safe zone:** Verify that running without `--safe-zone` produces byte-identical ASS output to the current codebase (regression test on the style line)
+- [ ] **Multi-option Claude:** Verify parser handles Claude prepending "Here are your options:" or numbering responses — test with a mocked stdout
+- [ ] **Metadata sidecar:** Verify running `contentops caption` and `contentops pipeline` on the same file does not produce a filename collision
+- [ ] **Spinner + prompt:** Verify in a real terminal (not test runner) that prompt is visible and accepts input without spinner interference
+- [ ] **word-count guard:** Verify `fix_transcription` still logs "Warning: LLM returned N words" for mismatches after any metadata changes nearby
 
 ---
 
@@ -714,32 +198,24 @@
 
 | Pitfall | Prevention Phase | Verification |
 |---------|------------------|--------------|
-| ort download strategy fails in CI | v1.4 CI update (first phase) | CI passes on all three platforms without network calls during build |
-| Windows DLL version conflict | v1.4 release/distribution phase | Install binary on fresh Windows 11 VM; run `contentops cut` |
-| macOS universal binary + dynamic ONNX | v1.4 macOS build design (pre-implementation decision) | `lipo -info` on built binary; test on Intel Mac |
-| Silero VAD model version mismatch | v1.4 implementation phase | Run VAD on known clip; verify speech probability range is non-trivial |
-| Audio format mismatch (wrong sample rate) | v1.4 implementation phase | Assert `sample_rate == 16000` in code; test with 48kHz input video |
-| VAD state not reset | v1.4 implementation phase | Process two files sequentially; verify predictions are independent |
-| Binary size bloat from ort | v1.4 implementation phase | Check `ls -lh target/release/contentops` before and after adding ort |
-| load-dynamic dylib missing at runtime | v1.4 distribution phase | Install via Homebrew on clean machine; verify binary runs |
-| Linux musl incompatibility | v1.4 CI config phase | Do not add musl target; document in CI comments |
-| ONNX Runtime version pinning drift | v1.4 implementation phase | Pin versions in `Cargo.toml` comments; update all three together |
+| Interactive prompt blocks headless pipeline | Interactive approval — first task | `contentops pipeline ... < /dev/null` completes without hanging |
+| Safe zone change breaks existing output | Safe zone implementation — flag interface first | `--no-safe-zone` (or absence of `--safe-zone`) produces byte-identical ASS style line |
+| ASS MarginV coordinate confusion | Safe zone implementation — annotate before changing values | Manual review of computed safe margin values against TikTok layout spec |
+| Multi-option Claude response parsing | Claude multi-option generation — write parser first | Unit test with mock Claude outputs including preamble and trailing whitespace |
+| Word-count guard broken by metadata changes | Metadata generation — keep separate from fix_transcription | `fix_transcription` unit tests still pass; word-count mismatch still warns correctly |
+| Sidecar path collision | Metadata sidecar — define path convention first | Running both `caption` and `pipeline` on same file produces distinct JSON files |
+| Spinner corrupts interactive prompt | Interactive approval — test in real terminal | Manual test: observe prompt renders cleanly after spinner clears |
 
 ---
 
 ## Sources
 
-- [ort linking documentation](https://ort.pyke.io/setup/linking) — MEDIUM confidence (official ort docs)
-- [Bundling ONNX Runtime in Rust with Nix, Docker and GitHub Actions](https://blog.stark.pub/posts/bundling-onnxruntime-rust-nix/) — MEDIUM confidence (verified external source)
-- [Silero VAD v5 release discussion #471](https://github.com/snakers4/silero-vad/discussions/471) — HIGH confidence (official maintainer announcement)
-- [Silero VAD version history wiki](https://github.com/snakers4/silero-vad/wiki/Version-history-and-Available-Models) — HIGH confidence (official project documentation)
-- [Silero VAD FAQ](https://github.com/snakers4/silero-vad/wiki/FAQ) — HIGH confidence (official project documentation)
-- [ONNX Runtime universal binary issue #12052](https://github.com/microsoft/onnxruntime/issues/12052) — MEDIUM confidence (GitHub issue, resolved workaround documented)
-- [Microsoft ONNX Runtime issue #11799 — Windows DLL conflict](https://github.com/microsoft/onnxruntime/issues/11799) — HIGH confidence (confirmed bug with documented workaround)
-- [silero-vad-rs docs.rs](https://docs.rs/silero-vad-rs/latest/silero_vad_rs/) — MEDIUM confidence (crate documentation, version-specific)
-- [ort crate GitHub (pykeio/ort)](https://github.com/pykeio/ort) — HIGH confidence (official source; current version v2.0.0-rc.11 as of 2026-01-07)
+- Direct codebase audit: `src/commands/caption.rs`, `src/commands/overlay.rs`, `src/commands/pipeline.rs`, `src/ui.rs`
+- ASS subtitle spec — Alignment numpad layout, MarginV semantics: [libass documentation](https://github.com/libass/libass)
+- Rust `IsTerminal` trait: stable since 1.70.0 — [std::io::IsTerminal](https://doc.rust-lang.org/std/io/trait.IsTerminal.html)
+- Indicatif + dialoguer interaction: known issue in indicatif issue tracker (concurrent steady tick and stdin read)
+- TikTok safe zone: community-reported bottom UI covers ~384–480px of 1920px frame (MEDIUM confidence — no official TikTok spec published)
 
 ---
-
-*Pitfalls research for: Rust CLI (contentops) — Silero VAD / ONNX Runtime integration (v1.4)*
-*Researched: 2026-02-24*
+*Pitfalls research for: TikTok metadata/safe zone milestone additions to contentops*
+*Researched: 2026-02-25*

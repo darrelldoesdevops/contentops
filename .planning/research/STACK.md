@@ -1,159 +1,255 @@
 # Stack Research
 
-**Domain:** Silero VAD integration into existing Rust CLI (contentops)
-**Researched:** 2026-02-24
-**Confidence:** HIGH (all crate versions verified against crates.io API and GitHub source)
+**Domain:** TikTok upload metadata generation + interactive title approval + safe zone compliance (Rust CLI addition)
+**Researched:** 2026-02-25
+**Confidence:** HIGH (crate versions verified via docs.rs; safe zone measurements triangulated from multiple sources; TikTok API schema from official developer docs)
+
+## New Capabilities Required
+
+This research covers additions only. Existing stack (clap 4.5, serde/serde_json 1.0, indicatif 0.18, owo-colors 4.2, thiserror 2.0, anyhow 1.0, voice_activity_detector 0.2.1, hound 3.5, tempfile 3.25) is validated and unchanged.
+
+---
 
 ## Recommended Stack
 
-### Core Addition: VAD Crate
+### Interactive Terminal Prompts
 
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| `voice_activity_detector` | 0.2.1 | Silero VAD inference in Rust | Bundles model via `include_bytes!` (no runtime download), ships Silero VAD V5, verified on Windows/macOS/Linux, 42K total downloads. Only crate of the three candidates that supports static binary distribution without a runtime dylib dependency |
+| `dialoguer` | 0.12.0 | Interactive Select, Input, Confirm prompts during pipeline | From the same `console-rs` family as `indicatif` (already in Cargo.toml). Designed to work alongside indicatif — no terminal state conflicts. Provides `Select` (arrow-key numbered list), `Input` (text editing with default), and `Confirm` (y/n) — exactly the three interaction patterns needed. 0.12.0 released October 14, 2025. |
 
-### ONNX Runtime (transitive, managed by voice_activity_detector)
+**Why not `inquire`:** inquire 0.7.x depends on `crossterm` which adds ~100KB to binary and introduces its own terminal backend. dialoguer shares the `console` crate already pulled in transitively by indicatif. No additional terminal backend conflict risk.
 
-| Technology | Version | Purpose | Notes |
-|------------|---------|---------|-------|
-| `ort` | =2.0.0-rc.10 (pinned exactly by voice_activity_detector) | ONNX Runtime Rust bindings | Wraps ONNX Runtime 1.22.0. Has prebuilt binaries for all four target platforms. Do NOT upgrade to rc.11 — it drops x86_64-apple-darwin from prebuilt support |
-| `ort-sys` | =2.0.0-rc.10 (transitive) | C FFI bindings layer | Pulled in automatically; no direct entry needed in contentops Cargo.toml |
+**Why not `cliclack`:** cliclack's visual style (box-drawing, multiline prompts) conflicts visually with indicatif spinners mid-pipeline. dialoguer integrates cleanly between spinner finish and next spinner start.
 
-### Audio Input (optional, already FFmpeg-produced)
+### No New Crates Required for Metadata Generation
 
-| Library | Version | Purpose | When to Use |
-|---------|---------|---------|-------------|
-| `hound` | 3.5.1 | WAV file reading for VAD input | Only needed if contentops reads the WAV file directly for VAD. If piping PCM bytes from FFmpeg stdout, hound is not required. hound is a dev-dependency of voice_activity_detector, not runtime |
+The sidecar metadata file (TikTok upload fields) is plain JSON. `serde` + `serde_json` (already in stack) handle it fully. No additional crate needed.
+
+### No New Crates Required for Safe Zone Compliance
+
+Safe zone enforcement is a constants + coordinate calculation problem. The existing ASS subtitle style in `caption.rs` hardcodes `MarginV: 480` — this needs to become a named constant. The overlay `build_title_filter` in `overlay.rs` hardcodes `y_base` via `scale()` — this stays as-is since the title overlay appears at the top (safe zone top is 130px, overlay starts at `scale(200, h)` = 200px on 1920h — already compliant). No new dependencies.
+
+---
 
 ## Cargo.toml Addition
 
 ```toml
 [dependencies]
-voice_activity_detector = "0.2.1"
-# Do NOT add ort directly — voice_activity_detector pins ort = "=2.0.0-rc.10" exactly.
-# Adding ort at a different version will cause Cargo resolver conflict.
+dialoguer = "0.12"
 ```
 
-If reading the WAV from disk (simplest approach given existing FFmpeg extraction):
+One line. dialoguer transitively pulls `console` which indicatif already uses — Cargo deduplicates automatically.
 
-```toml
-[dependencies]
-voice_activity_detector = "0.2.1"
-hound = "3.5.1"
+---
+
+## TikTok Metadata Sidecar: Schema
+
+The sidecar file written next to the output video is a JSON file (e.g., `video_pipeline.tiktok.json`). Fields sourced from TikTok Content Posting API (direct post reference, verified 2026-02-25):
+
+```json
+{
+  "title": "string, max 2200 UTF-16 rune characters; hashtags inline e.g. #fyp #dev",
+  "privacy_level": "PUBLIC_TO_EVERYONE | MUTUAL_FOLLOW_FRIENDS | FOLLOWER_OF_CREATOR | SELF_ONLY",
+  "disable_duet": false,
+  "disable_stitch": false,
+  "disable_comment": false,
+  "brand_content_toggle": false,
+  "brand_organic_toggle": false
+}
 ```
 
-## Audio Format Requirements
+The `title` field holds both caption text and hashtags — TikTok has no separate description field. Hashtags are embedded inline (`#example`) delimited by spaces or newlines. Character limit is 2200 UTF-16 runes (not bytes), which is generous for auto-generated content.
 
-| Parameter | Required Value | contentops Status |
-|-----------|---------------|-------------------|
-| Sample rate | 16 kHz (or 8 kHz) | Already produced at 16 kHz by FFmpeg for Whisper — no change needed |
-| Channels | Mono (1 channel) | Already extracted mono via FFmpeg `-ac 1` — no change needed |
-| Encoding | LPCM i16, i8, u8, u16, or f32 | hound decodes WAV to i16 by default — compatible |
-| Chunk size | 512 samples at 16 kHz (= 32ms) | Enforced by Silero VAD V5 model; voice_activity_detector pads/truncates automatically |
-
-The existing FFmpeg extraction pass for Whisper (`-ar 16000 -ac 1`) produces a file that is directly valid VAD input. No additional FFmpeg pass is required.
-
-## Model Bundling Approach
-
-**Use `include_bytes!` — handled entirely by voice_activity_detector.**
-
-The Silero VAD V5 ONNX model is embedded in the `voice_activity_detector` crate source at `src/silero_vad.onnx` via:
+**Serde struct for this:**
 
 ```rust
-// inside voice_activity_detector/src/vad.rs
-const MODEL: &[u8] = include_bytes!("silero_vad.onnx");
-
-static DEFAULT_SESSION: LazyLock<Arc<Mutex<Session>>> = LazyLock::new(|| {
-    Arc::new(Mutex::new(
-        Session::builder()
-            .unwrap()
-            .commit_from_memory(MODEL)
-            .unwrap()
-    ))
-});
+#[derive(Serialize, Deserialize)]
+pub struct TikTokMetadata {
+    pub title: String,
+    pub privacy_level: String,
+    pub disable_duet: bool,
+    pub disable_stitch: bool,
+    pub disable_comment: bool,
+    pub brand_content_toggle: bool,
+    pub brand_organic_toggle: bool,
+}
 ```
 
-Implications for contentops:
-- No `build.rs` modifications needed
-- No model file path to manage at runtime
-- Binary size increase: ~2MB (the ONNX model, embedded at link time)
-- Identical behavior on all platforms — the model is baked into the binary
+Uses existing `serde` + `serde_json` — no new dependencies.
 
-## Cross-Platform Prebuilt Binary Support (ort 2.0.0-rc.10)
+---
 
-ort's `download-binaries` feature (enabled by default) downloads prebuilt ONNX Runtime 1.22.0 binaries at build time from `cdn.pyke.io`. All four contentops CI targets are covered:
+## TikTok Safe Zone: Pixel Constants (1080x1920)
 
-| Target Triple | ort rc.10 Support | Source |
-|--------------|-------------------|--------|
-| `aarch64-apple-darwin` (macOS ARM64) | YES | `ms@1.22.0/aarch64-apple-darwin.tgz` |
-| `x86_64-apple-darwin` (macOS Intel) | YES | `ms@1.22.0/x86_64-apple-darwin.tgz` |
-| `x86_64-pc-windows-msvc` (Windows) | YES | `ms@1.22.0/x86_64-pc-windows-msvc.tgz` |
-| `x86_64-unknown-linux-gnu` (Linux) | YES | `ms@1.22.0/x86_64-unknown-linux-gnu.tgz` |
+Verified across TikAdSuite official spec guide, orsonlord.com overlay guide, and multiple safe zone checkers (2025-2026 sources). Measurements are for the standard in-feed TikTok format.
 
-Verified directly from `github.com/pykeio/ort/blob/v2.0.0-rc.10/ort-sys/dist.txt`.
+| Zone | Blocked By | Pixel Measurement | Safe Content Boundary |
+|------|-----------|-------------------|----------------------|
+| Top | Username, search bar | 130px from top | Content starts at Y=130 |
+| Bottom (standard) | Caption bar, audio disc, like/comment/share stack bottom | 350px from bottom | Content ends at Y=1570 (1920-350) |
+| Bottom (shopping ads) | CTA button added | 450px from bottom | Content ends at Y=1470 |
+| Right | Like, comment, share, follow icons | 64px from right (primary) / 120px conservative | Content ends at X=960-1016 |
+| Left | No UI elements | 0px (36px aesthetic margin recommended) | Content starts at X=36 |
 
-**Note:** ort 2.0.0-rc.11 (the current latest) removed `x86_64-apple-darwin` from its prebuilt list. This is why voice_activity_detector pins `=2.0.0-rc.10` exactly. Do not attempt to update ort independently.
+**Safe content rectangle for critical content (faces, subtitles, hooks):**
+- X: 36–960 (924px wide)
+- Y: 130–1570 (1440px tall)
 
-## CI/CD Impact
+### ASS Subtitle Positioning
 
-No new CI dependencies beyond internet access during the first `cargo build` per target.
+Current code writes `MarginV: 480` in the style definition (`caption.rs` line 204). This positions subtitle bottom edge 480px from the bottom of the 1920px frame — i.e., subtitles sit above Y=1440. This is inside the safe zone (350px bottom exclusion → bottom safe boundary is Y=1570; subtitle sits 90px above that). **Current value is already compliant — no change needed.**
 
-Add ort's binary cache directory to GitHub Actions cache:
+If subtitles are moved for aesthetic reasons, the minimum safe `MarginV` is `350` (bottom safe zone). Keep at `480` or above for comfortable clearance.
 
-```yaml
-- uses: actions/cache@v4
-  with:
-    path: |
-      ~/.cargo/registry
-      ~/.cargo/git
-      target
-      ~/.cache/ort        # ort prebuilt binary cache on Linux/macOS
-    key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+**Named constant to introduce:**
+
+```rust
+// In caption.rs or a new tiktok_safe.rs module
+pub const TIKTOK_MARGIN_V: u32 = 480;       // Bottom margin for subtitles (px at 1920h)
+pub const TIKTOK_TOP_EXCLUSION: u32 = 130;   // Top UI zone height (px)
+pub const TIKTOK_BOTTOM_EXCLUSION: u32 = 350; // Bottom UI zone height (px)
+pub const TIKTOK_RIGHT_EXCLUSION: u32 = 120;  // Right icon zone width (px, conservative)
 ```
 
-Windows caches `%LOCALAPPDATA%\pyke\ort` — handled by standard Cargo cache action configurations.
+### Overlay Title Positioning
 
-The ort binary download (~30MB compressed per platform) is a one-time cost per cache miss. No `apt-get install`, `brew install`, or `choco install` commands are required.
+Current `overlay.rs` uses `scale(200, video_height)` for the `top` position preset, which yields 200px Y offset on 1920h video — above 130px exclusion zone. Overlay appears at Y=200, well inside safe zone. **No change needed for compliance.**
+
+Bottom preset uses `scale(1400, video_height)` = 1400px from top = 520px from bottom of 1920h frame. This is above the 350px exclusion zone boundary (Y=1570). **Compliant.**
+
+Center preset uses `scale(760, video_height)`. **Compliant.**
+
+---
+
+## Claude CLI Prompt Pattern: Multiple Title Options
+
+The existing `generate_title()` in `overlay.rs` returns one title. To support interactive selection, the prompt must request N numbered options in a parseable format.
+
+**Recommended prompt pattern:**
+
+```
+Generate 5 short, punchy titles (3-8 words each) for this talking head video.
+Each title should be a hook that grabs attention.
+Split longer titles across 2-3 lines using actual newlines within the title.
+Keep each line to 2-4 words max.
+
+Return ONLY a numbered list in this exact format, nothing else:
+1. First title line one
+First title line two
+2. Second title
+3. Third title
+...
+
+Transcript: {transcript}
+```
+
+**Parse strategy:** Split output on lines matching `^\d+\.` to extract each option. Lines following a numbered line (until the next numbered line or EOF) are continuation lines of the same title (joined with `\n`).
+
+**Shell invocation pattern (same as existing):**
+
+```rust
+Command::new("claude")
+    .arg("-p")
+    .arg(&prompt)
+    .arg("--model")
+    .arg("haiku")
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    ...
+```
+
+**Interactive selection using dialoguer:**
+
+```rust
+use dialoguer::Select;
+
+let options: Vec<String> = parse_title_options(&raw_output); // returns Vec<String>
+let display: Vec<String> = options.iter()
+    .map(|t| t.replace('\n', " / "))  // flatten multiline for display
+    .collect();
+
+let selection = Select::new()
+    .with_prompt("Select a title (arrow keys, Enter to confirm)")
+    .items(&display)
+    .default(0)
+    .interact()?;
+
+let chosen = &options[selection];
+```
+
+`interact()` returns `usize` (zero-based index). The selected title (with embedded newlines preserved) is passed unchanged to `build_title_filter()` which already handles multi-line titles via `text.split('\n')`.
+
+**Edit option:** After selection, offer `Input::new().with_prompt("Edit title (or Enter to keep)").with_initial_text(chosen).interact_text()?` to allow manual refinement before burning.
+
+---
+
+## Supporting Libraries
+
+| Library | Version | Purpose | When to Use |
+|---------|---------|---------|-------------|
+| `dialoguer` | 0.12.0 | `Select` for numbered title choice, `Input` for optional edit, `Confirm` for y/n approval gates | All interactive prompt needs in this milestone |
+
+No other new libraries required.
+
+---
 
 ## Alternatives Considered
 
 | Recommended | Alternative | Why Not |
 |-------------|-------------|---------|
-| `voice_activity_detector` 0.2.1 | `silero-vad-rust` 6.2.1 | Requires `load-dynamic` ort feature — forces `libonnxruntime.dylib/.so/.dll` to ship alongside the binary at runtime. Incompatible with single-binary Homebrew distribution. Only 1.7K downloads total, published November 2025 |
-| `voice_activity_detector` 0.2.1 | `silero-vad-rs` 0.1.2 | Pins `ort = "=2.0.0-rc.9"` (one version older, rc.9 has different behavior), only 2.2K downloads, last updated April 2025. Also needs verification on x86_64-apple-darwin for rc.9 |
-| `include_bytes!` via voice_activity_detector | Download model at runtime | Runtime download fails in offline environments, adds startup latency, complicates distribution and error handling |
-| Single VAD crate dependency | Direct `ort` + manual model handling | voice_activity_detector handles model embedding, session lifecycle, chunk sizing, and the Sample trait conversion — saves substantial integration work |
+| `dialoguer` 0.12.0 | `inquire` 0.7.x | Pulls in `crossterm` (separate terminal backend from `console`); heavier dependency; overkill for Select + Input + Confirm |
+| `dialoguer` 0.12.0 | Raw `stdin` line reading | No arrow-key navigation, no default highlighting, poor UX for option selection |
+| `dialoguer` 0.12.0 | `cliclack` 0.3.x | Visual style (box-drawing chars, multiline prompt blocks) conflicts aesthetically with indicatif spinner output |
+| JSON sidecar file | TOML sidecar | TikTok API uses JSON natively; serde_json already in stack; no TOML benefits here |
+| Inline hashtags in `title` field | Separate `hashtags` array | TikTok's API has no separate hashtags field — they're embedded in `title` text per official API spec |
+
+---
 
 ## What NOT to Use
 
 | Avoid | Why | Use Instead |
 |-------|-----|-------------|
-| `ort` 2.0.0-rc.11 directly | Dropped x86_64-apple-darwin prebuilt binary — requires compiling ONNX Runtime from source for macOS Intel CI, which takes 20+ minutes and requires cmake | voice_activity_detector which pins ort 2.0.0-rc.10 |
-| `silero-vad-rust` 6.2.1 `load-dynamic` mode | Requires `ORT_DYLIB_PATH` env var at runtime; dylib must ship alongside binary — incompatible with Homebrew single-binary formula | `voice_activity_detector` with static `download-binaries` approach |
-| Manually calling ort with a model file path | Requires bundling/shipping the ONNX model separately from the binary | `voice_activity_detector` with `include_bytes!` embedded model |
+| `console` crate directly for prompts | dialoguer wraps console; writing raw escape codes for selection menus duplicates what dialoguer provides | `dialoguer` Select/Input |
+| `crossterm` | Already avoided by using console-rs family; adding crossterm creates two competing terminal backends | `dialoguer` which uses `console` |
+| `readline` / `rustyline` | GPL-adjacent license (rustyline is MIT but heavy); designed for persistent REPL history, not pipeline one-shot prompts | `dialoguer` Input |
+| `MarginV` below 350 in ASS style | Subtitles would overlap TikTok bottom UI zone (caption bar, audio disc, engagement buttons) | Keep `MarginV` >= 350; current value 480 is correct |
+| Separate `hashtags` JSON field in sidecar | TikTok API does not have a separate hashtags field — only `title` | Embed hashtags inline in `title` string |
 
-## Version Compatibility Matrix
+---
+
+## Integration Points with Existing Code
+
+| Existing Location | Change Needed | Details |
+|-------------------|--------------|---------|
+| `overlay.rs::generate_title()` | Modify prompt, add parse + Select loop | Change from single-title prompt to numbered list; add dialoguer Select after generation |
+| `overlay.rs::run()` | Add conditional interactive flow | When `--auto` used: generate → select → optionally edit → burn |
+| `pipeline.rs::finish_stages()` | Pass chosen title through | `finish_stages()` already accepts `text: Option<&str>`; no signature change needed |
+| `caption.rs::generate_ass()` | Add named constants | Replace hardcoded `480` with `TIKTOK_MARGIN_V` constant |
+| `pipeline.rs::finish_stages()` | Write tiktok sidecar | After overlay completes, serialize `TikTokMetadata` to `{stem}.tiktok.json` next to final output |
+| `cli.rs::PipelineArgs` | Add `--no-interactive` flag | For CI/non-TTY use; skips Select, takes first generated title |
+
+---
+
+## Version Compatibility
 
 | Package | Version | Compatible With | Notes |
 |---------|---------|-----------------|-------|
-| `voice_activity_detector` | 0.2.1 | `ort` =2.0.0-rc.10 | Uses exact version pin |
-| `ort` | 2.0.0-rc.10 | ONNX Runtime 1.22.0 | Prebuilt binary wraps ORT 1.22.0 |
-| `ort` | 2.0.0-rc.10 | Rust 1.81+ | contentops uses edition 2024, requires recent Rust; no conflict |
-| `ndarray` | 0.16.x | `ort` rc.10 | ort rc.10 requires `ndarray ^0.16`; voice_activity_detector uses 0.16.1; resolved by Cargo automatically |
-| Silero VAD V5 ONNX model | bundled | ORT 1.22.0 | Model is opset 15/16 compatible; embedded in voice_activity_detector 0.2.1 |
+| `dialoguer` | 0.12.0 | `indicatif` 0.18 | Same console-rs family; both use `console` crate; no conflict |
+| `dialoguer` | 0.12.0 | Rust edition 2024 | Verified: docs.rs build passes on nightly 1.91.0 (2025-08-22) |
+| `dialoguer` | 0.12.0 | `clap` 4.5 | No interaction; dialoguer runs after CLI args parsed |
+
+---
 
 ## Sources
 
-- crates.io API `/api/v1/crates/voice_activity_detector/0.2.1/dependencies` — exact ort pin `=2.0.0-rc.10`, ndarray 0.16.1 — HIGH confidence
-- crates.io API `/api/v1/crates/silero-vad-rs/0.1.2/dependencies` — ort pin `=2.0.0-rc.9` — HIGH confidence
-- crates.io API `/api/v1/crates/silero-vad-rust/6.2.1/dependencies` — ort features `["load-dynamic", "ndarray"]` confirmed — HIGH confidence
-- GitHub `nkeenan38/voice_activity_detector` `src/vad.rs` — `include_bytes!("silero_vad.onnx")` and `commit_from_memory(MODEL)` confirmed — HIGH confidence
-- GitHub `nkeenan38/voice_activity_detector` `src/sample.rs` — LPCM i8/i16/u8/u16/f32 via Sample trait confirmed — HIGH confidence
-- GitHub `nkeenan38/voice_activity_detector` README — 16 kHz / 512-sample window, mono-only, Windows/macOS/Linux verified — HIGH confidence
-- GitHub `pykeio/ort` `ort-sys/dist.txt` at tag `v2.0.0-rc.10` — all four target triples confirmed with x86_64-apple-darwin — HIGH confidence
-- GitHub `pykeio/ort` `ort-sys/build/download/dist.txt` at `main` (rc.11) — x86_64-apple-darwin absent, ORT 1.23.2 — HIGH confidence
-- crates.io API `/api/v1/crates/ort/2.0.0-rc.10` — Rust 1.81 minimum, ndarray ^0.16 — HIGH confidence
+- docs.rs/dialoguer/0.12.0 — version confirmed, Select/Input/Confirm/FuzzySelect/Editor/Sort feature list — HIGH confidence
+- github.com/console-rs/dialoguer — version 0.12.0 released October 14, 2025; indicatif listed as companion library — HIGH confidence
+- developers.tiktok.com/doc/content-posting-api-reference-direct-post — `title` field (2200 UTF-16 chars), `privacy_level` enum, no separate hashtags field — HIGH confidence
+- tikadsuite.com/blog/tiktok-ad-safe-zones — bottom 350px exclusion, top 130px, right 64px (primary) — HIGH confidence
+- orsonlord.com/articles/free-safe-zone-overlays-for-reels-tiktok-and-shorts — 840x1280px safe content area, 480px bottom, 120px sides — MEDIUM confidence (triangulated)
+- Multiple safe zone checkers (zeely.ai, kreatli.com, predis.ai) — consistent 130px top / 350px bottom measurements — MEDIUM confidence
 
 ---
-*Stack research for: Silero VAD integration into contentops Rust CLI*
-*Researched: 2026-02-24*
+*Stack research for: TikTok upload metadata generation, interactive title approval, safe zone compliance in contentops Rust CLI*
+*Researched: 2026-02-25*
