@@ -9,6 +9,7 @@ use crate::commands::cut::derive_output_path;
 use crate::error::{AppError, last_n_lines, require_claude, require_ffmpeg};
 use crate::ffmpeg;
 use crate::temp::{TempFileRegistry, make_temp_file};
+use crate::tiktok;
 use crate::ui;
 
 #[derive(Deserialize)]
@@ -148,6 +149,39 @@ fn scale_i32(value: i32, video_height: u32) -> i32 {
     (value as f64 * video_height as f64 / REF_HEIGHT + 0.5) as i32
 }
 
+fn wrap_title_lines(text: &str, font_size: u32, max_width: u32) -> Vec<String> {
+    let avg_char_px = font_size as f64 * 0.55;
+    let max_chars = (max_width as f64 / avg_char_px).floor() as usize;
+
+    let mut result = Vec::new();
+    for input_line in text.split('\n') {
+        let words: Vec<&str> = input_line.trim().split_whitespace().collect();
+        if words.is_empty() {
+            continue;
+        }
+        let mut current_line = String::new();
+
+        for word in words {
+            let candidate = if current_line.is_empty() {
+                word.to_string()
+            } else {
+                format!("{} {}", current_line, word)
+            };
+
+            if candidate.len() <= max_chars || current_line.is_empty() {
+                current_line = candidate;
+            } else {
+                result.push(current_line.clone());
+                current_line = word.to_string();
+            }
+        }
+        if !current_line.is_empty() {
+            result.push(current_line);
+        }
+    }
+    result
+}
+
 fn build_title_filter(text: &str, args: &OverlayArgs, video_height: u32) -> String {
     let t_start = args.start;
     let t_end = if args.duration > 0.0 {
@@ -178,12 +212,13 @@ fn build_title_filter(text: &str, args: &OverlayArgs, video_height: u32) -> Stri
         });
 
     let font_size = scale(args.font_size, video_height);
-    let final_x: i32 = scale_i32(30, video_height);
+    let final_x: i32 = scale_i32(80, video_height);
     let box_pad: u32 = scale(10, video_height);
     let accent_w: u32 = scale(8, video_height);
     let accent_x: i32 = final_x - accent_w as i32 - scale_i32(4, video_height);
 
-    let lines: Vec<&str> = text.split('\n').collect();
+    let wrapped = wrap_title_lines(text, font_size, tiktok::SAFE_WIDTH);
+    let lines: Vec<&str> = wrapped.iter().map(|s| s.as_str()).collect();
     let line_count = lines.len();
     let line_height = font_size + box_pad * 2 + scale(4, video_height);
 

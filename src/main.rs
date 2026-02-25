@@ -4,6 +4,7 @@ mod error;
 mod ffmpeg;
 pub mod silence;
 mod temp;
+mod tiktok;
 mod ui;
 mod vad;
 

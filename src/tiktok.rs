@@ -1,0 +1,7 @@
+pub const OUTPUT_WIDTH: u32 = 1080;
+pub const OUTPUT_HEIGHT: u32 = 1920;
+pub const SAFE_MARGIN_TOP: u32 = 130;
+pub const SAFE_MARGIN_BOTTOM: u32 = 480;
+pub const SAFE_MARGIN_LEFT: u32 = 60;
+pub const SAFE_MARGIN_RIGHT: u32 = 120;
+pub const SAFE_WIDTH: u32 = OUTPUT_WIDTH - SAFE_MARGIN_LEFT - SAFE_MARGIN_RIGHT;
