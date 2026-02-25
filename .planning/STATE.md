@@ -5,7 +5,7 @@
 See: .planning/PROJECT.md (updated 2026-02-25)
 
 **Core value:** Take a raw video file and remove dead air automatically
-**Current focus:** v1.5 Upload Ready -- Phase 21 (next)
+**Current focus:** v1.5 Upload Ready -- Phase 21 (context gathered, ready for planning)
 
 ## Current Position
 
