@@ -10,6 +10,7 @@ use crate::error::{
 };
 use crate::ffmpeg;
 use crate::temp::{TempFileRegistry, make_temp_file};
+use crate::tiktok;
 use crate::ui;
 
 #[derive(serde::Serialize, Deserialize, Clone)]
@@ -201,7 +202,12 @@ pub fn generate_ass(words: &[Word]) -> String {
     // V4+ Styles
     output.push_str("[V4+ Styles]\n");
     output.push_str("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n");
-    output.push_str("Style: Default,Arial,58,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,40,40,480,1\n");
+    output.push_str(&format!(
+        "Style: Default,Arial,58,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,{},{},{},1\n",
+        tiktok::SAFE_MARGIN_LEFT,
+        tiktok::SAFE_MARGIN_RIGHT,
+        tiktok::SAFE_MARGIN_BOTTOM,
+    ));
     output.push('\n');
 
     // Events

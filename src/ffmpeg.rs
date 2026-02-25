@@ -113,6 +113,32 @@ pub fn extract_16k_wav(input: &str, dest: &Path, verbose: bool) -> Result<(), st
     Ok(())
 }
 
+pub fn scale_to_tiktok(input: &str, output: &str, verbose: bool) -> Result<FfmpegOutput, std::io::Error> {
+    let vf = format!(
+        "scale={}:{}:force_original_aspect_ratio=increase,crop={}:{}",
+        crate::tiktok::OUTPUT_WIDTH,
+        crate::tiktok::OUTPUT_HEIGHT,
+        crate::tiktok::OUTPUT_WIDTH,
+        crate::tiktok::OUTPUT_HEIGHT,
+    );
+    let args = [
+        "-i", input,
+        "-vf", &vf,
+        "-c:v", "libx264",
+        "-crf", "14",
+        "-preset", "slow",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        output,
+    ];
+    if verbose {
+        eprintln!("Running: ffmpeg {}", args.join(" "));
+        run_ffmpeg_verbose(&args)
+    } else {
+        run_ffmpeg(&args)
+    }
+}
+
 pub fn probe_duration_strict(input: &str) -> Result<f64, std::io::Error> {
     let output = Command::new("ffprobe")
         .arg("-v")

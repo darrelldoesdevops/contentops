@@ -155,7 +155,7 @@ fn wrap_title_lines(text: &str, font_size: u32, max_width: u32) -> Vec<String> {
 
     let mut result = Vec::new();
     for input_line in text.split('\n') {
-        let words: Vec<&str> = input_line.trim().split_whitespace().collect();
+        let words: Vec<&str> = input_line.split_whitespace().collect();
         if words.is_empty() {
             continue;
         }

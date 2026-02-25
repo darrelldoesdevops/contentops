@@ -9,6 +9,7 @@ use crate::error::AppError;
 use crate::ffmpeg;
 use crate::silence;
 use crate::temp::{TempFileRegistry, make_temp_file};
+use crate::tiktok;
 use crate::vad;
 
 pub fn run(args: PipelineArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow::Result<()> {
@@ -30,15 +31,16 @@ pub fn run(args: PipelineArgs, verbose: bool, registry: &TempFileRegistry) -> an
             "plan:".bold(),
             args.input.display()
         );
-        eprintln!("  1. normalize  → Audio normalization (loudnorm)");
+        eprintln!("  1. scale      \u{2192} Scale to 1080x1920 (skip if already correct)");
+        eprintln!("  2. normalize  \u{2192} Audio normalization (loudnorm)");
         eprintln!(
-            "  2. transcribe → Whisper transcription (model: {})",
+            "  3. transcribe \u{2192} Whisper transcription (model: {})",
             args.model.display()
         );
-        eprintln!("  3. fix        → LLM transcription correction");
-        eprintln!("  4. cut        → VAD-based silence removal");
-        eprintln!("  5. caption    → Burn captions onto cut video");
-        eprintln!("  6. overlay    → Add title overlay");
+        eprintln!("  4. fix        \u{2192} LLM transcription correction");
+        eprintln!("  5. cut        \u{2192} VAD-based silence removal");
+        eprintln!("  6. caption    \u{2192} Burn captions onto cut video");
+        eprintln!("  7. overlay    \u{2192} Add title overlay");
         eprintln!();
         eprintln!("Output: {}", output.display());
         return Ok(());
@@ -96,10 +98,52 @@ fn run_stages(
 ) -> anyhow::Result<()> {
     let parent_dir = input.parent().unwrap_or(Path::new("."));
 
-    // Normalize audio FIRST so all downstream timestamps are on the same timeline
-    eprintln!("\n{}", "Stage 1/6: normalize".bold());
-    let normalized = normalize::normalize_to_temp(input, verbose, registry)?;
+    // Stage 1: Scale to TikTok resolution (skip if already 1080x1920)
+    let input_str_for_scale = input.to_string_lossy().to_string();
+    let dims = ffmpeg::probe_dimensions(&input_str_for_scale);
+    let scaled_input = if dims != Some((tiktok::OUTPUT_WIDTH, tiktok::OUTPUT_HEIGHT)) {
+        eprintln!("\n{}", "Stage 1/7: scale".bold());
+        let scaled_path = temp_dir.join("scaled.mp4");
+        let scaled_str = scaled_path.to_string_lossy().to_string();
+        let result = ffmpeg::scale_to_tiktok(&input_str_for_scale, &scaled_str, verbose);
+        match result {
+            Ok(ref o) if o.success => {
+                if let Some((w, h)) = dims {
+                    eprintln!("\u{2713} Scaled {}x{} -> 1080x1920", w, h);
+                } else {
+                    eprintln!("\u{2713} Scaled to 1080x1920");
+                }
+                scaled_path
+            }
+            Ok(o) => {
+                let truncated = crate::error::last_n_lines(&o.stderr, 20);
+                return Err(AppError::FfmpegFailed {
+                    stage: "scale".to_string(),
+                    code: o.exit_code.unwrap_or(-1),
+                    stderr: truncated,
+                }.into());
+            }
+            Err(io_err) => {
+                return Err(AppError::StageIo {
+                    stage: "scale".to_string(),
+                    source: io_err,
+                }.into());
+            }
+        }
+    } else {
+        eprintln!("\n{}", "Stage 1/7: scale (skipped, already 1080x1920)".bold());
+        input.to_path_buf()
+    };
+
+    // Stage 2: Normalize audio so all downstream timestamps are on the same timeline
+    eprintln!("\n{}", "Stage 2/7: normalize".bold());
+    let normalized = normalize::normalize_to_temp(&scaled_input, verbose, registry)?;
     let normalized_str = normalized.to_string_lossy().to_string();
+
+    // Clean up scaled temp file if it was created
+    if scaled_input != input {
+        let _ = std::fs::remove_file(&scaled_input);
+    }
 
     // Extract shared 16kHz WAV from NORMALIZED video (not original)
     // This ensures Whisper timestamps, VAD intervals, and concat filter
@@ -113,8 +157,8 @@ fn run_stages(
         source: e,
     })?;
 
-    // Stage 2: Transcribe normalized video (reuses shared WAV)
-    eprintln!("\n{}", "Stage 2/6: transcribe".bold());
+    // Stage 3: Transcribe normalized video (reuses shared WAV)
+    eprintln!("\n{}", "Stage 3/7: transcribe".bold());
     let mut words = caption::transcribe(input, model, "en", verbose, registry, Some(&wav_path))?;
 
     if words.is_empty() {
@@ -122,12 +166,12 @@ fn run_stages(
         return Ok(());
     }
 
-    // Stage 3: LLM fix
-    eprintln!("\n{}", "Stage 3/6: fix".bold());
+    // Stage 4: LLM fix
+    eprintln!("\n{}", "Stage 4/7: fix".bold());
     caption::fix_transcription(&mut words, verbose)?;
 
-    // Stage 4: VAD-based silence removal
-    eprintln!("\n{}", "Stage 4/6: cut".bold());
+    // Stage 5: VAD-based silence removal
+    eprintln!("\n{}", "Stage 5/7: cut".bold());
 
     let video_duration =
         ffmpeg::probe_duration_strict(&normalized_str).map_err(|e| AppError::StageIo {
@@ -291,8 +335,8 @@ fn finish_stages(
         source: e,
     })?;
 
-    // Stage 5: Burn captions onto cut video
-    eprintln!("\n{}", "Stage 5/6: caption".bold());
+    // Stage 6: Burn captions onto cut video
+    eprintln!("\n{}", "Stage 6/7: caption".bold());
     let captioned_video = temp_dir.join("captioned.mp4");
     caption::burn_captions(cut_video, words, &captioned_video, verbose, registry)?;
 
@@ -301,8 +345,8 @@ fn finish_stages(
         .unwrap_or_else(|_| "unknown size".to_string());
     eprintln!("\u{2713} Created captioned video ({})", cap_size);
 
-    // Stage 6: Overlay
-    eprintln!("\n{}", "Stage 6/6: overlay".bold());
+    // Stage 7: Overlay
+    eprintln!("\n{}", "Stage 7/7: overlay".bold());
     let (overlay_text, overlay_auto) = if let Some(t) = text {
         (Some(t.to_string()), None)
     } else {
