@@ -123,7 +123,8 @@ See: `.planning/milestones/v1.4-ROADMAP.md` for full details.
   1. After pipeline completes, a `{stem}_tiktok.json` file exists next to the output video
   2. The sidecar contains the approved title, a Claude-generated TikTok description, and hashtags
   3. The description is generated from the transcript and stays within TikTok's 4,000 character limit
-**Plans**: TBD
+**Plans**: 1 plan
+- [ ] 22-01-PLAN.md -- Add metadata generation and sidecar file writing to pipeline
 
 ## Progress
 
@@ -150,4 +151,4 @@ See: `.planning/milestones/v1.4-ROADMAP.md` for full details.
 | 19. Safe Zone Fixes | v1.5 | 0/TBD | Not started | - |
 | 20. Transcript Fix Hardening | 1/1 | Complete    | 2026-02-25 | - |
 | 21. Interactive Title Approval | v1.5 | 1/1 | Complete | 2026-02-25 |
-| 22. TikTok Metadata Generation | v1.5 | 0/TBD | Not started | - |
+| 22. TikTok Metadata Generation | v1.5 | 0/1 | Planned | - |
