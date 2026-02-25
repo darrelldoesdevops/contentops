@@ -147,6 +147,6 @@ See: `.planning/milestones/v1.4-ROADMAP.md` for full details.
 | 17. Core VAD Integration | v1.4 | 2/2 | Complete | 2026-02-24 |
 | 18. Tuning Flags & Cleanup | v1.4 | 2/2 | Complete | 2026-02-24 |
 | 19. Safe Zone Fixes | v1.5 | 0/TBD | Not started | - |
-| 20. Transcript Fix Hardening | 1/1 | Complete   | 2026-02-25 | - |
+| 20. Transcript Fix Hardening | 1/1 | Complete    | 2026-02-25 | - |
 | 21. Interactive Title Approval | v1.5 | 0/TBD | Not started | - |
 | 22. TikTok Metadata Generation | v1.5 | 0/TBD | Not started | - |
