@@ -19,8 +19,8 @@
 
 ### Metadata
 
-- [ ] **META-01**: Claude generates TikTok description from transcript after pipeline completes
-- [ ] **META-02**: Sidecar file written next to output video with title and description
+- [x] **META-01**: Claude generates TikTok description from transcript after pipeline completes
+- [x] **META-02**: Sidecar file written next to output video with title and description
 - [x] **META-03**: Transcript fix prompt enforces exact word count to prevent timing corruption
 
 ## v2 Requirements
@@ -49,8 +49,8 @@
 | TTL-01 | Phase 21 | Complete |
 | TTL-02 | Phase 21 | Complete |
 | TTL-03 | Phase 21 | Complete |
-| META-01 | Phase 22 | Pending |
-| META-02 | Phase 22 | Pending |
+| META-01 | Phase 22 | Complete |
+| META-02 | Phase 22 | Complete |
 | META-03 | Phase 20 | Complete |
 
 **Coverage:**

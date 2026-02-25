@@ -33,6 +33,7 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 - VAD doctor health check and dead amplitude code cleanup -- v1.4
 - Interactive transcript fix mismatch handling with dialoguer prompts and non-TTY hard fail -- v1.5
 - Interactive title approval with multi-option Claude generation, dialoguer selection, custom edit, and --no-interactive flag -- v1.5
+- TikTok metadata sidecar generation with Claude description and hashtags -- v1.5
 
 ### Active
 
@@ -110,6 +111,8 @@ CI/CD via GitHub Actions: fmt, clippy, test, audit on 4 platforms; five architec
 | Non-TTY hard fail on mismatch | CI/scripts must never silently corrupt; fail loud, not silent | Good |
 | Multi-option title with --- delimiter | Claude generates 3 options separated by ---; fallback to single if parsing yields <2 | Good |
 | Pipeline-controlled title approval | Pipeline calls approve_title() before overlay, passes result via text arg; clean separation of generation vs rendering | Good |
+| Non-critical metadata generation | Description failure warns, never fails pipeline; video is already produced | Good |
+| Single Claude call for description+hashtags | JSON response with both fields; reduces API calls and latency | Good |
 
 ---
-*Last updated: 2026-02-25 after Phase 21*
+*Last updated: 2026-02-25 after Phase 22*
