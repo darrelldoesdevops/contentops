@@ -31,6 +31,7 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 - Shared 16kHz WAV extraction for VAD and Whisper with normalize-first pipeline -- v1.4
 - --vad-threshold and --min-silence-ms tuning flags with 100ms speech padding -- v1.4
 - VAD doctor health check and dead amplitude code cleanup -- v1.4
+- Interactive transcript fix mismatch handling with dialoguer prompts and non-TTY hard fail -- v1.5
 
 ### Active
 
@@ -61,7 +62,7 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 ## Context
 
 Shipped v1.4 with ~3,273 LOC Rust.
-Tech stack: Rust (clap, serde, indicatif, owo-colors, thiserror, voice_activity_detector, hound), FFmpeg, whisper-cli.
+Tech stack: Rust (clap, serde, indicatif, owo-colors, thiserror, voice_activity_detector, hound, dialoguer), FFmpeg, whisper-cli.
 Five subcommands: `cut` (VAD silence removal + normalize), `caption` (generate + burn), `overlay` (title cards), `doctor` (prerequisite checks + VAD health), `pipeline` (one-command workflow).
 Platforms: macOS (ARM64 + Intel + universal), Linux (x86_64), Windows (x86_64).
 Distribution: Homebrew tap (`darrelldoesdevops/tap/contentops`) with auto-updating formula, plus direct download one-liners for all platforms.
@@ -104,6 +105,8 @@ CI/CD via GitHub Actions: fmt, clippy, test, audit on 4 platforms; five architec
 | Normalize-first pipeline | Ensures single audio timeline for VAD/Whisper/concat; prevents breath audio bleed | Good |
 | 100ms speech padding | VAD chunk boundaries lag actual speech onset; padding prevents clipping | Good |
 | Default 0.5/300ms tuning | Balanced threshold with 300ms min-silence; tuned on real talking-head video | Good |
+| dialoguer for interactive prompts | Shares console crate with indicatif; no terminal conflict vs inquire | Good |
+| Non-TTY hard fail on mismatch | CI/scripts must never silently corrupt; fail loud, not silent | Good |
 
 ---
-*Last updated: 2026-02-25 after v1.5 milestone started*
+*Last updated: 2026-02-25 after Phase 20*

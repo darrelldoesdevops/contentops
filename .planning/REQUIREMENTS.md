@@ -21,7 +21,7 @@
 
 - [ ] **META-01**: Claude generates TikTok description from transcript after pipeline completes
 - [ ] **META-02**: Sidecar file written next to output video with title and description
-- [ ] **META-03**: Transcript fix prompt enforces exact word count to prevent timing corruption
+- [x] **META-03**: Transcript fix prompt enforces exact word count to prevent timing corruption
 
 ## v2 Requirements
 
@@ -51,7 +51,7 @@
 | TTL-03 | Phase 21 | Pending |
 | META-01 | Phase 22 | Pending |
 | META-02 | Phase 22 | Pending |
-| META-03 | Phase 20 | Pending |
+| META-03 | Phase 20 | Complete |
 
 **Coverage:**
 - v1.5 requirements: 9 total
