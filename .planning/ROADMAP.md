@@ -100,7 +100,8 @@ See: `.planning/milestones/v1.4-ROADMAP.md` for full details.
 **Success Criteria** (what must be TRUE):
   1. When fix_transcription returns a different word count than the original, the original words are used and a warning is printed
   2. Caption timing never silently corrupts from a word count mismatch
-**Plans**: TBD
+**Plans**: 1 plan
+- [ ] 20-01-PLAN.md -- Harden fix_transcription with interactive mismatch handling, retry, and non-TTY hard fail
 
 ### Phase 21: Interactive Title Approval
 **Goal**: User selects and optionally edits a Claude-generated title before it burns into the overlay
