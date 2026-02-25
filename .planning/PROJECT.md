@@ -32,6 +32,7 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 - --vad-threshold and --min-silence-ms tuning flags with 100ms speech padding -- v1.4
 - VAD doctor health check and dead amplitude code cleanup -- v1.4
 - Interactive transcript fix mismatch handling with dialoguer prompts and non-TTY hard fail -- v1.5
+- Interactive title approval with multi-option Claude generation, dialoguer selection, custom edit, and --no-interactive flag -- v1.5
 
 ### Active
 
@@ -107,6 +108,8 @@ CI/CD via GitHub Actions: fmt, clippy, test, audit on 4 platforms; five architec
 | Default 0.5/300ms tuning | Balanced threshold with 300ms min-silence; tuned on real talking-head video | Good |
 | dialoguer for interactive prompts | Shares console crate with indicatif; no terminal conflict vs inquire | Good |
 | Non-TTY hard fail on mismatch | CI/scripts must never silently corrupt; fail loud, not silent | Good |
+| Multi-option title with --- delimiter | Claude generates 3 options separated by ---; fallback to single if parsing yields <2 | Good |
+| Pipeline-controlled title approval | Pipeline calls approve_title() before overlay, passes result via text arg; clean separation of generation vs rendering | Good |
 
 ---
-*Last updated: 2026-02-25 after Phase 20*
+*Last updated: 2026-02-25 after Phase 21*

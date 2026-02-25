@@ -13,9 +13,9 @@
 
 ### Title Approval
 
-- [ ] **TTL-01**: Pipeline presents 2-3 Claude-generated title options for user selection
-- [ ] **TTL-02**: User can edit selected title before it burns into overlay
-- [ ] **TTL-03**: Non-TTY environments skip approval and use first option automatically
+- [x] **TTL-01**: Pipeline presents 2-3 Claude-generated title options for user selection
+- [x] **TTL-02**: User can edit selected title before it burns into overlay
+- [x] **TTL-03**: Non-TTY environments skip approval and use first option automatically
 
 ### Metadata
 
@@ -46,9 +46,9 @@
 | SZ-01 | Phase 19 | Pending |
 | SZ-02 | Phase 19 | Pending |
 | SZ-03 | Phase 19 | Pending |
-| TTL-01 | Phase 21 | Pending |
-| TTL-02 | Phase 21 | Pending |
-| TTL-03 | Phase 21 | Pending |
+| TTL-01 | Phase 21 | Complete |
+| TTL-02 | Phase 21 | Complete |
+| TTL-03 | Phase 21 | Complete |
 | META-01 | Phase 22 | Pending |
 | META-02 | Phase 22 | Pending |
 | META-03 | Phase 20 | Complete |

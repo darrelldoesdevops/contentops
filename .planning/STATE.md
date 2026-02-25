@@ -5,22 +5,22 @@
 See: .planning/PROJECT.md (updated 2026-02-25)
 
 **Core value:** Take a raw video file and remove dead air automatically
-**Current focus:** v1.5 Upload Ready -- Phase 21 (context gathered, ready for planning)
+**Current focus:** v1.5 Upload Ready -- Phase 22 (next)
 
 ## Current Position
 
 Milestone: v1.5 Upload Ready
-Phase: 20 of 22 (Transcript Fix Hardening) -- COMPLETE
+Phase: 21 of 22 (Interactive Title Approval) -- COMPLETE
 Plan: 1 of 1 -- done
-Status: Phase 20 complete, ready for Phase 21
-Last activity: 2026-02-25 -- Phase 20 executed (1 plan: interactive mismatch handling + retry for fix_transcription)
+Status: Phase 21 complete, ready for Phase 22
+Last activity: 2026-02-25 -- Phase 21 executed (1 plan: multi-option title generation + interactive approval + pipeline integration)
 
-Progress: [████████████████████░░░░░░░░] 72% (20/22 phases complete across all milestones)
+Progress: [█████████████████████░░░░░░] 77% (21/22 phases complete across all milestones)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 29 (v1.0: 8, v1.1: 3+3 quick, v1.2: 3, v1.3: 3, v1.4: 5, v1.5: 3)
+- Total plans completed: 30 (v1.0: 8, v1.1: 3+3 quick, v1.2: 3, v1.3: 3, v1.4: 5, v1.5: 4)
 - Milestones shipped: 5 (v1.0, v1.1, v1.2, v1.3, v1.4)
 
 **By Milestone:**
@@ -44,6 +44,8 @@ Recent decisions for v1.5:
 - Minimal sidecar format (`title`, `description`, `hashtags[]`) -- not TikTok API-shaped; personal tool for copy-paste
 - Flag named `--no-interactive` (not `--no-approve`) -- maps to IsTerminal check, more general
 - Sidecar suffix `_tiktok.json` (not derived from `_captioned.json` stem) -- prevents path collision
+- Title options parsed from `---` delimiter; fallback to single option if <2 sections found
+- Pipeline handles title approval before overlay, passes approved title via `text` arg
 
 ### Pending Todos
 
@@ -51,10 +53,10 @@ None.
 
 ### Blockers/Concerns
 
-- Phase 21 (interactive approval): dialoguer + live indicatif spinners has known friction; write throwaway proof-of-concept verifying `finish_and_clear()` + `Select::new().interact()` sequencing in real terminal before wiring into pipeline.rs
+None.
 
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Phase 20 complete, ready for Phase 21
+Stopped at: Phase 21 complete, ready for Phase 22
 Resume file: None
