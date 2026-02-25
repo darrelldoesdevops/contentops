@@ -7,9 +7,9 @@
 
 ### Safe Zones
 
-- [ ] **SZ-01**: Title overlay stays within TikTok safe area (top/bottom/side margins)
-- [ ] **SZ-02**: ASS subtitle margins respect TikTok right-side icon column
-- [ ] **SZ-03**: Long overlay titles clamp width to avoid overflow into icon area
+- [x] **SZ-01**: Title overlay stays within TikTok safe area (top/bottom/side margins)
+- [x] **SZ-02**: ASS subtitle margins respect TikTok right-side icon column
+- [x] **SZ-03**: Long overlay titles clamp width to avoid overflow into icon area
 
 ### Title Approval
 
@@ -43,9 +43,9 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SZ-01 | Phase 19 | Pending |
-| SZ-02 | Phase 19 | Pending |
-| SZ-03 | Phase 19 | Pending |
+| SZ-01 | Phase 19 | Complete |
+| SZ-02 | Phase 19 | Complete |
+| SZ-03 | Phase 19 | Complete |
 | TTL-01 | Phase 21 | Complete |
 | TTL-02 | Phase 21 | Complete |
 | TTL-03 | Phase 21 | Complete |
