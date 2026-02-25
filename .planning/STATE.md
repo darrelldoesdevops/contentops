@@ -5,15 +5,17 @@
 See: .planning/PROJECT.md (updated 2026-02-25)
 
 **Core value:** Take a raw video file and remove dead air automatically
-**Current focus:** v1.5 Upload Ready -- defining requirements
+**Current focus:** v1.5 Upload Ready -- Phase 19: Safe Zone Fixes
 
 ## Current Position
 
 Milestone: v1.5 Upload Ready
-Phase: Not started (defining requirements)
-Plan: --
-Status: Defining requirements
-Last activity: 2026-02-25 -- Milestone v1.5 started
+Phase: 19 of 22 (Safe Zone Fixes)
+Plan: -- of -- (not yet planned)
+Status: Ready to plan
+Last activity: 2026-02-25 -- v1.5 roadmap created, phases 19-22 defined
+
+Progress: [██████████████████░░░░░░░░░░] 64% (18/22 phases complete across all milestones)
 
 ## Performance Metrics
 
@@ -37,16 +39,22 @@ Last activity: 2026-02-25 -- Milestone v1.5 started
 
 All decisions logged in PROJECT.md Key Decisions table.
 
+Recent decisions for v1.5:
+- Use `dialoguer` 0.12 (not `inquire`) -- shares `console` crate with indicatif, no terminal conflict
+- Minimal sidecar format (`title`, `description`, `hashtags[]`) -- not TikTok API-shaped; personal tool for copy-paste
+- Flag named `--no-interactive` (not `--no-approve`) -- maps to IsTerminal check, more general
+- Sidecar suffix `_tiktok.json` (not derived from `_captioned.json` stem) -- prevents path collision
+
 ### Pending Todos
 
 None.
 
 ### Blockers/Concerns
 
-None.
+- Phase 21 (interactive approval): dialoguer + live indicatif spinners has known friction; write throwaway proof-of-concept verifying `finish_and_clear()` + `Select::new().interact()` sequencing in real terminal before wiring into pipeline.rs
 
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: v1.5 milestone started, defining requirements
+Stopped at: v1.5 roadmap created, ready to plan Phase 19
 Resume file: None

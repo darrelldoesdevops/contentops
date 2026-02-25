@@ -43,21 +43,21 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SZ-01 | - | Pending |
-| SZ-02 | - | Pending |
-| SZ-03 | - | Pending |
-| TTL-01 | - | Pending |
-| TTL-02 | - | Pending |
-| TTL-03 | - | Pending |
-| META-01 | - | Pending |
-| META-02 | - | Pending |
-| META-03 | - | Pending |
+| SZ-01 | Phase 19 | Pending |
+| SZ-02 | Phase 19 | Pending |
+| SZ-03 | Phase 19 | Pending |
+| TTL-01 | Phase 21 | Pending |
+| TTL-02 | Phase 21 | Pending |
+| TTL-03 | Phase 21 | Pending |
+| META-01 | Phase 22 | Pending |
+| META-02 | Phase 22 | Pending |
+| META-03 | Phase 20 | Pending |
 
 **Coverage:**
 - v1.5 requirements: 9 total
-- Mapped to phases: 0
-- Unmapped: 9
+- Mapped to phases: 9
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-25*
-*Last updated: 2026-02-25 after initial definition*
+*Last updated: 2026-02-25 after roadmap creation (phases 19-22)*

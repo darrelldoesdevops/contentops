@@ -7,6 +7,7 @@
 - **v1.2 Distribution & Docs** -- Phases 10-12 (shipped 2026-02-21)
 - **v1.3 Cross-Platform** -- Phases 13-15 (shipped 2026-02-23)
 - **v1.4 Silero VAD** -- Phases 16-18 (shipped 2026-02-25)
+- **v1.5 Upload Ready** -- Phases 19-22 (in progress)
 
 ## Phases
 
@@ -68,6 +69,58 @@ See: `.planning/milestones/v1.4-ROADMAP.md` for full details.
 
 </details>
 
+### v1.5 Upload Ready (In Progress)
+
+**Milestone Goal:** Pipeline outputs everything needed to upload a TikTok -- approved title overlay, auto-generated description, sidecar file with copy-paste metadata.
+
+- [ ] **Phase 19: Safe Zone Fixes** - Correct overlay and subtitle margins so video elements stay within TikTok's safe area
+- [ ] **Phase 20: Transcript Fix Hardening** - Guard caption timing against word count corruption from fix_transcription
+- [ ] **Phase 21: Interactive Title Approval** - Present Claude-generated title options to the user before burning overlay
+- [ ] **Phase 22: TikTok Metadata Generation** - Generate description and write sidecar file next to output video
+
+## Phase Details
+
+### Phase 19: Safe Zone Fixes
+**Goal**: Video text elements stay within TikTok's visible safe area on all devices
+**Depends on**: Phase 18 (v1.4 complete)
+**Requirements**: SZ-01, SZ-02, SZ-03
+**Success Criteria** (what must be TRUE):
+  1. Title overlay text does not overlap TikTok's right-side icon column (profile, like, comment, share)
+  2. ASS subtitle text does not extend into the right icon column
+  3. Long overlay titles that would overflow are clamped to stay within safe width
+  4. Named constants in code document the safe zone dimensions for future changes
+**Plans**: TBD
+
+### Phase 20: Transcript Fix Hardening
+**Goal**: Caption timing is protected against word count drift when fix_transcription rewrites words
+**Depends on**: Phase 19
+**Requirements**: META-03
+**Success Criteria** (what must be TRUE):
+  1. When fix_transcription returns a different word count than the original, the original words are used and a warning is printed
+  2. Caption timing never silently corrupts from a word count mismatch
+**Plans**: TBD
+
+### Phase 21: Interactive Title Approval
+**Goal**: User selects and optionally edits a Claude-generated title before it burns into the overlay
+**Depends on**: Phase 20
+**Requirements**: TTL-01, TTL-02, TTL-03
+**Success Criteria** (what must be TRUE):
+  1. During pipeline execution, the user sees 2-3 Claude-generated title options and can pick one with arrow keys
+  2. After picking a title, the user can type a custom edit before the overlay encodes
+  3. Running pipeline in a non-TTY environment (CI, script) auto-selects the first title without prompting
+  4. The spinner clears before the prompt renders and the prompt is not corrupted by indicatif output
+**Plans**: TBD
+
+### Phase 22: TikTok Metadata Generation
+**Goal**: Pipeline writes a sidecar file with copy-paste-ready title and description next to the output video
+**Depends on**: Phase 21
+**Requirements**: META-01, META-02
+**Success Criteria** (what must be TRUE):
+  1. After pipeline completes, a `{stem}_tiktok.json` file exists next to the output video
+  2. The sidecar contains the approved title, a Claude-generated TikTok description, and hashtags
+  3. The description is generated from the transcript and stays within TikTok's 4,000 character limit
+**Plans**: TBD
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -90,3 +143,7 @@ See: `.planning/milestones/v1.4-ROADMAP.md` for full details.
 | 16. Build & CI Verification | v1.4 | 1/1 | Complete | 2026-02-24 |
 | 17. Core VAD Integration | v1.4 | 2/2 | Complete | 2026-02-24 |
 | 18. Tuning Flags & Cleanup | v1.4 | 2/2 | Complete | 2026-02-24 |
+| 19. Safe Zone Fixes | v1.5 | 0/TBD | Not started | - |
+| 20. Transcript Fix Hardening | v1.5 | 0/TBD | Not started | - |
+| 21. Interactive Title Approval | v1.5 | 0/TBD | Not started | - |
+| 22. TikTok Metadata Generation | v1.5 | 0/TBD | Not started | - |
