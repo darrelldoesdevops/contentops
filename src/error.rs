@@ -78,6 +78,9 @@ pub enum AppError {
 
     #[error("ffmpeg was built without libass (no 'ass' filter)")]
     LibassNotFound,
+
+    #[error("transcript fix word count mismatch: expected {expected} words, got {actual}")]
+    TranscriptMismatch { expected: usize, actual: usize },
 }
 
 pub fn require_ffmpeg() -> Result<PathBuf, AppError> {
@@ -251,6 +254,14 @@ pub fn format_error(err: &AppError) -> String {
                 "error:".red().bold(),
                 "hint".bold(),
                 reinstall_hint
+            )
+        }
+        AppError::TranscriptMismatch { expected, actual } => {
+            format!(
+                "{} transcript fix returned {} words, expected {} \u{2014} cannot continue in non-interactive mode",
+                "error:".red().bold(),
+                actual,
+                expected
             )
         }
     }
