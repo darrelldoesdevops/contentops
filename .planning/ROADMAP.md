@@ -89,7 +89,9 @@ See: `.planning/milestones/v1.4-ROADMAP.md` for full details.
   2. ASS subtitle text does not extend into the right icon column
   3. Long overlay titles that would overflow are clamped to stay within safe width
   4. Named constants in code document the safe zone dimensions for future changes
-**Plans**: TBD
+**Plans**: 2 plans
+- [ ] 19-01-PLAN.md -- Create tiktok.rs constants, fix overlay left position, add title word wrapping
+- [ ] 19-02-PLAN.md -- Fix ASS subtitle MarginR, add scale-to-fill pipeline stage
 
 ### Phase 20: Transcript Fix Hardening
 **Goal**: Caption timing is protected against word count drift when fix_transcription rewrites words
