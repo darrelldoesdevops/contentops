@@ -312,14 +312,20 @@ fn invoke_claude_fix(
     let words_json = serde_json::to_string_pretty(words).unwrap_or_default();
 
     let mut prompt = format!(
-        "This is speech-to-text output as JSON. Each object has word, start, end (seconds).\n\
+        "This is speech-to-text output as JSON with {} entries. Each object has word, start, end (seconds).\n\
          Fix transcription errors: misspellings, words that don't fit context, \
-         phonetic mishearings (e.g. \"suit\" \u{2192} \"soon\", \"school\" \u{2192} \"skool\" if that's a brand/community name).\n\
-         Use surrounding words and timing to infer what was actually said.\n\
-         Return the SAME JSON array structure with ONLY the \"word\" fields corrected.\n\
-         Do NOT change start/end times. Do NOT add or remove entries.\n\
-         Do NOT add punctuation or change capitalization.\n\
-         Return raw JSON only, no markdown fences.\n\n{}",
+         phonetic mishearings (e.g. \"suit\" \u{2192} \"soon\").\n\
+         IMPORTANT: The speaker has a Skool community (skool.com). When you hear \"school\" or similar, \
+         it likely refers to \"Skool\" — do NOT change it to \"discord\" or other platforms.\n\
+         Use surrounding words and timing to infer what was actually said.\n\n\
+         RULES (your output will be programmatically validated and REJECTED if any rule is broken):\n\
+         - Return EXACTLY {} JSON entries — not one more, not one fewer\n\
+         - ONLY change \"word\" fields — do NOT touch start/end times\n\
+         - Do NOT merge, split, add, or remove entries\n\
+         - Do NOT add punctuation or change capitalization\n\
+         - Return raw JSON array only, no markdown fences\n\n{}",
+        words.len(),
+        words.len(),
         words_json
     );
 
