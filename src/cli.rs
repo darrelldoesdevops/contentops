@@ -126,6 +126,10 @@ pub struct OverlayArgs {
     /// How long overlay is visible (seconds, 0 = entire video)
     #[arg(long, default_value = "3.5")]
     pub duration: f64,
+
+    /// Skip interactive prompts (auto-select defaults)
+    #[arg(long)]
+    pub no_interactive: bool,
 }
 
 #[derive(Args)]
@@ -160,6 +164,10 @@ pub struct PipelineArgs {
     /// Preview planned stages without executing
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Skip interactive prompts (auto-select defaults)
+    #[arg(long)]
+    pub no_interactive: bool,
 }
 
 fn parse_vad_threshold(s: &str) -> Result<f32, String> {

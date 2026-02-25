@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -17,7 +18,20 @@ struct TranscriptWord {
     word: String,
 }
 
-fn generate_title(transcript_path: &Path, verbose: bool) -> anyhow::Result<String> {
+fn parse_title_options(response: &str) -> Vec<String> {
+    let options: Vec<String> = response
+        .split("---")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if options.len() < 2 {
+        vec![response.trim().to_string()]
+    } else {
+        options
+    }
+}
+
+pub fn generate_title_options(transcript_path: &Path, verbose: bool) -> anyhow::Result<Vec<String>> {
     let json_content = std::fs::read_to_string(transcript_path).map_err(|e| AppError::StageIo {
         stage: "read-transcription".to_string(),
         source: e,
@@ -36,17 +50,18 @@ fn generate_title(transcript_path: &Path, verbose: bool) -> anyhow::Result<Strin
         .join(" ");
 
     let prompt = format!(
-        "Generate a short, punchy title (3-8 words, max 3 lines) for this talking head video. \
-         The title should be a hook that grabs attention. \
-         Split across 2-3 lines for visual impact (use newlines). \
+        "Generate exactly 3 different short, punchy title options (3-8 words each, max 3 lines each) for this talking head video. \
+         Each title should be a hook that grabs attention. \
+         Split each title across 2-3 lines for visual impact (use newlines within each title). \
          Keep each line to 2-4 words max. \
-         Return ONLY the title text with newlines, nothing else. No quotes, no explanation.\n\n\
+         Separate each title option with --- on its own line. \
+         Return ONLY the title options separated by ---, nothing else. No quotes, no explanation, no numbering.\n\n\
          Transcript: {}",
         transcript
     );
 
     let spinner = if !verbose {
-        Some(ui::make_spinner("Generating title with Claude..."))
+        Some(ui::make_spinner("Generating title options with Claude..."))
     } else {
         eprintln!("Running: claude -p <prompt> --model haiku");
         None
@@ -83,8 +98,8 @@ fn generate_title(transcript_path: &Path, verbose: bool) -> anyhow::Result<Strin
         .into());
     }
 
-    let title = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if title.is_empty() {
+    let response = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if response.is_empty() {
         if let Some(pb) = spinner {
             pb.finish_and_clear();
         }
@@ -97,10 +112,55 @@ fn generate_title(transcript_path: &Path, verbose: bool) -> anyhow::Result<Strin
     }
 
     if let Some(pb) = spinner {
-        pb.finish_with_message("Title generated");
+        pb.finish_with_message("Title options generated");
     }
 
-    Ok(title)
+    Ok(parse_title_options(&response))
+}
+
+pub fn approve_title(options: &[String], no_interactive: bool, _verbose: bool) -> anyhow::Result<String> {
+    if options.is_empty() {
+        return Err(AppError::ClaudeFailed {
+            stage: "title-approval".into(),
+            code: 0,
+            stderr: "no title options to approve".into(),
+        }
+        .into());
+    }
+
+    if no_interactive || !std::io::stdin().is_terminal() {
+        let first = &options[0];
+        eprintln!("Auto-selected title: \"{}\"", first.replace('\n', " / "));
+        return Ok(first.clone());
+    }
+
+    let mut items: Vec<String> = options
+        .iter()
+        .enumerate()
+        .map(|(i, opt)| {
+            let preview = opt.replace('\n', " / ");
+            format!("{}. {}", i + 1, preview)
+        })
+        .collect();
+    items.push("Custom...".to_string());
+
+    let selection = dialoguer::Select::new()
+        .with_prompt("Select a title")
+        .items(&items)
+        .default(0)
+        .interact()?;
+
+    let chosen = if selection < options.len() {
+        options[selection].clone()
+    } else {
+        let custom: String = dialoguer::Input::new()
+            .with_prompt("Enter custom title")
+            .interact_text()?;
+        custom
+    };
+
+    eprintln!("\u{2713} Title: \"{}\"", chosen.replace('\n', " / "));
+    Ok(chosen)
 }
 
 fn escape_drawtext(text: &str) -> String {
@@ -282,9 +342,8 @@ pub fn run(args: OverlayArgs, verbose: bool, registry: &TempFileRegistry) -> any
         if !transcript_path.exists() {
             return Err(AppError::InputNotFound(transcript_path.clone()).into());
         }
-        let title = generate_title(transcript_path, verbose)?;
-        eprintln!("\u{2713} Generated title: \"{}\"", title);
-        title
+        let options = generate_title_options(transcript_path, verbose)?;
+        approve_title(&options, args.no_interactive, verbose)?
     } else {
         args.text.clone().unwrap_or_default()
     };
@@ -440,5 +499,32 @@ mod tests {
         // 30 chars including spaces — should wrap at ~22
         assert!(lines.len() >= 1);
         assert!(lines.len() <= 2, "expected 1-2 lines at font_size=72, got: {:?}", lines);
+    }
+
+    #[test]
+    fn parse_title_options_three_options() {
+        let response = "STOP DOING\nTHIS NOW\n---\nYOU NEED TO\nHEAR THIS\n---\nTHE TRUTH\nABOUT DEVOPS";
+        let options = parse_title_options(response);
+        assert_eq!(options.len(), 3);
+        assert!(options[0].contains("STOP DOING"));
+        assert!(options[1].contains("YOU NEED TO"));
+        assert!(options[2].contains("THE TRUTH"));
+    }
+
+    #[test]
+    fn parse_title_options_no_delimiter() {
+        let response = "STOP DOING\nTHIS NOW";
+        let options = parse_title_options(response);
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0], "STOP DOING\nTHIS NOW");
+    }
+
+    #[test]
+    fn parse_title_options_empty_sections() {
+        let response = "---\nTITLE ONE\n---\n---\nTITLE TWO\n---";
+        let options = parse_title_options(response);
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0], "TITLE ONE");
+        assert_eq!(options[1], "TITLE TWO");
     }
 }

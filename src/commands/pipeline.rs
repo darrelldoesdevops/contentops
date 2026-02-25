@@ -364,6 +364,7 @@ fn finish_stages(
             position: "top".to_string(),
             start: 0.3,
             duration: 3.5,
+            no_interactive: false,
         },
         verbose,
         registry,
