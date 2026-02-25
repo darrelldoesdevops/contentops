@@ -30,14 +30,15 @@ pub fn run(args: PipelineArgs, verbose: bool, registry: &TempFileRegistry) -> an
             "plan:".bold(),
             args.input.display()
         );
+        eprintln!("  1. normalize  → Audio normalization (loudnorm)");
         eprintln!(
-            "  1. transcribe → Whisper transcription (model: {})",
+            "  2. transcribe → Whisper transcription (model: {})",
             args.model.display()
         );
-        eprintln!("  2. fix        → LLM transcription correction");
-        eprintln!("  3. cut        → Normalize + VAD-based silence removal");
-        eprintln!("  4. caption    → Burn captions onto cut video");
-        eprintln!("  5. overlay    → Add title overlay");
+        eprintln!("  3. fix        → LLM transcription correction");
+        eprintln!("  4. cut        → VAD-based silence removal");
+        eprintln!("  5. caption    → Burn captions onto cut video");
+        eprintln!("  6. overlay    → Add title overlay");
         eprintln!();
         eprintln!("Output: {}", output.display());
         return Ok(());
@@ -93,21 +94,27 @@ fn run_stages(
     verbose: bool,
     registry: &TempFileRegistry,
 ) -> anyhow::Result<()> {
-    let input_str = input.to_string_lossy().to_string();
     let parent_dir = input.parent().unwrap_or(Path::new("."));
 
-    // Extract shared 16kHz WAV before Stage 1 (reused by Whisper + VAD)
+    // Normalize audio FIRST so all downstream timestamps are on the same timeline
+    eprintln!("\n{}", "Stage 1/6: normalize".bold());
+    let normalized = normalize::normalize_to_temp(input, verbose, registry)?;
+    let normalized_str = normalized.to_string_lossy().to_string();
+
+    // Extract shared 16kHz WAV from NORMALIZED video (not original)
+    // This ensures Whisper timestamps, VAD intervals, and concat filter
+    // all operate on the same audio timeline
     let wav_temp = make_temp_file(parent_dir, ".wav")?;
     let wav_path = wav_temp.path().to_path_buf();
     registry.register(wav_path.clone());
 
-    ffmpeg::extract_16k_wav(&input_str, &wav_path, verbose).map_err(|e| AppError::StageIo {
+    ffmpeg::extract_16k_wav(&normalized_str, &wav_path, verbose).map_err(|e| AppError::StageIo {
         stage: "wav-extraction".to_string(),
         source: e,
     })?;
 
-    // Stage 1: Transcribe original video (reuses shared WAV)
-    eprintln!("\n{}", "Stage 1/5: transcribe".bold());
+    // Stage 2: Transcribe normalized video (reuses shared WAV)
+    eprintln!("\n{}", "Stage 2/6: transcribe".bold());
     let mut words = caption::transcribe(input, model, "en", verbose, registry, Some(&wav_path))?;
 
     if words.is_empty() {
@@ -115,16 +122,12 @@ fn run_stages(
         return Ok(());
     }
 
-    // Stage 2: LLM fix
-    eprintln!("\n{}", "Stage 2/5: fix".bold());
+    // Stage 3: LLM fix
+    eprintln!("\n{}", "Stage 3/6: fix".bold());
     caption::fix_transcription(&mut words, verbose)?;
 
-    // Stage 3: VAD-based silence removal
-    eprintln!("\n{}", "Stage 3/5: cut".bold());
-
-    // 3a: Normalize audio
-    let normalized = normalize::normalize_to_temp(input, verbose, registry)?;
-    let normalized_str = normalized.to_string_lossy().to_string();
+    // Stage 4: VAD-based silence removal
+    eprintln!("\n{}", "Stage 4/6: cut".bold());
 
     let video_duration =
         ffmpeg::probe_duration_strict(&normalized_str).map_err(|e| AppError::StageIo {
@@ -132,7 +135,7 @@ fn run_stages(
             source: e,
         })?;
 
-    // 3b: Run VAD on shared WAV
+    // Run VAD on shared WAV (same timeline as normalized video)
     let speeches = vad::run_vad(&wav_path, video_duration, vad_threshold, min_silence_ms)?;
 
     // Clean up shared WAV (no longer needed)
@@ -252,6 +255,8 @@ fn run_stages(
         .map(|(start, end, word)| caption::Word { word, start, end })
         .collect();
 
+
+
     finish_stages(
         temp_dir,
         &cut_output,
@@ -286,8 +291,8 @@ fn finish_stages(
         source: e,
     })?;
 
-    // Stage 4: Burn captions onto cut video
-    eprintln!("\n{}", "Stage 4/5: caption".bold());
+    // Stage 5: Burn captions onto cut video
+    eprintln!("\n{}", "Stage 5/6: caption".bold());
     let captioned_video = temp_dir.join("captioned.mp4");
     caption::burn_captions(cut_video, words, &captioned_video, verbose, registry)?;
 
@@ -296,8 +301,8 @@ fn finish_stages(
         .unwrap_or_else(|_| "unknown size".to_string());
     eprintln!("\u{2713} Created captioned video ({})", cap_size);
 
-    // Stage 5: Overlay
-    eprintln!("\n{}", "Stage 5/5: overlay".bold());
+    // Stage 6: Overlay
+    eprintln!("\n{}", "Stage 6/6: overlay".bold());
     let (overlay_text, overlay_auto) = if let Some(t) = text {
         (Some(t.to_string()), None)
     } else {

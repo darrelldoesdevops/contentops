@@ -211,13 +211,24 @@ pub fn generate_ass(words: &[Word]) -> String {
     );
 
     let groups = group_words_for_ass(words);
-    for group in &groups {
+    for (group_idx, group) in groups.iter().enumerate() {
+        let next_group_start = if group_idx + 1 < groups.len() {
+            Some(groups[group_idx + 1].words[0].start)
+        } else {
+            None
+        };
+
         for (active_idx, _) in group.words.iter().enumerate() {
             let start = format_ass_time(group.words[active_idx].start);
             let end = if active_idx + 1 < group.words.len() {
                 format_ass_time(group.words[active_idx + 1].start)
             } else {
-                format_ass_time(group.words[active_idx].end)
+                let raw_end = group.words[active_idx].end;
+                let clamped = match next_group_start {
+                    Some(next_start) => raw_end.min(next_start),
+                    None => raw_end,
+                };
+                format_ass_time(clamped)
             };
 
             let mut text = String::new();

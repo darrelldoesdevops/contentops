@@ -54,6 +54,26 @@ pub fn adjust_timestamps(
         adjusted.push((start - offset, end - offset, word.clone()));
     }
 
+    // Enforce monotonicity: words at speech interval boundaries can get
+    // different offsets that reverse their order. Clamp so starts always
+    // increase and no timestamps go negative.
+    if !adjusted.is_empty() {
+        if adjusted[0].0 < 0.0 {
+            adjusted[0].0 = 0.0;
+        }
+        if adjusted[0].1 < adjusted[0].0 {
+            adjusted[0].1 = adjusted[0].0;
+        }
+        for i in 1..adjusted.len() {
+            if adjusted[i].0 < adjusted[i - 1].0 {
+                adjusted[i].0 = adjusted[i - 1].0;
+            }
+            if adjusted[i].1 < adjusted[i].0 {
+                adjusted[i].1 = adjusted[i].0;
+            }
+        }
+    }
+
     adjusted
 }
 

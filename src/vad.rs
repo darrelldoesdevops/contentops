@@ -6,6 +6,7 @@ use crate::silence::SpeechInterval;
 
 const CHUNK_SIZE: usize = 512;
 const SAMPLE_RATE: f64 = 16000.0;
+const SPEECH_PAD_SECS: f64 = 0.1;
 
 pub fn run_vad(
     wav_path: &Path,
@@ -95,6 +96,28 @@ pub fn run_vad(
         }
         merged.push(current);
         speeches = merged;
+    }
+
+    // Pad speech intervals to avoid clipping into speech at VAD chunk boundaries
+    let pad = SPEECH_PAD_SECS;
+    for s in &mut speeches {
+        s.start = (s.start - pad).max(0.0);
+        s.end = (s.end + pad).min(video_duration);
+    }
+    // Re-merge any intervals that now overlap after padding
+    if speeches.len() > 1 {
+        let mut padded = Vec::new();
+        let mut current = speeches.remove(0);
+        for next in speeches {
+            if next.start <= current.end {
+                current.end = next.end;
+            } else {
+                padded.push(current);
+                current = next;
+            }
+        }
+        padded.push(current);
+        speeches = padded;
     }
 
     Ok(speeches)
