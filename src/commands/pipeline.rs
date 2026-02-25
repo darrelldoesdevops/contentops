@@ -40,7 +40,7 @@ pub fn run(args: PipelineArgs, verbose: bool, registry: &TempFileRegistry) -> an
         eprintln!("  4. fix        \u{2192} LLM transcription correction");
         eprintln!("  5. cut        \u{2192} VAD-based silence removal");
         eprintln!("  6. caption    \u{2192} Burn captions onto cut video");
-        eprintln!("  7. overlay    \u{2192} Add title overlay");
+        eprintln!("  7. overlay    \u{2192} Title approval + overlay");
         eprintln!();
         eprintln!("Output: {}", output.display());
         return Ok(());
@@ -60,6 +60,7 @@ pub fn run(args: PipelineArgs, verbose: bool, registry: &TempFileRegistry) -> an
         args.font_size,
         args.vad_threshold,
         args.min_silence_ms,
+        args.no_interactive,
         verbose,
         registry,
     );
@@ -93,6 +94,7 @@ fn run_stages(
     font_size: Option<u32>,
     vad_threshold: f32,
     min_silence_ms: u32,
+    no_interactive: bool,
     verbose: bool,
     registry: &TempFileRegistry,
 ) -> anyhow::Result<()> {
@@ -202,6 +204,7 @@ fn run_stages(
             output,
             text,
             font_size,
+            no_interactive,
             verbose,
             registry,
         );
@@ -308,6 +311,7 @@ fn run_stages(
         output,
         text,
         font_size,
+        no_interactive,
         verbose,
         registry,
     )
@@ -321,6 +325,7 @@ fn finish_stages(
     output: &Path,
     text: Option<&str>,
     font_size: Option<u32>,
+    no_interactive: bool,
     verbose: bool,
     registry: &TempFileRegistry,
 ) -> anyhow::Result<()> {
@@ -345,18 +350,19 @@ fn finish_stages(
         .unwrap_or_else(|_| "unknown size".to_string());
     eprintln!("\u{2713} Created captioned video ({})", cap_size);
 
-    // Stage 7: Overlay
+    // Stage 7: Overlay (with title approval)
     eprintln!("\n{}", "Stage 7/7: overlay".bold());
-    let (overlay_text, overlay_auto) = if let Some(t) = text {
-        (Some(t.to_string()), None)
+    let overlay_text = if let Some(t) = text {
+        t.to_string()
     } else {
-        (None, Some(caption_json))
+        let options = overlay::generate_title_options(&caption_json, verbose)?;
+        overlay::approve_title(&options, no_interactive, verbose)?
     };
     overlay::run(
         OverlayArgs {
             input: captioned_video,
-            text: overlay_text,
-            auto: overlay_auto,
+            text: Some(overlay_text),
+            auto: None,
             output: Some(output.to_path_buf()),
             font: None,
             font_size: font_size.unwrap_or(144),
@@ -364,7 +370,7 @@ fn finish_stages(
             position: "top".to_string(),
             start: 0.3,
             duration: 3.5,
-            no_interactive: false,
+            no_interactive,
         },
         verbose,
         registry,
