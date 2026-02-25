@@ -381,3 +381,64 @@ pub fn run(args: OverlayArgs, verbose: bool, registry: &TempFileRegistry) -> any
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_title_stays_single_line() {
+        // "HELLO" at font_size=144, max_width=900
+        // avg_char_px = 144 * 0.55 = 79.2, max_chars = floor(900/79.2) = 11
+        let lines = wrap_title_lines("HELLO", 144, 900);
+        assert_eq!(lines, vec!["HELLO"]);
+    }
+
+    #[test]
+    fn two_word_title_fits_single_line() {
+        // "HELLO WORLD" = 11 chars, max_chars = 11 → fits
+        let lines = wrap_title_lines("HELLO WORLD", 144, 900);
+        assert_eq!(lines, vec!["HELLO WORLD"]);
+    }
+
+    #[test]
+    fn long_title_wraps_to_multiple_lines() {
+        // "THIS IS A VERY LONG TITLE THAT SHOULD WRAP" at font_size=144
+        // max_chars = 11, so each line can hold ~11 chars
+        let lines = wrap_title_lines("THIS IS A VERY LONG TITLE THAT SHOULD WRAP", 144, 900);
+        assert!(lines.len() > 1, "expected multiple lines, got: {:?}", lines);
+        for line in &lines {
+            // Each line should be at most ~11 chars (except single long words)
+            assert!(line.len() <= 15, "line too long: '{}' ({} chars)", line, line.len());
+        }
+    }
+
+    #[test]
+    fn multiline_input_preserves_newlines() {
+        let lines = wrap_title_lines("LINE ONE\nLINE TWO", 144, 900);
+        assert_eq!(lines, vec!["LINE ONE", "LINE TWO"]);
+    }
+
+    #[test]
+    fn single_long_word_not_split() {
+        // A single word longer than max_chars should stay on one line
+        let lines = wrap_title_lines("SUPERLONGWORD", 144, 900);
+        assert_eq!(lines, vec!["SUPERLONGWORD"]);
+    }
+
+    #[test]
+    fn empty_input_returns_empty() {
+        let lines = wrap_title_lines("", 144, 900);
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn smaller_font_allows_more_chars_per_line() {
+        // font_size=72, avg_char_px = 39.6, max_chars = floor(900/39.6) = 22
+        let text = "THIS IS A LONGER LINE THAT FITS";
+        let lines = wrap_title_lines(text, 72, 900);
+        // 30 chars including spaces — should wrap at ~22
+        assert!(lines.len() >= 1);
+        assert!(lines.len() <= 2, "expected 1-2 lines at font_size=72, got: {:?}", lines);
+    }
+}
