@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -277,15 +278,43 @@ pub fn format_srt(entries: &[SrtEntry]) -> String {
         .join("\n")
 }
 
-pub fn fix_transcription(words: &mut [Word], verbose: bool) -> anyhow::Result<()> {
+fn print_mismatch_context(original: &[Word], corrected: &[Word]) {
+    eprintln!(
+        "Warning: LLM returned {} words, expected {}",
+        corrected.len(),
+        original.len()
+    );
+    let min_len = original.len().min(corrected.len());
+    let diffs: Vec<_> = original[..min_len]
+        .iter()
+        .zip(corrected[..min_len].iter())
+        .filter(|(o, c)| o.word != c.word)
+        .take(5)
+        .collect();
+    for (orig, fixed) in &diffs {
+        eprintln!("  \"{}\" -> \"{}\"", orig.word, fixed.word);
+    }
+    let diff_count = original.len().abs_diff(corrected.len());
+    if corrected.len() > original.len() {
+        eprintln!("  ({} word(s) added)", diff_count);
+    } else {
+        eprintln!("  ({} word(s) removed)", diff_count);
+    }
+}
+
+fn invoke_claude_fix(
+    words: &[Word],
+    verbose: bool,
+    enforce_count: bool,
+) -> anyhow::Result<Option<Vec<Word>>> {
     require_claude()?;
 
-    let words_json = serde_json::to_string_pretty(&words).unwrap_or_default();
+    let words_json = serde_json::to_string_pretty(words).unwrap_or_default();
 
-    let prompt = format!(
+    let mut prompt = format!(
         "This is speech-to-text output as JSON. Each object has word, start, end (seconds).\n\
          Fix transcription errors: misspellings, words that don't fit context, \
-         phonetic mishearings (e.g. \"suit\" → \"soon\", \"school\" → \"skool\" if that's a brand/community name).\n\
+         phonetic mishearings (e.g. \"suit\" \u{2192} \"soon\", \"school\" \u{2192} \"skool\" if that's a brand/community name).\n\
          Use surrounding words and timing to infer what was actually said.\n\
          Return the SAME JSON array structure with ONLY the \"word\" fields corrected.\n\
          Do NOT change start/end times. Do NOT add or remove entries.\n\
@@ -294,8 +323,20 @@ pub fn fix_transcription(words: &mut [Word], verbose: bool) -> anyhow::Result<()
         words_json
     );
 
+    if enforce_count {
+        prompt.push_str(&format!(
+            "\n\nCRITICAL: You MUST return EXACTLY {} entries. Do NOT add or remove words.",
+            words.len()
+        ));
+    }
+
     let spinner = if !verbose {
-        Some(crate::ui::make_spinner("Fixing transcription with Claude..."))
+        let msg = if enforce_count {
+            "Retrying transcription fix with Claude..."
+        } else {
+            "Fixing transcription with Claude..."
+        };
+        Some(crate::ui::make_spinner(msg))
     } else {
         eprintln!("Running: claude -p <prompt> --model haiku");
         None
@@ -324,11 +365,10 @@ pub fn fix_transcription(words: &mut [Word], verbose: bool) -> anyhow::Result<()
             pb.finish_and_clear();
         }
         eprintln!("Warning: transcription fix failed, using original words");
-        return Ok(());
+        return Ok(None);
     }
 
     let raw_stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    // Strip markdown fences if present
     let stdout = if raw_stdout.starts_with("```") {
         raw_stdout
             .strip_prefix("```json")
@@ -340,6 +380,7 @@ pub fn fix_transcription(words: &mut [Word], verbose: bool) -> anyhow::Result<()
     } else {
         &raw_stdout
     };
+
     let corrected: Vec<Word> = match serde_json::from_str(stdout) {
         Ok(v) => v,
         Err(e) => {
@@ -348,43 +389,198 @@ pub fn fix_transcription(words: &mut [Word], verbose: bool) -> anyhow::Result<()
             }
             if verbose {
                 eprintln!("LLM response parse error: {}", e);
-                eprintln!("Raw response:\n{}", &raw_stdout[..raw_stdout.len().min(500)]);
+                eprintln!(
+                    "Raw response:\n{}",
+                    &raw_stdout[..raw_stdout.len().min(500)]
+                );
             }
             eprintln!("Warning: could not parse LLM response, using original words");
-            return Ok(());
+            return Ok(None);
         }
     };
 
-    if corrected.len() != words.len() {
-        if let Some(pb) = spinner {
-            pb.finish_and_clear();
-        }
-        eprintln!(
-            "Warning: LLM returned {} words, expected {} — using original words",
-            corrected.len(),
-            words.len()
-        );
-        return Ok(());
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
     }
 
+    Ok(Some(corrected))
+}
+
+fn apply_fixes(words: &mut [Word], corrected: &[Word], verbose: bool) -> usize {
     let mut fixes = 0;
-    for (word, fixed) in words.iter_mut().zip(corrected.iter()) {
-        if word.word != fixed.word {
+    let min_len = words.len().min(corrected.len());
+    for i in 0..min_len {
+        if words[i].word != corrected[i].word {
             if verbose {
-                eprintln!("  fix: \"{}\" → \"{}\"", word.word, fixed.word);
+                eprintln!(
+                    "  fix: \"{}\" \u{2192} \"{}\"",
+                    words[i].word, corrected[i].word
+                );
             }
-            word.word = fixed.word.clone();
+            words[i].word = corrected[i].word.clone();
             fixes += 1;
         }
     }
+    fixes
+}
 
-    if let Some(pb) = spinner {
-        pb.finish_with_message(format!("Transcription fixed ({} corrections)", fixes));
-    } else if fixes > 0 {
-        eprintln!("Fixed {} words", fixes);
+pub fn fix_transcription(words: &mut [Word], verbose: bool) -> anyhow::Result<()> {
+    let corrected = match invoke_claude_fix(words, verbose, false)? {
+        Some(c) => c,
+        None => return Ok(()),
+    };
+
+    if corrected.len() == words.len() {
+        let fixes = apply_fixes(words, &corrected, verbose);
+        if fixes > 0 {
+            eprintln!("Transcription fixed ({} corrections)", fixes);
+        }
+        return Ok(());
     }
 
-    Ok(())
+    print_mismatch_context(words, &corrected);
+
+    if !std::io::stdin().is_terminal() {
+        return Err(AppError::TranscriptMismatch {
+            expected: words.len(),
+            actual: corrected.len(),
+        }
+        .into());
+    }
+
+    let choices = &[
+        "Use originals (keep timing safe)",
+        "Use fixed (accept word count change)",
+        "Retry (re-run with word count constraint)",
+    ];
+    let selection = dialoguer::Select::new()
+        .with_prompt("How to handle mismatch?")
+        .items(choices)
+        .default(0)
+        .interact()?;
+
+    match selection {
+        0 => {
+            eprintln!("Using original words");
+            Ok(())
+        }
+        1 => {
+            let fixes = apply_fixes(words, &corrected, verbose);
+            eprintln!("Applied {} corrections from fixed version", fixes);
+            Ok(())
+        }
+        2 => handle_retry(words, &corrected, verbose),
+        _ => unreachable!(),
+    }
+}
+
+fn handle_retry(
+    words: &mut [Word],
+    first_fix: &[Word],
+    verbose: bool,
+) -> anyhow::Result<()> {
+    let retry_result = match invoke_claude_fix(words, verbose, true)? {
+        Some(r) => r,
+        None => {
+            eprintln!("Retry failed to parse. Falling back to selection.");
+            return offer_post_retry_menu(words, first_fix, None, verbose);
+        }
+    };
+
+    if retry_result.len() == words.len() {
+        let fixes = apply_fixes(words, &retry_result, verbose);
+        eprintln!("Retry succeeded \u{2014} {} corrections applied", fixes);
+        return Ok(());
+    }
+
+    eprintln!(
+        "\nRetry also returned wrong count ({} words).",
+        retry_result.len()
+    );
+    offer_post_retry_menu(words, first_fix, Some(&retry_result), verbose)
+}
+
+fn offer_post_retry_menu(
+    words: &mut [Word],
+    first_fix: &[Word],
+    retry_fix: Option<&[Word]>,
+    verbose: bool,
+) -> anyhow::Result<()> {
+    eprintln!("\nComparison (first 20 words):");
+    eprintln!(
+        "  Original:  {}",
+        words
+            .iter()
+            .take(20)
+            .map(|w| w.word.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    eprintln!(
+        "  First fix: {}",
+        first_fix
+            .iter()
+            .take(20)
+            .map(|w| w.word.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    if let Some(retry) = retry_fix {
+        eprintln!(
+            "  Retry fix: {}",
+            retry
+                .iter()
+                .take(20)
+                .map(|w| w.word.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
+
+    let mut post_choices = vec![
+        "Use originals (keep timing safe)",
+        "Use first fix",
+    ];
+    if retry_fix.is_some() {
+        post_choices.push("Use retry fix");
+    }
+    post_choices.push("Abort pipeline");
+
+    let selection = dialoguer::Select::new()
+        .with_prompt("Choose version")
+        .items(&post_choices)
+        .default(0)
+        .interact()?;
+
+    let abort_idx = post_choices.len() - 1;
+
+    match selection {
+        0 => {
+            eprintln!("Using original words");
+            Ok(())
+        }
+        1 => {
+            let fixes = apply_fixes(words, first_fix, verbose);
+            eprintln!("Applied {} corrections from first fix", fixes);
+            Ok(())
+        }
+        idx if retry_fix.is_some() && idx == 2 => {
+            let fixes = apply_fixes(words, retry_fix.unwrap(), verbose);
+            eprintln!("Applied {} corrections from retry fix", fixes);
+            Ok(())
+        }
+        idx if idx == abort_idx => {
+            let actual = retry_fix
+                .map(|r| r.len())
+                .unwrap_or(first_fix.len());
+            Err(AppError::TranscriptMismatch {
+                expected: words.len(),
+                actual,
+            }
+            .into())
+        }
+        _ => unreachable!(),
+    }
 }
 
 pub fn transcribe(
