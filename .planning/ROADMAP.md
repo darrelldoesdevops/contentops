@@ -74,7 +74,7 @@ See: `.planning/milestones/v1.4-ROADMAP.md` for full details.
 **Milestone Goal:** Pipeline outputs everything needed to upload a TikTok -- approved title overlay, auto-generated description, sidecar file with copy-paste metadata.
 
 - [ ] **Phase 19: Safe Zone Fixes** - Correct overlay and subtitle margins so video elements stay within TikTok's safe area
-- [ ] **Phase 20: Transcript Fix Hardening** - Guard caption timing against word count corruption from fix_transcription
+- [x] **Phase 20: Transcript Fix Hardening** - Guard caption timing against word count corruption from fix_transcription (completed 2026-02-25)
 - [ ] **Phase 21: Interactive Title Approval** - Present Claude-generated title options to the user before burning overlay
 - [ ] **Phase 22: TikTok Metadata Generation** - Generate description and write sidecar file next to output video
 
@@ -147,6 +147,6 @@ See: `.planning/milestones/v1.4-ROADMAP.md` for full details.
 | 17. Core VAD Integration | v1.4 | 2/2 | Complete | 2026-02-24 |
 | 18. Tuning Flags & Cleanup | v1.4 | 2/2 | Complete | 2026-02-24 |
 | 19. Safe Zone Fixes | v1.5 | 0/TBD | Not started | - |
-| 20. Transcript Fix Hardening | v1.5 | 0/TBD | Not started | - |
+| 20. Transcript Fix Hardening | 1/1 | Complete   | 2026-02-25 | - |
 | 21. Interactive Title Approval | v1.5 | 0/TBD | Not started | - |
 | 22. TikTok Metadata Generation | v1.5 | 0/TBD | Not started | - |

@@ -5,22 +5,22 @@
 See: .planning/PROJECT.md (updated 2026-02-25)
 
 **Core value:** Take a raw video file and remove dead air automatically
-**Current focus:** v1.5 Upload Ready -- Phase 20 (next)
+**Current focus:** v1.5 Upload Ready -- Phase 21 (next)
 
 ## Current Position
 
 Milestone: v1.5 Upload Ready
-Phase: 19 of 22 (Safe Zone Fixes) -- COMPLETE
-Plan: 2 of 2 -- done
-Status: Phase 19 complete, ready for Phase 20
-Last activity: 2026-02-25 -- Phase 19 executed (2 plans: overlay safe zone + subtitle margins + scale-to-fill)
+Phase: 20 of 22 (Transcript Fix Hardening) -- COMPLETE
+Plan: 1 of 1 -- done
+Status: Phase 20 complete, ready for Phase 21
+Last activity: 2026-02-25 -- Phase 20 executed (1 plan: interactive mismatch handling + retry for fix_transcription)
 
-Progress: [███████████████████░░░░░░░░░] 68% (19/22 phases complete across all milestones)
+Progress: [████████████████████░░░░░░░░] 72% (20/22 phases complete across all milestones)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 28 (v1.0: 8, v1.1: 3+3 quick, v1.2: 3, v1.3: 3, v1.4: 5, v1.5: 2)
+- Total plans completed: 29 (v1.0: 8, v1.1: 3+3 quick, v1.2: 3, v1.3: 3, v1.4: 5, v1.5: 3)
 - Milestones shipped: 5 (v1.0, v1.1, v1.2, v1.3, v1.4)
 
 **By Milestone:**
@@ -56,5 +56,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Phase 19 complete, ready for Phase 20
+Stopped at: Phase 20 complete, ready for Phase 21
 Resume file: None
