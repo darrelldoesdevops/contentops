@@ -14,8 +14,8 @@ pub fn run_vad(
     threshold: f32,
     min_silence_ms: u32,
 ) -> anyhow::Result<Vec<SpeechInterval>> {
-    let reader = hound::WavReader::open(wav_path)
-        .map_err(|e| anyhow::anyhow!("WAV open failed: {}", e))?;
+    let reader =
+        hound::WavReader::open(wav_path).map_err(|e| anyhow::anyhow!("WAV open failed: {}", e))?;
 
     let spec = reader.spec();
     if spec.sample_rate != 16000 {

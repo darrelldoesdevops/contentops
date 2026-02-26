@@ -29,7 +29,11 @@ struct MetadataResponse {
 }
 
 fn generate_metadata(words: &[caption::Word], verbose: bool) -> Option<(String, Vec<String>)> {
-    let transcript: String = words.iter().map(|w| w.word.as_str()).collect::<Vec<_>>().join(" ");
+    let transcript: String = words
+        .iter()
+        .map(|w| w.word.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
 
     let prompt = format!(
         "Generate a TikTok description and hashtags for this video transcript. \
@@ -109,7 +113,12 @@ fn generate_metadata(words: &[caption::Word], verbose: bool) -> Option<(String, 
     }
 }
 
-fn write_sidecar(output: &Path, title: &str, description: &str, hashtags: &[String]) -> anyhow::Result<()> {
+fn write_sidecar(
+    output: &Path,
+    title: &str,
+    description: &str,
+    hashtags: &[String],
+) -> anyhow::Result<()> {
     let stem = output
         .file_stem()
         .unwrap_or_default()
@@ -249,17 +258,22 @@ fn run_stages(
                     stage: "scale".to_string(),
                     code: o.exit_code.unwrap_or(-1),
                     stderr: truncated,
-                }.into());
+                }
+                .into());
             }
             Err(io_err) => {
                 return Err(AppError::StageIo {
                     stage: "scale".to_string(),
                     source: io_err,
-                }.into());
+                }
+                .into());
             }
         }
     } else {
-        eprintln!("\n{}", "Stage 1/7: scale (skipped, already 1080x1920)".bold());
+        eprintln!(
+            "\n{}",
+            "Stage 1/7: scale (skipped, already 1080x1920)".bold()
+        );
         input.to_path_buf()
     };
 
@@ -280,9 +294,11 @@ fn run_stages(
     let wav_path = wav_temp.path().to_path_buf();
     registry.register(wav_path.clone());
 
-    ffmpeg::extract_16k_wav(&normalized_str, &wav_path, verbose).map_err(|e| AppError::StageIo {
-        stage: "wav-extraction".to_string(),
-        source: e,
+    ffmpeg::extract_16k_wav(&normalized_str, &wav_path, verbose).map_err(|e| {
+        AppError::StageIo {
+            stage: "wav-extraction".to_string(),
+            source: e,
+        }
     })?;
 
     // Stage 3: Transcribe normalized video (reuses shared WAV)
@@ -427,8 +443,6 @@ fn run_stages(
         .into_iter()
         .map(|(start, end, word)| caption::Word { word, start, end })
         .collect();
-
-
 
     finish_stages(
         temp_dir,

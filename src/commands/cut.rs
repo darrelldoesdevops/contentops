@@ -65,7 +65,12 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
         source: e,
     })?;
 
-    let speeches = vad::run_vad(&wav_path, video_duration, args.vad_threshold, args.min_silence_ms)?;
+    let speeches = vad::run_vad(
+        &wav_path,
+        video_duration,
+        args.vad_threshold,
+        args.min_silence_ms,
+    )?;
 
     let _ = std::fs::remove_file(&wav_path);
     registry.remove(&wav_path);

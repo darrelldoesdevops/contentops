@@ -98,7 +98,9 @@ pub fn run_ffmpeg_verbose(args: &[&str]) -> Result<FfmpegOutput, std::io::Error>
 
 pub fn extract_16k_wav(input: &str, dest: &Path, verbose: bool) -> Result<(), std::io::Error> {
     let dest_str = dest.to_string_lossy();
-    let args = ["-i", input, "-ar", "16000", "-ac", "1", "-f", "wav", &dest_str];
+    let args = [
+        "-i", input, "-ar", "16000", "-ac", "1", "-f", "wav", &dest_str,
+    ];
     let output = if verbose {
         run_ffmpeg_verbose(&args)?
     } else {
@@ -113,7 +115,11 @@ pub fn extract_16k_wav(input: &str, dest: &Path, verbose: bool) -> Result<(), st
     Ok(())
 }
 
-pub fn scale_to_tiktok(input: &str, output: &str, verbose: bool) -> Result<FfmpegOutput, std::io::Error> {
+pub fn scale_to_tiktok(
+    input: &str,
+    output: &str,
+    verbose: bool,
+) -> Result<FfmpegOutput, std::io::Error> {
     let vf = format!(
         "scale={}:{}:force_original_aspect_ratio=increase,crop={}:{}",
         crate::tiktok::OUTPUT_WIDTH,
@@ -122,14 +128,8 @@ pub fn scale_to_tiktok(input: &str, output: &str, verbose: bool) -> Result<Ffmpe
         crate::tiktok::OUTPUT_HEIGHT,
     );
     let args = [
-        "-i", input,
-        "-vf", &vf,
-        "-c:v", "libx264",
-        "-crf", "14",
-        "-preset", "slow",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "copy",
-        output,
+        "-i", input, "-vf", &vf, "-c:v", "libx264", "-crf", "14", "-preset", "slow", "-pix_fmt",
+        "yuv420p", "-c:a", "copy", output,
     ];
     if verbose {
         eprintln!("Running: ffmpeg {}", args.join(" "));

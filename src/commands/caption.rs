@@ -480,11 +480,7 @@ pub fn fix_transcription(words: &mut [Word], verbose: bool) -> anyhow::Result<()
     }
 }
 
-fn handle_retry(
-    words: &mut [Word],
-    first_fix: &[Word],
-    verbose: bool,
-) -> anyhow::Result<()> {
+fn handle_retry(words: &mut [Word], first_fix: &[Word], verbose: bool) -> anyhow::Result<()> {
     let retry_result = match invoke_claude_fix(words, verbose, true)? {
         Some(r) => r,
         None => {
@@ -543,10 +539,7 @@ fn offer_post_retry_menu(
         );
     }
 
-    let mut post_choices = vec![
-        "Use originals (keep timing safe)",
-        "Use first fix",
-    ];
+    let mut post_choices = vec!["Use originals (keep timing safe)", "Use first fix"];
     if retry_fix.is_some() {
         post_choices.push("Use retry fix");
     }
@@ -576,9 +569,7 @@ fn offer_post_retry_menu(
             Ok(())
         }
         idx if idx == abort_idx => {
-            let actual = retry_fix
-                .map(|r| r.len())
-                .unwrap_or(first_fix.len());
+            let actual = retry_fix.map(|r| r.len()).unwrap_or(first_fix.len());
             Err(AppError::TranscriptMismatch {
                 expected: words.len(),
                 actual,
@@ -614,7 +605,10 @@ pub fn transcribe(
 
         let spinner = if !verbose {
             let filename = input.file_name().unwrap_or_default().to_string_lossy();
-            Some(ui::make_spinner(format!("Extracting audio from {}...", filename)))
+            Some(ui::make_spinner(format!(
+                "Extracting audio from {}...",
+                filename
+            )))
         } else {
             None
         };
@@ -699,8 +693,8 @@ pub fn transcribe(
     let whisper_json_path = PathBuf::from(format!("{}.json", temp_wav.display()));
     registry.register(whisper_json_path.clone());
 
-    let json_content = std::fs::read_to_string(&whisper_json_path)
-        .map_err(|e| AppError::StageIo {
+    let json_content =
+        std::fs::read_to_string(&whisper_json_path).map_err(|e| AppError::StageIo {
             stage: "read-whisper-json".to_string(),
             source: e,
         })?;
@@ -763,17 +757,31 @@ pub fn burn_captions(
     let ass_temp = make_temp_file(parent_dir, ".ass")?;
     let ass_path = ass_temp.path().to_path_buf();
     registry.register(ass_path.clone());
-    std::fs::write(&ass_path, ass_content)
-        .map_err(|e| AppError::StageIo { stage: "write-ass".to_string(), source: e })?;
+    std::fs::write(&ass_path, ass_content).map_err(|e| AppError::StageIo {
+        stage: "write-ass".to_string(),
+        source: e,
+    })?;
 
     let input_str = input.to_string_lossy();
     let vf_string = format!("ass={}", ass_path.to_string_lossy());
     let output_str = output.to_string_lossy().to_string();
 
     let burn_args = [
-        "-i", &input_str, "-vf", &vf_string,
-        "-c:v", "libx264", "-crf", "14", "-preset", "slow", "-pix_fmt", "yuv420p",
-        "-c:a", "copy", &output_str,
+        "-i",
+        &input_str,
+        "-vf",
+        &vf_string,
+        "-c:v",
+        "libx264",
+        "-crf",
+        "14",
+        "-preset",
+        "slow",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "copy",
+        &output_str,
     ];
 
     let spinner = if !verbose {
@@ -794,18 +802,31 @@ pub fn burn_captions(
 
     match result {
         Ok(ref o) if o.success => {
-            if let Some(ref pb) = spinner { pb.finish_with_message("Captions burned"); }
+            if let Some(ref pb) = spinner {
+                pb.finish_with_message("Captions burned");
+            }
         }
         Ok(o) => {
-            if let Some(pb) = spinner { pb.finish_and_clear(); }
+            if let Some(pb) = spinner {
+                pb.finish_and_clear();
+            }
             let truncated = last_n_lines(&o.stderr, 20);
             return Err(AppError::FfmpegFailed {
-                stage: "caption-burn".to_string(), code: o.exit_code.unwrap_or(-1), stderr: truncated,
-            }.into());
+                stage: "caption-burn".to_string(),
+                code: o.exit_code.unwrap_or(-1),
+                stderr: truncated,
+            }
+            .into());
         }
         Err(io_err) => {
-            if let Some(pb) = spinner { pb.finish_and_clear(); }
-            return Err(AppError::StageIo { stage: "caption-burn".to_string(), source: io_err }.into());
+            if let Some(pb) = spinner {
+                pb.finish_and_clear();
+            }
+            return Err(AppError::StageIo {
+                stage: "caption-burn".to_string(),
+                source: io_err,
+            }
+            .into());
         }
     }
 

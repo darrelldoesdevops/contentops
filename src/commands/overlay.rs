@@ -31,7 +31,10 @@ fn parse_title_options(response: &str) -> Vec<String> {
     }
 }
 
-pub fn generate_title_options(transcript_path: &Path, verbose: bool) -> anyhow::Result<Vec<String>> {
+pub fn generate_title_options(
+    transcript_path: &Path,
+    verbose: bool,
+) -> anyhow::Result<Vec<String>> {
     let json_content = std::fs::read_to_string(transcript_path).map_err(|e| AppError::StageIo {
         stage: "read-transcription".to_string(),
         source: e,
@@ -118,7 +121,11 @@ pub fn generate_title_options(transcript_path: &Path, verbose: bool) -> anyhow::
     Ok(parse_title_options(&response))
 }
 
-pub fn approve_title(options: &[String], no_interactive: bool, _verbose: bool) -> anyhow::Result<String> {
+pub fn approve_title(
+    options: &[String],
+    no_interactive: bool,
+    _verbose: bool,
+) -> anyhow::Result<String> {
     if options.is_empty() {
         return Err(AppError::ClaudeFailed {
             stage: "title-approval".into(),
@@ -468,7 +475,12 @@ mod tests {
         assert!(lines.len() > 1, "expected multiple lines, got: {:?}", lines);
         for line in &lines {
             // Each line should be at most ~11 chars (except single long words)
-            assert!(line.len() <= 15, "line too long: '{}' ({} chars)", line, line.len());
+            assert!(
+                line.len() <= 15,
+                "line too long: '{}' ({} chars)",
+                line,
+                line.len()
+            );
         }
     }
 
@@ -498,12 +510,17 @@ mod tests {
         let lines = wrap_title_lines(text, 72, 900);
         // 30 chars including spaces — should wrap at ~22
         assert!(lines.len() >= 1);
-        assert!(lines.len() <= 2, "expected 1-2 lines at font_size=72, got: {:?}", lines);
+        assert!(
+            lines.len() <= 2,
+            "expected 1-2 lines at font_size=72, got: {:?}",
+            lines
+        );
     }
 
     #[test]
     fn parse_title_options_three_options() {
-        let response = "STOP DOING\nTHIS NOW\n---\nYOU NEED TO\nHEAR THIS\n---\nTHE TRUTH\nABOUT DEVOPS";
+        let response =
+            "STOP DOING\nTHIS NOW\n---\nYOU NEED TO\nHEAR THIS\n---\nTHE TRUTH\nABOUT DEVOPS";
         let options = parse_title_options(response);
         assert_eq!(options.len(), 3);
         assert!(options[0].contains("STOP DOING"));
