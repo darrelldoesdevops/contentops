@@ -19,16 +19,14 @@ use crate::vad;
 struct TiktokMetadata {
     title: String,
     description: String,
-    hashtags: Vec<String>,
 }
 
 #[derive(Deserialize)]
 struct MetadataResponse {
     description: String,
-    hashtags: Vec<String>,
 }
 
-fn generate_metadata(words: &[caption::Word], verbose: bool) -> Option<(String, Vec<String>)> {
+fn generate_metadata(words: &[caption::Word], verbose: bool) -> Option<String> {
     let transcript: String = words
         .iter()
         .map(|w| w.word.as_str())
@@ -36,11 +34,14 @@ fn generate_metadata(words: &[caption::Word], verbose: bool) -> Option<(String, 
         .join(" ");
 
     let prompt = format!(
-        "Generate a TikTok description and hashtags for this video transcript. \
-         Return ONLY valid JSON with two fields: \
-         \"description\" (engaging TikTok caption under 300 characters, no hashtags in it) and \
-         \"hashtags\" (array of 3-5 topic-specific hashtag strings WITHOUT the # symbol, no generic tags like fyp or viral). \
-         Example: {{\"description\": \"Your caption here\", \"hashtags\": [\"devops\", \"kubernetes\"]}}\n\n\
+        "Generate a TikTok description for this video transcript. \
+         The description should be keyword-rich for TikTok SEO -- TikTok indexes description text \
+         for their search engine, so naturally weave in relevant search terms people would use to find this content. \
+         Write 3-5 short paragraphs (600-1000 characters total). \
+         Use a conversational but informative tone. No hashtags. No emojis except one link emoji (🔗) at the end if relevant. \
+         Return ONLY valid JSON with one field: \
+         \"description\" (the full description text with \\n\\n between paragraphs). \
+         Example: {{\"description\": \"First paragraph here.\\n\\nSecond paragraph here.\"}}\n\n\
          Transcript: {}",
         transcript
     );
@@ -101,7 +102,7 @@ fn generate_metadata(words: &[caption::Word], verbose: bool) -> Option<(String, 
             if let Some(pb) = spinner {
                 pb.finish_with_message("Description generated");
             }
-            Some((meta.description, meta.hashtags))
+            Some(meta.description)
         }
         Err(e) => {
             if let Some(pb) = spinner {
@@ -113,12 +114,7 @@ fn generate_metadata(words: &[caption::Word], verbose: bool) -> Option<(String, 
     }
 }
 
-fn write_sidecar(
-    output: &Path,
-    title: &str,
-    description: &str,
-    hashtags: &[String],
-) -> anyhow::Result<()> {
+fn write_sidecar(output: &Path, title: &str, description: &str) -> anyhow::Result<()> {
     let stem = output
         .file_stem()
         .unwrap_or_default()
@@ -129,7 +125,6 @@ fn write_sidecar(
     let metadata = TiktokMetadata {
         title: title.to_string(),
         description: description.to_string(),
-        hashtags: hashtags.to_vec(),
     };
 
     let json = serde_json::to_string_pretty(&metadata).map_err(|e| AppError::ParseFailed {
@@ -518,8 +513,8 @@ fn finish_stages(
     )?;
 
     eprintln!();
-    if let Some((description, hashtags)) = generate_metadata(words, verbose)
-        && let Err(e) = write_sidecar(output, &approved_title, &description, &hashtags)
+    if let Some(description) = generate_metadata(words, verbose)
+        && let Err(e) = write_sidecar(output, &approved_title, &description)
     {
         eprintln!("Warning: failed to write metadata sidecar: {}", e);
     }
