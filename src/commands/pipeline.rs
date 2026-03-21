@@ -321,7 +321,13 @@ fn run_stages(
         })?;
 
     // Run VAD on shared WAV (same timeline as normalized video)
-    let speeches = vad::run_vad(&wav_path, video_duration, vad_threshold, min_silence_ms, start_pad)?;
+    let speeches = vad::run_vad(
+        &wav_path,
+        video_duration,
+        vad_threshold,
+        min_silence_ms,
+        start_pad,
+    )?;
 
     // Clean up shared WAV (no longer needed)
     let _ = std::fs::remove_file(&wav_path);
