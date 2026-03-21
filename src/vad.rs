@@ -122,10 +122,10 @@ pub fn run_vad(
     }
 
     // Apply extra padding before the first speech segment
-    if start_pad > 0.0 {
-        if let Some(first) = speeches.first_mut() {
-            first.start = (first.start - start_pad).max(0.0);
-        }
+    if start_pad > 0.0
+        && let Some(first) = speeches.first_mut()
+    {
+        first.start = (first.start - start_pad).max(0.0);
     }
 
     Ok(speeches)
