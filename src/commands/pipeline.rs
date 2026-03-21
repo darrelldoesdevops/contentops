@@ -190,6 +190,7 @@ pub fn run(args: PipelineArgs, verbose: bool, registry: &TempFileRegistry) -> an
         args.font_size,
         args.vad_threshold,
         args.min_silence_ms,
+        args.start_pad,
         args.no_interactive,
         verbose,
         registry,
@@ -224,6 +225,7 @@ fn run_stages(
     font_size: Option<u32>,
     vad_threshold: f32,
     min_silence_ms: u32,
+    start_pad: f64,
     no_interactive: bool,
     verbose: bool,
     registry: &TempFileRegistry,
@@ -319,7 +321,7 @@ fn run_stages(
         })?;
 
     // Run VAD on shared WAV (same timeline as normalized video)
-    let speeches = vad::run_vad(&wav_path, video_duration, vad_threshold, min_silence_ms)?;
+    let speeches = vad::run_vad(&wav_path, video_duration, vad_threshold, min_silence_ms, start_pad)?;
 
     // Clean up shared WAV (no longer needed)
     let _ = std::fs::remove_file(&wav_path);

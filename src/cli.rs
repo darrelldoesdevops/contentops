@@ -58,6 +58,10 @@ pub struct CutArgs {
     /// Minimum silence duration in milliseconds to cut
     #[arg(long, default_value = "300", value_parser = clap::value_parser!(u32).range(1..))]
     pub min_silence_ms: u32,
+
+    /// Extra seconds to keep before the first speech segment
+    #[arg(long, default_value = "0.5")]
+    pub start_pad: f64,
 }
 
 #[derive(Args)]
@@ -152,6 +156,10 @@ pub struct PipelineArgs {
     /// Minimum silence duration in milliseconds to cut
     #[arg(long, default_value = "300", value_parser = clap::value_parser!(u32).range(1..))]
     pub min_silence_ms: u32,
+
+    /// Extra seconds to keep before the first speech segment
+    #[arg(long, default_value = "0.5")]
+    pub start_pad: f64,
 
     /// Title text for overlay (skips Claude auto-generation)
     #[arg(long)]

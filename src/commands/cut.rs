@@ -70,6 +70,7 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
         video_duration,
         args.vad_threshold,
         args.min_silence_ms,
+        args.start_pad,
     )?;
 
     let _ = std::fs::remove_file(&wav_path);

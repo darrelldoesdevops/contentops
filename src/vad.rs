@@ -13,6 +13,7 @@ pub fn run_vad(
     video_duration: f64,
     threshold: f32,
     min_silence_ms: u32,
+    start_pad: f64,
 ) -> anyhow::Result<Vec<SpeechInterval>> {
     let reader =
         hound::WavReader::open(wav_path).map_err(|e| anyhow::anyhow!("WAV open failed: {}", e))?;
@@ -118,6 +119,13 @@ pub fn run_vad(
         }
         padded.push(current);
         speeches = padded;
+    }
+
+    // Apply extra padding before the first speech segment
+    if start_pad > 0.0 {
+        if let Some(first) = speeches.first_mut() {
+            first.start = (first.start - start_pad).max(0.0);
+        }
     }
 
     Ok(speeches)
