@@ -138,5 +138,5 @@ Plans:
 | 20. Transcript Fix Hardening | v1.5 | 1/1 | Complete | 2026-02-25 |
 | 21. Interactive Title Approval | v1.5 | 1/1 | Complete | 2026-02-25 |
 | 22. TikTok Metadata Generation | v1.5 | 1/1 | Complete | 2026-02-25 |
-| 23. Pipeline Reorder | v1.7 | 1/1 | Complete   | 2026-03-23 |
+| 23. Pipeline Reorder | v1.7 | 1/1 | Complete    | 2026-03-23 |
 | 24. Dead Code Removal | v1.7 | 0/1 | Not started | - |
