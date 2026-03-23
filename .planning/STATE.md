@@ -10,9 +10,14 @@ See: .planning/PROJECT.md (updated 2026-03-22)
 ## Current Position
 
 Milestone: v1.7 Pipeline Reorder
-Phase: Not started (defining requirements)
-Status: Defining requirements
-Last activity: 2026-03-22 — Milestone v1.7 started
+Phase: 23 - Pipeline Reorder
+Status: Not started
+Last activity: 2026-03-22 — Roadmap created for v1.7
+
+```
+Progress: [ Phase 23 ][ Phase 24 ]
+           not started  not started
+```
 
 ## Performance Metrics
 
@@ -30,6 +35,7 @@ Last activity: 2026-03-22 — Milestone v1.7 started
 | v1.3 Cross-Platform | 3 | 3 | 2 days |
 | v1.4 Silero VAD | 3 | 5 | 2 days |
 | v1.5 Upload Ready | 4 | 5 | 1 day |
+| v1.7 Pipeline Reorder | 2 | TBD | - |
 
 ## Accumulated Context
 
@@ -48,5 +54,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-03-22
-Stopped at: Defining v1.7 requirements
+Stopped at: Roadmap created for v1.7, ready to plan Phase 23
 Resume file: None

@@ -28,16 +28,16 @@ Requirements for Pipeline Reorder milestone.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PIPE-01 | — | Pending |
-| PIPE-02 | — | Pending |
-| PIPE-03 | — | Pending |
-| CLN-01 | — | Pending |
+| PIPE-01 | Phase 23 | Pending |
+| PIPE-02 | Phase 23 | Pending |
+| PIPE-03 | Phase 23 | Pending |
+| CLN-01 | Phase 24 | Pending |
 
 **Coverage:**
 - v1.7 requirements: 4 total
-- Mapped to phases: 0
-- Unmapped: 4
+- Mapped to phases: 4
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-22*
-*Last updated: 2026-03-22 after initial definition*
+*Last updated: 2026-03-22 after roadmap creation*

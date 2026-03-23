@@ -8,6 +8,7 @@
 - **v1.3 Cross-Platform** -- Phases 13-15 (shipped 2026-02-23)
 - **v1.4 Silero VAD** -- Phases 16-18 (shipped 2026-02-25)
 - **v1.5 Upload Ready** -- Phases 19-22 (shipped 2026-02-25)
+- **v1.7 Pipeline Reorder** -- Phases 23-24 (active)
 
 ## Phases
 
@@ -81,6 +82,34 @@ See: `.planning/milestones/v1.5-ROADMAP.md` for full details.
 
 </details>
 
+### v1.7 Pipeline Reorder
+
+- [ ] **Phase 23: Pipeline Reorder** - Reorder pipeline so cut runs before transcription; remove adjust_timestamps call
+- [ ] **Phase 24: Dead Code Removal** - Excise adjust_timestamps function and monotonicity clamping from silence.rs
+
+## Phase Details
+
+### Phase 23: Pipeline Reorder
+**Goal**: The pipeline runs cut before transcription so Whisper timestamps align with the final video and captions highlight correctly
+**Depends on**: Nothing (first phase of milestone)
+**Requirements**: PIPE-01, PIPE-02, PIPE-03
+**Success Criteria** (what must be TRUE):
+  1. Running `contentops pipeline` on a raw video produces a captioned output where highlighted words match speech timing with no visible drift
+  2. The pipeline stage order is: scale -> normalize -> cut -> transcribe -> fix -> caption -> overlay
+  3. No call to `adjust_timestamps` appears in the pipeline execution path
+  4. Caption word boundaries on a real talking-head video do not creep ahead of or behind actual speech
+**Plans**: TBD
+
+### Phase 24: Dead Code Removal
+**Goal**: The `adjust_timestamps` function and monotonicity clamping code are gone from the codebase
+**Depends on**: Phase 23
+**Requirements**: CLN-01
+**Success Criteria** (what must be TRUE):
+  1. `cargo clippy -- -D warnings` passes with zero warnings (no dead_code lint suppression needed)
+  2. Searching the codebase for `adjust_timestamps` returns no results
+  3. Monotonicity clamping logic no longer exists in `silence.rs`
+**Plans**: TBD
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -107,3 +136,5 @@ See: `.planning/milestones/v1.5-ROADMAP.md` for full details.
 | 20. Transcript Fix Hardening | v1.5 | 1/1 | Complete | 2026-02-25 |
 | 21. Interactive Title Approval | v1.5 | 1/1 | Complete | 2026-02-25 |
 | 22. TikTok Metadata Generation | v1.5 | 1/1 | Complete | 2026-02-25 |
+| 23. Pipeline Reorder | v1.7 | 0/1 | Not started | - |
+| 24. Dead Code Removal | v1.7 | 0/1 | Not started | - |
