@@ -85,7 +85,7 @@ See: `.planning/milestones/v1.5-ROADMAP.md` for full details.
 ### v1.7 Pipeline Reorder
 
 - [x] **Phase 23: Pipeline Reorder** - Reorder pipeline so cut runs before transcription; remove adjust_timestamps call (completed 2026-03-23)
-- [ ] **Phase 24: Dead Code Removal** - Excise adjust_timestamps function and monotonicity clamping from silence.rs
+- [x] **Phase 24: Dead Code Removal** - Excise adjust_timestamps function and monotonicity clamping from silence.rs (completed 2026-03-23)
 
 ## Phase Details
 
@@ -139,4 +139,4 @@ Plans:
 | 21. Interactive Title Approval | v1.5 | 1/1 | Complete | 2026-02-25 |
 | 22. TikTok Metadata Generation | v1.5 | 1/1 | Complete | 2026-02-25 |
 | 23. Pipeline Reorder | v1.7 | 1/1 | Complete    | 2026-03-23 |
-| 24. Dead Code Removal | v1.7 | 0/1 | Not started | - |
+| 24. Dead Code Removal | v1.7 | 1/1 | Complete | 2026-03-23 |
