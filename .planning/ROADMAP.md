@@ -98,7 +98,9 @@ See: `.planning/milestones/v1.5-ROADMAP.md` for full details.
   2. The pipeline stage order is: scale -> normalize -> cut -> transcribe -> fix -> caption -> overlay
   3. No call to `adjust_timestamps` appears in the pipeline execution path
   4. Caption word boundaries on a real talking-head video do not creep ahead of or behind actual speech
-**Plans**: TBD
+**Plans**: 1 plan
+Plans:
+- [ ] 23-01-PLAN.md -- Reorder run_stages() so cut runs before transcribe, remove adjust_timestamps call
 
 ### Phase 24: Dead Code Removal
 **Goal**: The `adjust_timestamps` function and monotonicity clamping code are gone from the codebase
