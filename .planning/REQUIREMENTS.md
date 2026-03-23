@@ -1,0 +1,43 @@
+# Requirements: contentops
+
+**Defined:** 2026-03-22
+**Core Value:** Take a raw video file and remove dead air automatically
+
+## v1.7 Requirements
+
+Requirements for Pipeline Reorder milestone.
+
+### Pipeline
+
+- [ ] **PIPE-01**: Pipeline runs cut (silence removal) before transcription so Whisper timestamps match the cut video timeline
+- [ ] **PIPE-02**: `adjust_timestamps` logic removed from pipeline — no longer needed when transcription runs on cut audio
+- [ ] **PIPE-03**: Caption highlight tracks spoken words accurately without boundary drift or timestamp clamping artifacts
+
+### Cleanup
+
+- [ ] **CLN-01**: Dead `adjust_timestamps` function and monotonicity clamping code removed from `silence.rs`
+
+## Out of Scope
+
+| Feature | Reason |
+|---------|--------|
+| Caption highlight style changes | Deferred to next milestone per user request |
+| New pipeline stages | Reorder only, no new functionality |
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| PIPE-01 | — | Pending |
+| PIPE-02 | — | Pending |
+| PIPE-03 | — | Pending |
+| CLN-01 | — | Pending |
+
+**Coverage:**
+- v1.7 requirements: 4 total
+- Mapped to phases: 0
+- Unmapped: 4
+
+---
+*Requirements defined: 2026-03-22*
+*Last updated: 2026-03-22 after initial definition*
