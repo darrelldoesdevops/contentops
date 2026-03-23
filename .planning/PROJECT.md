@@ -39,9 +39,12 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 
 ### Active
 
-- [ ] Pipeline runs silence cut before transcription so Whisper timestamps match the final video timeline
-- [ ] Timestamp adjustment step (`adjust_timestamps`) removed from pipeline — no longer needed
-- [ ] Caption highlighting tracks spoken words accurately without boundary drift
+- [ ] Caption highlighting tracks spoken words accurately without boundary drift (pending human verification)
+
+### Recently Validated
+
+- Pipeline runs silence cut before transcription so Whisper timestamps match the final video timeline -- v1.7 Phase 23
+- Timestamp adjustment step (`adjust_timestamps`) removed from pipeline -- v1.7 Phase 23
 
 ### Out of Scope
 
@@ -138,4 +141,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-22 after v1.7 milestone started*
+*Last updated: 2026-03-22 after Phase 23 complete*
