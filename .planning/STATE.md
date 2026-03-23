@@ -2,19 +2,17 @@
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-02-25)
+See: .planning/PROJECT.md (updated 2026-03-22)
 
 **Core value:** Take a raw video file and remove dead air automatically
-**Current focus:** v1.5 shipped -- planning next milestone
+**Current focus:** v1.7 Pipeline Reorder
 
 ## Current Position
 
-Milestone: v1.5 Upload Ready -- SHIPPED
-Phase: 22 of 22 (all phases complete across all milestones)
-Status: All milestones through v1.5 shipped
-Last activity: 2026-02-25 -- v1.5 milestone archived
-
-Progress: [████████████████████████████] 100% (22/22 phases complete across all milestones)
+Milestone: v1.7 Pipeline Reorder
+Phase: Not started (defining requirements)
+Status: Defining requirements
+Last activity: 2026-03-22 — Milestone v1.7 started
 
 ## Performance Metrics
 
@@ -49,6 +47,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-25
-Stopped at: v1.5 milestone complete
+Last session: 2026-03-22
+Stopped at: Defining v1.7 requirements
 Resume file: None

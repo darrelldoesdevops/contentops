@@ -39,7 +39,9 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 
 ### Active
 
-(None -- planning next milestone)
+- [ ] Pipeline runs silence cut before transcription so Whisper timestamps match the final video timeline
+- [ ] Timestamp adjustment step (`adjust_timestamps`) removed from pipeline — no longer needed
+- [ ] Caption highlighting tracks spoken words accurately without boundary drift
 
 ### Out of Scope
 
@@ -109,4 +111,31 @@ CI/CD via GitHub Actions: fmt, clippy, test, audit on 4 platforms; five architec
 | Single Claude call for description+hashtags | JSON response with both fields; reduces API calls and latency | Good |
 
 ---
-*Last updated: 2026-02-25 after v1.5 milestone*
+## Current Milestone: v1.7 Pipeline Reorder
+
+**Goal:** Cut silence before transcription so Whisper timestamps match the final video timeline — eliminates timestamp adjustment and fixes caption highlight drift.
+
+**Target features:**
+- Reorder pipeline stages: scale → normalize → cut → transcribe → fix → caption → overlay
+- Remove `adjust_timestamps` logic from pipeline
+- Verify caption highlight accuracy on real videos
+
+## Evolution
+
+This document evolves at phase transitions and milestone boundaries.
+
+**After each phase transition** (via `/gsd:transition`):
+1. Requirements invalidated? → Move to Out of Scope with reason
+2. Requirements validated? → Move to Validated with phase reference
+3. New requirements emerged? → Add to Active
+4. Decisions to log? → Add to Key Decisions
+5. "What This Is" still accurate? → Update if drifted
+
+**After each milestone** (via `/gsd:complete-milestone`):
+1. Full review of all sections
+2. Core Value check — still the right priority?
+3. Audit Out of Scope — reasons still valid?
+4. Update Context with current state
+
+---
+*Last updated: 2026-03-22 after v1.7 milestone started*
