@@ -1,3 +1,17 @@
+---
+gsd_state_version: 1.0
+milestone: v1.7
+milestone_name: Pipeline Reorder
+status: unknown
+stopped_at: Completed 23-01-PLAN.md
+last_updated: "2026-03-23T02:30:27.411Z"
+progress:
+  total_phases: 2
+  completed_phases: 1
+  total_plans: 1
+  completed_plans: 1
+---
+
 # Project State
 
 ## Project Reference
@@ -5,23 +19,17 @@
 See: .planning/PROJECT.md (updated 2026-03-22)
 
 **Core value:** Take a raw video file and remove dead air automatically
-**Current focus:** v1.7 Pipeline Reorder
+**Current focus:** Phase 23 — pipeline-reorder
 
 ## Current Position
 
-Milestone: v1.7 Pipeline Reorder
-Phase: 23 - Pipeline Reorder
-Status: Not started
-Last activity: 2026-03-22 — Roadmap created for v1.7
-
-```
-Progress: [ Phase 23 ][ Phase 24 ]
-           not started  not started
-```
+Phase: 23 (pipeline-reorder) — EXECUTING
+Plan: 1 of 1
 
 ## Performance Metrics
 
 **Velocity:**
+
 - Total plans completed: 31 (v1.0: 8, v1.1: 3+3 quick, v1.2: 3, v1.3: 3, v1.4: 5, v1.5: 5)
 - Milestones shipped: 6 (v1.0, v1.1, v1.2, v1.3, v1.4, v1.5)
 
@@ -36,12 +44,16 @@ Progress: [ Phase 23 ][ Phase 24 ]
 | v1.4 Silero VAD | 3 | 5 | 2 days |
 | v1.5 Upload Ready | 4 | 5 | 1 day |
 | v1.7 Pipeline Reorder | 2 | TBD | - |
+| Phase 23-pipeline-reorder P01 | 15 | 2 tasks | 1 files |
 
 ## Accumulated Context
 
 ### Decisions
 
 All decisions logged in PROJECT.md Key Decisions table.
+
+- [Phase 23-pipeline-reorder]: Cut before transcribe: Whisper runs on cut video so timestamps are naturally correct, eliminating adjust_timestamps drift
+- [Phase 23-pipeline-reorder]: transcribe() receives None for wav_path — self-extracts from cut video on the correct timeline
 
 ### Pending Todos
 
@@ -53,6 +65,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-22
-Stopped at: Roadmap created for v1.7, ready to plan Phase 23
+Last session: 2026-03-23T02:30:27.406Z
+Stopped at: Completed 23-01-PLAN.md
 Resume file: None

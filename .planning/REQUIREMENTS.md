@@ -9,9 +9,9 @@ Requirements for Pipeline Reorder milestone.
 
 ### Pipeline
 
-- [ ] **PIPE-01**: Pipeline runs cut (silence removal) before transcription so Whisper timestamps match the cut video timeline
-- [ ] **PIPE-02**: `adjust_timestamps` logic removed from pipeline — no longer needed when transcription runs on cut audio
-- [ ] **PIPE-03**: Caption highlight tracks spoken words accurately without boundary drift or timestamp clamping artifacts
+- [x] **PIPE-01**: Pipeline runs cut (silence removal) before transcription so Whisper timestamps match the cut video timeline
+- [x] **PIPE-02**: `adjust_timestamps` logic removed from pipeline — no longer needed when transcription runs on cut audio
+- [x] **PIPE-03**: Caption highlight tracks spoken words accurately without boundary drift or timestamp clamping artifacts
 
 ### Cleanup
 
@@ -28,9 +28,9 @@ Requirements for Pipeline Reorder milestone.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PIPE-01 | Phase 23 | Pending |
-| PIPE-02 | Phase 23 | Pending |
-| PIPE-03 | Phase 23 | Pending |
+| PIPE-01 | Phase 23 | Complete |
+| PIPE-02 | Phase 23 | Complete |
+| PIPE-03 | Phase 23 | Complete |
 | CLN-01 | Phase 24 | Pending |
 
 **Coverage:**
