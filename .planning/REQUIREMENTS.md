@@ -15,7 +15,7 @@ Requirements for Pipeline Reorder milestone.
 
 ### Cleanup
 
-- [ ] **CLN-01**: Dead `adjust_timestamps` function and monotonicity clamping code removed from `silence.rs`
+- [x] **CLN-01**: Dead `adjust_timestamps` function and monotonicity clamping code removed from `silence.rs`
 
 ## Out of Scope
 
@@ -31,7 +31,7 @@ Requirements for Pipeline Reorder milestone.
 | PIPE-01 | Phase 23 | Complete |
 | PIPE-02 | Phase 23 | Complete |
 | PIPE-03 | Phase 23 | Complete |
-| CLN-01 | Phase 24 | Pending |
+| CLN-01 | Phase 24 | Complete |
 
 **Coverage:**
 - v1.7 requirements: 4 total
