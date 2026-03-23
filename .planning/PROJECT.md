@@ -39,7 +39,7 @@ Take a raw video file and remove dead air automatically -- if silence removal do
 
 ### Active
 
-- [ ] Caption highlighting tracks spoken words accurately without boundary drift (pending human verification)
+(None -- Phase 24 pending)
 
 ### Recently Validated
 
