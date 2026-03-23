@@ -162,12 +162,12 @@ pub fn run(args: PipelineArgs, verbose: bool, registry: &TempFileRegistry) -> an
         );
         eprintln!("  1. scale      \u{2192} Scale to 1080x1920 (skip if already correct)");
         eprintln!("  2. normalize  \u{2192} Audio normalization (loudnorm)");
+        eprintln!("  3. cut        \u{2192} VAD-based silence removal");
         eprintln!(
-            "  3. transcribe \u{2192} Whisper transcription (model: {})",
+            "  4. transcribe \u{2192} Whisper transcription (model: {})",
             args.model.display()
         );
-        eprintln!("  4. fix        \u{2192} LLM transcription correction");
-        eprintln!("  5. cut        \u{2192} VAD-based silence removal");
+        eprintln!("  5. fix        \u{2192} LLM transcription correction");
         eprintln!("  6. caption    \u{2192} Burn captions onto cut video");
         eprintln!("  7. overlay    \u{2192} Title approval + overlay");
         eprintln!("  +  metadata  \u{2192} Generate TikTok description + write sidecar");
@@ -284,9 +284,7 @@ fn run_stages(
         let _ = std::fs::remove_file(&scaled_input);
     }
 
-    // Extract shared 16kHz WAV from NORMALIZED video (not original)
-    // This ensures Whisper timestamps, VAD intervals, and concat filter
-    // all operate on the same audio timeline
+    // Extract 16kHz WAV from normalized video for VAD
     let wav_temp = make_temp_file(parent_dir, ".wav")?;
     let wav_path = wav_temp.path().to_path_buf();
     registry.register(wav_path.clone());
@@ -298,21 +296,8 @@ fn run_stages(
         }
     })?;
 
-    // Stage 3: Transcribe normalized video (reuses shared WAV)
-    eprintln!("\n{}", "Stage 3/7: transcribe".bold());
-    let mut words = caption::transcribe(input, model, "en", verbose, registry, Some(&wav_path))?;
-
-    if words.is_empty() {
-        eprintln!("Warning: No speech detected");
-        return Ok(());
-    }
-
-    // Stage 4: LLM fix
-    eprintln!("\n{}", "Stage 4/7: fix".bold());
-    caption::fix_transcription(&mut words, verbose)?;
-
-    // Stage 5: VAD-based silence removal
-    eprintln!("\n{}", "Stage 5/7: cut".bold());
+    // Stage 3: VAD-based silence removal (cut before transcribe so Whisper timestamps match final timeline)
+    eprintln!("\n{}", "Stage 3/7: cut".bold());
 
     let video_duration =
         ffmpeg::probe_duration_strict(&normalized_str).map_err(|e| AppError::StageIo {
@@ -320,7 +305,6 @@ fn run_stages(
             source: e,
         })?;
 
-    // Run VAD on shared WAV (same timeline as normalized video)
     let speeches = vad::run_vad(
         &wav_path,
         video_duration,
@@ -329,128 +313,118 @@ fn run_stages(
         start_pad,
     )?;
 
-    // Clean up shared WAV (no longer needed)
+    // Clean up VAD WAV (no longer needed)
     let _ = std::fs::remove_file(&wav_path);
     registry.remove(&wav_path);
 
+    let cut_output = temp_dir.join("cut.mp4");
+
     if speeches.is_empty() {
         eprintln!("No speech detected -- skipping cut stage");
-        let cut_output = temp_dir.join("cut.mp4");
         std::fs::copy(&normalized, &cut_output).map_err(|e| AppError::StageIo {
             stage: "copy-normalized".to_string(),
             source: e,
         })?;
-        let adjusted_words = words.clone();
-
-        return finish_stages(
-            temp_dir,
-            &cut_output,
-            &adjusted_words,
-            output,
-            text,
-            font_size,
-            no_interactive,
-            verbose,
-            registry,
-        );
-    }
-
-    let total_silence = silence::total_silence_from_speeches(&speeches, video_duration);
-    eprintln!(
-        "Found {} speech segments, removing {:.1}s of silence",
-        speeches.len(),
-        total_silence
-    );
-
-    // 3c: Build filter and cut
-    let cut_output = temp_dir.join("cut.mp4");
-    let concat_filter = silence::build_concat_filter(&speeches);
-    let cut_str = cut_output.to_string_lossy().to_string();
-
-    let ffmpeg_args = vec![
-        "-i",
-        &normalized_str,
-        "-filter_complex",
-        &concat_filter,
-        "-map",
-        "[outv]",
-        "-map",
-        "[outa]",
-        "-c:v",
-        "libx264",
-        "-crf",
-        "14",
-        "-preset",
-        "slow",
-        "-pix_fmt",
-        "yuv420p",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        &cut_str,
-    ];
-
-    let filename = input
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-    let message = format!("Cutting silence from {}...", filename);
-
-    let result = if verbose {
-        eprintln!("Running: ffmpeg {}", ffmpeg_args.join(" "));
-        ffmpeg::run_ffmpeg_verbose(&ffmpeg_args)
+        let _ = std::fs::remove_file(&normalized);
+        registry.remove(&normalized);
     } else {
-        let duration = ffmpeg::probe_duration(&normalized_str);
-        ffmpeg::run_ffmpeg_with_progress(&ffmpeg_args, duration, &message)
-    };
+        let total_silence = silence::total_silence_from_speeches(&speeches, video_duration);
+        eprintln!(
+            "Found {} speech segments, removing {:.1}s of silence",
+            speeches.len(),
+            total_silence
+        );
 
-    // Clean up normalized temp file
-    let _ = std::fs::remove_file(&normalized);
-    registry.remove(&normalized);
+        let concat_filter = silence::build_concat_filter(&speeches);
+        let cut_str = cut_output.to_string_lossy().to_string();
 
-    match result {
-        Ok(ref o) if o.success => {
-            eprintln!(
-                "\u{2713} Removed {:.1}s of silence ({} regions)",
-                total_silence,
-                speeches.len()
-            );
-        }
-        Ok(o) => {
-            let truncated = crate::error::last_n_lines(&o.stderr, 20);
-            return Err(AppError::FfmpegFailed {
-                stage: "cut".to_string(),
-                code: o.exit_code.unwrap_or(-1),
-                stderr: truncated,
+        let ffmpeg_args = vec![
+            "-i",
+            &normalized_str,
+            "-filter_complex",
+            &concat_filter,
+            "-map",
+            "[outv]",
+            "-map",
+            "[outa]",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "14",
+            "-preset",
+            "slow",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            &cut_str,
+        ];
+
+        let filename = input
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let message = format!("Cutting silence from {}...", filename);
+
+        let result = if verbose {
+            eprintln!("Running: ffmpeg {}", ffmpeg_args.join(" "));
+            ffmpeg::run_ffmpeg_verbose(&ffmpeg_args)
+        } else {
+            let duration = ffmpeg::probe_duration(&normalized_str);
+            ffmpeg::run_ffmpeg_with_progress(&ffmpeg_args, duration, &message)
+        };
+
+        // Clean up normalized temp file
+        let _ = std::fs::remove_file(&normalized);
+        registry.remove(&normalized);
+
+        match result {
+            Ok(ref o) if o.success => {
+                eprintln!(
+                    "\u{2713} Removed {:.1}s of silence ({} regions)",
+                    total_silence,
+                    speeches.len()
+                );
             }
-            .into());
-        }
-        Err(io_err) => {
-            return Err(AppError::StageIo {
-                stage: "cut".to_string(),
-                source: io_err,
+            Ok(o) => {
+                let truncated = crate::error::last_n_lines(&o.stderr, 20);
+                return Err(AppError::FfmpegFailed {
+                    stage: "cut".to_string(),
+                    code: o.exit_code.unwrap_or(-1),
+                    stderr: truncated,
+                }
+                .into());
             }
-            .into());
+            Err(io_err) => {
+                return Err(AppError::StageIo {
+                    stage: "cut".to_string(),
+                    source: io_err,
+                }
+                .into());
+            }
         }
     }
 
-    // 3d: Adjust word timestamps to match the cut video
-    let word_data: Vec<(f64, f64, String)> = words
-        .iter()
-        .map(|w| (w.start, w.end, w.word.clone()))
-        .collect();
-    let adjusted = silence::adjust_timestamps(&word_data, &speeches);
-    let adjusted_words: Vec<caption::Word> = adjusted
-        .into_iter()
-        .map(|(start, end, word)| caption::Word { word, start, end })
-        .collect();
+    // Stage 4: Transcribe the cut video — Whisper self-extracts WAV, timestamps match final timeline
+    eprintln!("\n{}", "Stage 4/7: transcribe".bold());
+    let mut words = caption::transcribe(&cut_output, model, "en", verbose, registry, None)?;
+
+    if words.is_empty() {
+        eprintln!("Warning: No speech detected");
+        return Ok(());
+    }
+
+    // Stage 5: LLM fix
+    eprintln!("\n{}", "Stage 5/7: fix".bold());
+    caption::fix_transcription(&mut words, verbose)?;
 
     finish_stages(
         temp_dir,
         &cut_output,
-        &adjusted_words,
+        &words,
         output,
         text,
         font_size,
