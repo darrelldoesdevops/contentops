@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "contentops", about = "Video processing pipeline", version)]
@@ -65,6 +65,12 @@ pub struct CutArgs {
 }
 
 #[derive(Args)]
+#[command(group(
+    ArgGroup::new("caption_source")
+        .required(true)
+        .multiple(false)
+        .args(["model", "words_json"])
+))]
 pub struct CaptionArgs {
     /// Input video file
     pub input: PathBuf,
@@ -73,9 +79,13 @@ pub struct CaptionArgs {
     #[arg(short = 'o')]
     pub output: Option<PathBuf>,
 
-    /// Path to whisper model file
-    #[arg(long)]
-    pub model: PathBuf,
+    /// Path to whisper model file (required unless --words-json is used)
+    #[arg(long, conflicts_with = "words_json")]
+    pub model: Option<PathBuf>,
+
+    /// Existing word timings as a JSON array, in seconds relative to the input video
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["model", "fix"])]
+    pub words_json: Option<PathBuf>,
 
     /// Language code for transcription
     #[arg(long, default_value = "en")]
@@ -184,4 +194,75 @@ fn parse_vad_threshold(s: &str) -> Result<f32, String> {
         return Err(format!("{} is not in 0.0..=1.0", val));
     }
     Ok(val)
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::Cli;
+
+    #[test]
+    fn caption_accepts_model_input() {
+        assert!(
+            Cli::try_parse_from(["contentops", "caption", "--model", "model.bin", "video.mp4"])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn caption_accepts_words_json_input() {
+        assert!(
+            Cli::try_parse_from([
+                "contentops",
+                "caption",
+                "--words-json",
+                "words.json",
+                "video.mp4",
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn caption_requires_exactly_one_caption_source() {
+        let error = Cli::try_parse_from(["contentops", "caption", "video.mp4"])
+            .err()
+            .expect("caption source should be required")
+            .to_string();
+
+        assert!(error.contains("<--model <MODEL>|--words-json <PATH>>"));
+        assert!(!error.contains("--model <MODEL> --words-json <PATH>"));
+    }
+
+    #[test]
+    fn caption_rejects_model_with_words_json() {
+        assert!(
+            Cli::try_parse_from([
+                "contentops",
+                "caption",
+                "--model",
+                "model.bin",
+                "--words-json",
+                "words.json",
+                "video.mp4",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn caption_rejects_fix_with_words_json() {
+        assert!(
+            Cli::try_parse_from([
+                "contentops",
+                "caption",
+                "--words-json",
+                "words.json",
+                "--fix",
+                "video.mp4",
+            ])
+            .is_err()
+        );
+    }
 }

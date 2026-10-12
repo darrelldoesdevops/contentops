@@ -110,11 +110,29 @@ Transcribes audio with Whisper and optionally burns word-by-word captions into v
 contentops caption --model ~/models/ggml-base.en.bin --burn input.mp4
 ```
 
+Existing corrected word timings can be rendered without Whisper:
+
+```bash
+contentops caption --words-json corrected-words.json --burn input.mp4
+```
+
+`--words-json` accepts a nonempty JSON array. Times are seconds relative to the supplied input video's output timeline, not the source video before cuts:
+
+```json
+[
+  {"word": "Corrected", "start": 0.42, "end": 0.91},
+  {"word": "caption", "start": 0.91, "end": 1.36}
+]
+```
+
+Words must have nonempty text and finite, nonnegative, positive-duration, monotonic, nonoverlapping intervals within the video duration (with a 0.05-second final-frame tolerance). Output collision checks recognize symlinks on all targets and hard links on Unix. On other targets, imported captions require unused output paths: existing outputs are rejected because file identity cannot be safely verified with stable standard-library APIs.
+
 | Flag | Description | Default |
 |------|-------------|---------|
 | `<INPUT>` | Input video file | required |
 | `-o <OUTPUT>` | Output SRT path | `input_captioned.srt` |
-| `--model <MODEL>` | Path to whisper model file | required |
+| `--model <MODEL>` | Path to whisper model file; conflicts with `--words-json` | required unless `--words-json` is used |
+| `--words-json <PATH>` | Existing `{word,start,end}` array in input-video seconds; conflicts with `--model` and `--fix` | required unless `--model` is used |
 | `--lang <LANG>` | Language code for transcription | `en` |
 | `--burn` | Burn captions into video | off |
 | `--verbose` | Show verbose FFmpeg output | off |
