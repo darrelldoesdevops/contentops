@@ -438,36 +438,54 @@ pub fn generate_ass(words: &[Word]) -> String {
         };
 
         for (active_idx, _) in group.words.iter().enumerate() {
-            let start = format_ass_time(group.words[active_idx].start);
-            let end = if active_idx + 1 < group.words.len() {
-                format_ass_time(group.words[active_idx + 1].start)
+            let start = group.words[active_idx].start;
+            let next_word_start = if active_idx + 1 < group.words.len() {
+                Some(group.words[active_idx + 1].start)
             } else {
-                let raw_end = group.words[active_idx].end;
-                let clamped = match next_group_start {
-                    Some(next_start) => raw_end.min(next_start),
-                    None => raw_end,
-                };
-                format_ass_time(clamped)
+                next_group_start
             };
+            let raw_end = group.words[active_idx].end;
+            let active_end = next_word_start.map_or(raw_end, |next_start| raw_end.min(next_start));
 
-            let mut text = String::new();
+            let mut highlighted_text = String::new();
             for (i, w) in group.words.iter().enumerate() {
                 if i == active_idx {
-                    text.push_str(&format!("{{\\c{}}}", HIGHLIGHT_COLOR));
-                    text.push_str(&escape_ass_text(&w.text.to_uppercase()));
-                    text.push_str("{\\c&H00FFFFFF&}");
+                    highlighted_text.push_str(&format!("{{\\c{}}}", HIGHLIGHT_COLOR));
+                    highlighted_text.push_str(&escape_ass_text(&w.text.to_uppercase()));
+                    highlighted_text.push_str("{\\c&H00FFFFFF&}");
                 } else {
-                    text.push_str(&escape_ass_text(&w.text.to_uppercase()));
+                    highlighted_text.push_str(&escape_ass_text(&w.text.to_uppercase()));
                 }
                 if i < group.words.len() - 1 {
-                    text.push(' ');
+                    highlighted_text.push(' ');
                 }
             }
 
             output.push_str(&format!(
                 "Dialogue: 0,{},{},Default,,0,0,0,,{}\n",
-                start, end, text
+                format_ass_time(start),
+                format_ass_time(active_end),
+                highlighted_text
             ));
+
+            if active_idx + 1 < group.words.len()
+                && let Some(next_start) = next_word_start
+                && active_end < next_start
+                && format_ass_time(active_end) != format_ass_time(next_start)
+            {
+                let neutral_text = group
+                    .words
+                    .iter()
+                    .map(|word| escape_ass_text(&word.text.to_uppercase()))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                output.push_str(&format!(
+                    "Dialogue: 0,{},{},Default,,0,0,0,,{}\n",
+                    format_ass_time(active_end),
+                    format_ass_time(next_start),
+                    neutral_text
+                ));
+            }
         }
     }
 
@@ -1574,7 +1592,7 @@ mod tests {
     }
 
     #[test]
-    fn ass_preserves_active_word_boundaries_and_escapes_imported_controls() {
+    fn ass_preserves_supplied_boundaries_and_escapes_imported_controls() {
         let words = vec![
             word("{first}\n\\N", 0.125, 0.4),
             word("second}", 0.456, 0.987),
@@ -1583,10 +1601,62 @@ mod tests {
         let ass = generate_ass(&words);
 
         assert!(ass.contains(
-            "Dialogue: 0,0:00:00.13,0:00:00.46,Default,,0,0,0,,{\\c&HFFFF00&}\\{FIRST\\} \\\u{2060}N{\\c&H00FFFFFF&} SECOND\\}"
+            "Dialogue: 0,0:00:00.13,0:00:00.40,Default,,0,0,0,,{\\c&HFFFF00&}\\{FIRST\\} \\\u{2060}N{\\c&H00FFFFFF&} SECOND\\}"
         ));
         assert!(ass.contains(
             "Dialogue: 0,0:00:00.46,0:00:00.99,Default,,0,0,0,,\\{FIRST\\} \\\u{2060}N {\\c&HFFFF00&}SECOND\\}{\\c&H00FFFFFF&}"
+        ));
+    }
+
+    #[test]
+    fn ass_keeps_group_visible_during_internal_gap() {
+        let words = vec![
+            word("first", 0.1, 0.3),
+            word("second", 0.8, 1.1),
+            word("third", 1.1, 1.5),
+        ];
+
+        let ass = generate_ass(&words);
+        let gap_event = "Dialogue: 0,0:00:00.30,0:00:00.80,Default,,0,0,0,,FIRST SECOND THIRD";
+        let gap_line = ass
+            .lines()
+            .find(|line| line.contains("0:00:00.30,0:00:00.80"))
+            .expect("ASS should cover the internal gap");
+
+        assert_eq!(gap_line, gap_event);
+        assert!(!gap_line.contains(HIGHLIGHT_COLOR));
+    }
+
+    #[test]
+    fn ass_skips_zero_duration_neutral_event_after_rounding() {
+        let words = vec![word("first", 0.1, 0.304), word("second", 0.3049, 0.5)];
+
+        let ass = generate_ass(&words);
+
+        assert!(
+            !ass.lines()
+                .any(|line| line.contains("0:00:00.30,0:00:00.30"))
+        );
+    }
+
+    #[test]
+    fn ass_ends_long_gap_highlight_at_supplied_word_end_and_keeps_grouping() {
+        let words = vec![
+            word("Omarchy.", 25.888, 26.349),
+            word("Omarchy,", 29.583, 30.844),
+            word("next", 30.844, 31.1),
+        ];
+
+        let ass = generate_ass(&words);
+
+        assert!(ass.contains(
+            "Dialogue: 0,0:00:25.89,0:00:26.35,Default,,0,0,0,,{\\c&HFFFF00&}OMARCHY.{\\c&H00FFFFFF&} OMARCHY, NEXT"
+        ));
+        assert!(ass.contains(
+            "Dialogue: 0,0:00:29.58,0:00:30.84,Default,,0,0,0,,OMARCHY. {\\c&HFFFF00&}OMARCHY,{\\c&H00FFFFFF&} NEXT"
+        ));
+        assert!(ass.contains(
+            "Dialogue: 0,0:00:30.84,0:00:31.10,Default,,0,0,0,,OMARCHY. OMARCHY, {\\c&HFFFF00&}NEXT{\\c&H00FFFFFF&}"
         ));
     }
 
