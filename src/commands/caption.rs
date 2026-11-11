@@ -73,6 +73,40 @@ fn derive_caption_output(input: &Path, suffix: &str, ext: &str) -> PathBuf {
     parent.join(format!("{}_{}.{}", stem, suffix, ext))
 }
 
+struct CaptionOutputs {
+    srt: PathBuf,
+    json: PathBuf,
+    video: PathBuf,
+}
+
+impl CaptionOutputs {
+    fn collision_paths(&self, burn: bool) -> Vec<&Path> {
+        let mut paths = vec![self.srt.as_path(), self.json.as_path()];
+        if burn {
+            paths.push(self.video.as_path());
+        }
+        paths
+    }
+}
+
+fn resolve_caption_outputs(args: &CaptionArgs) -> CaptionOutputs {
+    let srt = args
+        .output
+        .clone()
+        .unwrap_or_else(|| derive_caption_output(&args.input, "captioned", "srt"));
+    let json = if args.output.is_some() {
+        srt.with_extension("json")
+    } else {
+        derive_caption_output(&args.input, "captioned", "json")
+    };
+    let video = args
+        .video_out
+        .clone()
+        .unwrap_or_else(|| derive_caption_output(&args.input, "captioned", "mp4"));
+
+    CaptionOutputs { srt, json, video }
+}
+
 // Container duration can be rounded past the final frame timestamp; one 20 fps frame avoids rejecting it.
 const VIDEO_DURATION_TOLERANCE_SECONDS: f64 = 0.05;
 
@@ -980,6 +1014,25 @@ pub fn burn_captions(
     verbose: bool,
     registry: &TempFileRegistry,
 ) -> anyhow::Result<()> {
+    burn_captions_with_filter(input, words, output, None, verbose, registry)
+}
+
+fn combine_video_filters(ass_path: &Path, trailing_filter: Option<&str>) -> String {
+    let caption_filter = format!("ass={}", ass_path.to_string_lossy());
+    match trailing_filter.filter(|filter| !filter.is_empty()) {
+        Some(filter) => format!("{caption_filter},{filter}"),
+        None => caption_filter,
+    }
+}
+
+pub(crate) fn burn_captions_with_filter(
+    input: &Path,
+    words: &[Word],
+    output: &Path,
+    trailing_filter: Option<&str>,
+    verbose: bool,
+    registry: &TempFileRegistry,
+) -> anyhow::Result<()> {
     require_ffmpeg_libass()?;
 
     let parent_dir = input.parent().unwrap_or(Path::new("."));
@@ -993,7 +1046,7 @@ pub fn burn_captions(
     })?;
 
     let input_str = input.to_string_lossy();
-    let vf_string = format!("ass={}", ass_path.to_string_lossy());
+    let vf_string = combine_video_filters(&ass_path, trailing_filter);
     let output_str = output.to_string_lossy().to_string();
 
     let burn_args = [
@@ -1086,24 +1139,17 @@ fn run_with_imported_words(
         .words_json
         .as_deref()
         .expect("clap requires --words-json for imported captions");
-    let srt_output = args
-        .output
-        .clone()
-        .unwrap_or_else(|| derive_caption_output(&args.input, "captioned", "srt"));
-    let json_output = if args.output.is_some() {
-        srt_output.with_extension("json")
-    } else {
-        derive_caption_output(&args.input, "captioned", "json")
-    };
-    let video_output = derive_caption_output(&args.input, "captioned", "mp4");
-
+    let caption_outputs = resolve_caption_outputs(&args);
     let words = load_imported_words(words_path)?;
-
-    let mut outputs = vec![srt_output.as_path(), json_output.as_path()];
-    if args.burn {
-        outputs.push(video_output.as_path());
-    }
-    reject_output_collisions(&outputs, &[args.input.as_path(), words_path])?;
+    reject_output_collisions(
+        &caption_outputs.collision_paths(args.burn),
+        &[args.input.as_path(), words_path],
+    )?;
+    let CaptionOutputs {
+        srt: srt_output,
+        json: json_output,
+        video: video_output,
+    } = caption_outputs;
 
     let input_str = args.input.to_string_lossy();
     let video_duration =
@@ -1175,21 +1221,16 @@ fn run_with_whisper(
     }
 
     // 2. Derive output paths
-    let srt_output = args
-        .output
-        .clone()
-        .unwrap_or_else(|| derive_caption_output(&args.input, "captioned", "srt"));
-    let json_output = if args.output.is_some() {
-        srt_output.with_extension("json")
-    } else {
-        derive_caption_output(&args.input, "captioned", "json")
-    };
-    let video_output = derive_caption_output(&args.input, "captioned", "mp4");
-    let mut outputs = vec![srt_output.as_path(), json_output.as_path()];
-    if args.burn {
-        outputs.push(video_output.as_path());
-    }
-    reject_output_collisions(&outputs, &[args.input.as_path(), model])?;
+    let caption_outputs = resolve_caption_outputs(&args);
+    reject_output_collisions(
+        &caption_outputs.collision_paths(args.burn),
+        &[args.input.as_path(), model],
+    )?;
+    let CaptionOutputs {
+        srt: srt_output,
+        json: json_output,
+        video: video_output,
+    } = caption_outputs;
 
     let parent_dir = args.input.parent().unwrap_or(Path::new("."));
 
@@ -1397,84 +1438,7 @@ fn run_with_whisper(
 
     // 8. Burn captions into video (if --burn flag passed)
     if args.burn && !words.is_empty() {
-        require_ffmpeg_libass()?;
-
-        let ass_content = generate_ass(&words);
-        let ass_temp = make_temp_file(parent_dir, ".ass")?;
-        let ass_path = ass_temp.path().to_path_buf();
-        registry.register(ass_path.clone());
-        std::fs::write(&ass_path, ass_content).map_err(|e| AppError::StageIo {
-            stage: "write-ass".to_string(),
-            source: e,
-        })?;
-
-        let vf_string = format!("ass={}", ass_path.to_string_lossy());
-        let video_output_str = video_output.to_string_lossy().to_string();
-
-        let burn_args = [
-            "-i",
-            &input_str,
-            "-vf",
-            &vf_string,
-            "-c:v",
-            "libx264",
-            "-crf",
-            "14",
-            "-preset",
-            "slow",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "copy",
-            &video_output_str,
-        ];
-
-        let spinner = if !verbose {
-            Some(ui::make_spinner("Burning captions..."))
-        } else {
-            eprintln!("Running: ffmpeg {}", burn_args.join(" "));
-            None
-        };
-
-        let result = if verbose {
-            ffmpeg::run_ffmpeg_verbose(&burn_args)
-        } else {
-            ffmpeg::run_ffmpeg(&burn_args)
-        };
-
-        let _ = std::fs::remove_file(&ass_path);
-        registry.remove(&ass_path);
-
-        match result {
-            Ok(ref output) if output.success => {
-                if let Some(ref pb) = spinner {
-                    pb.finish_with_message("Captions burned");
-                }
-            }
-            Ok(output) => {
-                if let Some(pb) = spinner {
-                    pb.finish_and_clear();
-                }
-                let truncated = last_n_lines(&output.stderr, 20);
-                let code = output.exit_code.unwrap_or(-1);
-                return Err(AppError::FfmpegFailed {
-                    stage: "caption-burn".to_string(),
-                    code,
-                    stderr: truncated,
-                }
-                .into());
-            }
-            Err(io_err) => {
-                if let Some(pb) = spinner {
-                    pb.finish_and_clear();
-                }
-                return Err(AppError::StageIo {
-                    stage: "caption-burn".to_string(),
-                    source: io_err,
-                }
-                .into());
-            }
-        }
+        burn_captions(&args.input, &words, &video_output, verbose, registry)?;
 
         let video_size = std::fs::metadata(&video_output)
             .map(|m| format_size(m.len(), DECIMAL))
@@ -1518,6 +1482,84 @@ mod tests {
             start,
             end,
         }
+    }
+
+    fn caption_args(input: PathBuf) -> CaptionArgs {
+        CaptionArgs {
+            input,
+            output: None,
+            model: None,
+            words_json: Some(PathBuf::from("words.json")),
+            lang: "en".to_string(),
+            burn: true,
+            video_out: None,
+            fix: false,
+        }
+    }
+
+    #[test]
+    fn caption_outputs_preserve_srt_option_and_default_video_name() {
+        let mut args = caption_args(PathBuf::from("/tmp/source.mp4"));
+        args.output = Some(PathBuf::from("/tmp/custom.srt"));
+
+        let outputs = resolve_caption_outputs(&args);
+
+        assert_eq!(outputs.srt, PathBuf::from("/tmp/custom.srt"));
+        assert_eq!(outputs.json, PathBuf::from("/tmp/custom.json"));
+        assert_eq!(outputs.video, PathBuf::from("/tmp/source_captioned.mp4"));
+    }
+
+    #[test]
+    fn caption_outputs_use_explicit_video_path_for_imported_and_whisper_flows() {
+        for words_json in [Some(PathBuf::from("words.json")), None] {
+            let mut args = caption_args(PathBuf::from("/tmp/source.mp4"));
+            args.words_json = words_json;
+            args.model = args
+                .words_json
+                .is_none()
+                .then(|| PathBuf::from("model.bin"));
+            args.video_out = Some(PathBuf::from("/tmp/rendered.mp4"));
+
+            assert_eq!(
+                resolve_caption_outputs(&args).video,
+                PathBuf::from("/tmp/rendered.mp4")
+            );
+        }
+    }
+
+    #[test]
+    fn collision_paths_include_explicit_video_only_when_burning_for_both_sources() {
+        for words_json in [Some(PathBuf::from("words.json")), None] {
+            let mut args = caption_args(PathBuf::from("source.mp4"));
+            args.words_json = words_json;
+            args.model = args
+                .words_json
+                .is_none()
+                .then(|| PathBuf::from("model.bin"));
+            args.video_out = Some(PathBuf::from("rendered.mp4"));
+            let outputs = resolve_caption_outputs(&args);
+
+            assert_eq!(
+                outputs.collision_paths(true),
+                vec![
+                    outputs.srt.as_path(),
+                    outputs.json.as_path(),
+                    Path::new("rendered.mp4")
+                ]
+            );
+            assert_eq!(
+                outputs.collision_paths(false),
+                vec![outputs.srt.as_path(), outputs.json.as_path()]
+            );
+        }
+    }
+
+    #[test]
+    fn combined_filter_applies_ass_before_title_overlay() {
+        assert_eq!(
+            combine_video_filters(Path::new("captions.ass"), Some("drawtext=text='TITLE'")),
+            "ass=captions.ass,drawtext=text='TITLE'"
+        );
     }
 
     #[test]
@@ -1670,6 +1712,26 @@ mod tests {
 
         assert!(reject_output_collisions(&[&alias], &[&input]).is_err());
         assert!(reject_output_collisions(&[&sidecar, &sidecar], &[&input]).is_err());
+    }
+
+    #[test]
+    fn explicit_video_output_collision_preserves_sources_for_both_caption_flows() {
+        let directory = tempfile::tempdir().unwrap();
+        let video = directory.path().join("video.mp4");
+        let caption_source = directory.path().join("words-or-model.bin");
+        std::fs::write(&video, "video source bytes").unwrap();
+        std::fs::write(&caption_source, "caption source bytes").unwrap();
+        let video_bytes = std::fs::read(&video).unwrap();
+        let caption_source_bytes = std::fs::read(&caption_source).unwrap();
+
+        for source in [&video, &caption_source] {
+            assert!(reject_output_collisions(&[source], &[&video, &caption_source]).is_err());
+            assert_eq!(std::fs::read(&video).unwrap(), video_bytes);
+            assert_eq!(
+                std::fs::read(&caption_source).unwrap(),
+                caption_source_bytes
+            );
+        }
     }
 
     #[cfg(any(unix, windows))]

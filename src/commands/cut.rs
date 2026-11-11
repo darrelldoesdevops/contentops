@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use humansize::{DECIMAL, format_size};
+use serde::Serialize;
 
 use crate::cli::CutArgs;
 use crate::commands::normalize;
@@ -10,6 +11,27 @@ use crate::silence;
 use crate::temp::{TempFileRegistry, make_temp_file};
 use crate::ui;
 use crate::vad;
+
+#[derive(Serialize)]
+struct DryRunReport<'a> {
+    schema_version: u8,
+    duration_seconds: f64,
+    total_silence_seconds: f64,
+    speech_segments: &'a [silence::SpeechInterval],
+}
+
+fn serialize_dry_run_report(
+    video_duration: f64,
+    total_silence: f64,
+    speeches: &[silence::SpeechInterval],
+) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&DryRunReport {
+        schema_version: 1,
+        duration_seconds: video_duration,
+        total_silence_seconds: total_silence,
+        speech_segments: speeches,
+    })
+}
 
 pub fn derive_output_path(input: &Path, suffix: &str) -> PathBuf {
     let parent = input.parent().unwrap_or(Path::new("."));
@@ -96,17 +118,26 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
             pb.finish_and_clear();
         }
 
-        eprintln!("Speech segments detected in {}:", filename);
-        for s in &speeches {
-            let dur = s.end - s.start;
-            eprintln!("  {:.1}s - {:.1}s ({:.1}s)", s.start, s.end, dur);
+        if args.json {
+            let report = serialize_dry_run_report(video_duration, total_silence, &speeches)
+                .map_err(|error| AppError::ParseFailed {
+                    stage: "cut-dry-run-json".into(),
+                    message: error.to_string(),
+                })?;
+            println!("{report}");
+        } else {
+            eprintln!("Speech segments detected in {}:", filename);
+            for s in &speeches {
+                let dur = s.end - s.start;
+                eprintln!("  {:.1}s - {:.1}s ({:.1}s)", s.start, s.end, dur);
+            }
+            eprintln!();
+            eprintln!("Total silence: {:.1}s", total_silence);
+            eprintln!(
+                "Would remove {:.1}s from {:.1}s video",
+                total_silence, video_duration
+            );
         }
-        eprintln!();
-        eprintln!("Total silence: {:.1}s", total_silence);
-        eprintln!(
-            "Would remove {:.1}s from {:.1}s video",
-            total_silence, video_duration
-        );
         return Ok(());
     }
 
@@ -206,4 +237,30 @@ pub fn run(args: CutArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow:
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dry_run_json_uses_stable_schema() {
+        let speeches = vec![
+            silence::SpeechInterval {
+                start: 0.25,
+                end: 1.5,
+            },
+            silence::SpeechInterval {
+                start: 2.0,
+                end: 3.75,
+            },
+        ];
+
+        let json = serialize_dry_run_report(4.0, 1.0, &speeches).unwrap();
+
+        assert_eq!(
+            json,
+            r#"{"schema_version":1,"duration_seconds":4.0,"total_silence_seconds":1.0,"speech_segments":[{"start":0.25,"end":1.5},{"start":2.0,"end":3.75}]}"#
+        );
+    }
 }

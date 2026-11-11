@@ -168,8 +168,8 @@ pub fn run(args: PipelineArgs, verbose: bool, registry: &TempFileRegistry) -> an
             args.model.display()
         );
         eprintln!("  5. fix        \u{2192} LLM transcription correction");
-        eprintln!("  6. caption    \u{2192} Burn captions onto cut video");
-        eprintln!("  7. overlay    \u{2192} Title approval + overlay");
+        eprintln!("  6. caption    \u{2192} Prepare captions for the cut video");
+        eprintln!("  7. overlay    \u{2192} Approve title, then encode captions + title together");
         eprintln!("  +  metadata  \u{2192} Generate TikTok description + write sidecar");
         eprintln!();
         eprintln!("Output: {}", output.display());
@@ -457,17 +457,10 @@ fn finish_stages(
         source: e,
     })?;
 
-    // Stage 6: Burn captions onto cut video
+    // Stage 6: Prepare captions for the combined encode
     eprintln!("\n{}", "Stage 6/7: caption".bold());
-    let captioned_video = temp_dir.join("captioned.mp4");
-    caption::burn_captions(cut_video, words, &captioned_video, verbose, registry)?;
 
-    let cap_size = std::fs::metadata(&captioned_video)
-        .map(|m| format_size(m.len(), DECIMAL))
-        .unwrap_or_else(|_| "unknown size".to_string());
-    eprintln!("\u{2713} Created captioned video ({})", cap_size);
-
-    // Stage 7: Overlay (with title approval)
+    // Stage 7: Approve the title, then apply captions and title in one encode
     eprintln!("\n{}", "Stage 7/7: overlay".bold());
     let overlay_text = if let Some(t) = text {
         t.to_string()
@@ -476,23 +469,57 @@ fn finish_stages(
         overlay::approve_title(&options, no_interactive, verbose)?
     };
     let approved_title = overlay_text.clone();
-    overlay::run(
-        OverlayArgs {
-            input: captioned_video,
-            text: Some(overlay_text),
-            auto: None,
-            output: Some(output.to_path_buf()),
-            font: None,
-            font_size: font_size.unwrap_or(144),
-            color: "black".to_string(),
-            position: "top".to_string(),
-            start: 0.3,
-            duration: 3.5,
-            no_interactive,
-        },
+    let overlay_args = OverlayArgs {
+        input: cut_video.to_path_buf(),
+        text: Some(overlay_text),
+        auto: None,
+        output: Some(output.to_path_buf()),
+        font: None,
+        font_size: font_size.unwrap_or(144),
+        color: "black".to_string(),
+        position: "top".to_string(),
+        start: 0.3,
+        duration: 3.5,
+        no_interactive,
+    };
+    let input_str = cut_video.to_string_lossy();
+    let video_height = ffmpeg::probe_dimensions(&input_str)
+        .map(|(_, height)| height)
+        .unwrap_or(1920);
+    let title_filter = overlay::build_title_filter(
+        overlay_args.text.as_deref().unwrap_or_default(),
+        &overlay_args,
+        video_height,
+    );
+
+    let combined_temp = make_temp_file(temp_dir, ".mp4")?;
+    let combined_path = combined_temp.path().to_path_buf();
+    registry.register(combined_path.clone());
+    let encode_result = caption::burn_captions_with_filter(
+        cut_video,
+        words,
+        &combined_path,
+        Some(&title_filter),
         verbose,
         registry,
-    )?;
+    );
+    if let Err(error) = encode_result {
+        let _ = std::fs::remove_file(&combined_path);
+        registry.remove(&combined_path);
+        return Err(error);
+    }
+
+    std::fs::copy(&combined_path, output).map_err(|error| AppError::StageIo {
+        stage: "copy-output".to_string(),
+        source: error,
+    })?;
+    let _ = std::fs::remove_file(&combined_path);
+    registry.remove(&combined_path);
+
+    let output_size = std::fs::metadata(output)
+        .map(|metadata| format_size(metadata.len(), DECIMAL))
+        .unwrap_or_else(|_| "unknown size".to_string());
+    eprintln!("\u{2713} Created {} ({})", output.display(), output_size);
 
     eprintln!();
     if let Some(description) = generate_metadata(words, verbose)

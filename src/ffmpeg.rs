@@ -1,9 +1,60 @@
 use std::io::BufRead;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressStyle};
+
+use crate::cli::{VideoCodec, parse_positive_bitrate};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessConfig {
+    pub video_codec: VideoCodec,
+    pub video_bitrate: String,
+}
+
+impl Default for ProcessConfig {
+    fn default() -> Self {
+        Self {
+            video_codec: VideoCodec::X264,
+            video_bitrate: "40M".to_string(),
+        }
+    }
+}
+
+static PROCESS_CONFIG: OnceLock<ProcessConfig> = OnceLock::new();
+
+pub fn resolve_process_config(
+    cli_codec: Option<VideoCodec>,
+    cli_bitrate: Option<&str>,
+    env_codec: Option<&str>,
+    env_bitrate: Option<&str>,
+) -> Result<ProcessConfig, String> {
+    let video_codec = match cli_codec {
+        Some(codec) => codec,
+        None => match env_codec {
+            Some("x264") => VideoCodec::X264,
+            Some("videotoolbox") => VideoCodec::Videotoolbox,
+            Some(value) => return Err(format!("invalid CONTENTOPS_VCODEC value: {value}")),
+            None => VideoCodec::X264,
+        },
+    };
+    let video_bitrate = parse_positive_bitrate(cli_bitrate.or(env_bitrate).unwrap_or("40M"))?;
+
+    Ok(ProcessConfig {
+        video_codec,
+        video_bitrate,
+    })
+}
+
+pub fn install_process_config(config: ProcessConfig) -> Result<(), ProcessConfig> {
+    PROCESS_CONFIG.set(config)
+}
+
+fn process_config() -> &'static ProcessConfig {
+    PROCESS_CONFIG.get_or_init(ProcessConfig::default)
+}
 
 pub struct FfmpegOutput {
     pub success: bool,
@@ -62,31 +113,35 @@ pub fn probe_dimensions(input: &str) -> Option<(u32, u32)> {
     }
 }
 
-/// `CONTENTOPS_VCODEC=videotoolbox` swaps the x264 encode (`-c:v libx264 -crf 14 -preset slow`) for Apple's
-/// hardware encoder at `CONTENTOPS_VBITRATE` (default 40M): several times faster, and platforms re-encode anyway.
-/// Unset, the arguments pass through unchanged.
-fn encoder_args(args: &[&str]) -> Vec<String> {
-    let mut out: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    if std::env::var("CONTENTOPS_VCODEC").as_deref() != Ok("videotoolbox") {
-        return out;
+pub(crate) fn transform_encoder_args(args: &[&str], config: &ProcessConfig) -> Vec<String> {
+    let mut transformed: Vec<String> = args.iter().map(|value| value.to_string()).collect();
+    if config.video_codec == VideoCodec::X264 {
+        return transformed;
     }
-    let bitrate = std::env::var("CONTENTOPS_VBITRATE").unwrap_or_else(|_| "40M".to_string());
+
     let x264 = ["-c:v", "libx264", "-crf", "14", "-preset", "slow"];
-    if let Some(i) = out
+    if let Some(index) = transformed
         .windows(x264.len())
-        .position(|w| w.iter().map(String::as_str).eq(x264))
+        .position(|window| window.iter().map(String::as_str).eq(x264))
     {
-        let hw = [
+        let videotoolbox = [
             "-c:v",
             "h264_videotoolbox",
             "-b:v",
-            bitrate.as_str(),
+            config.video_bitrate.as_str(),
             "-profile:v",
             "high",
         ];
-        out.splice(i..i + x264.len(), hw.iter().map(|s| s.to_string()));
+        transformed.splice(
+            index..index + x264.len(),
+            videotoolbox.iter().map(|value| value.to_string()),
+        );
     }
-    out
+    transformed
+}
+
+fn encoder_args(args: &[&str]) -> Vec<String> {
+    transform_encoder_args(args, process_config())
 }
 
 pub fn run_ffmpeg(args: &[&str]) -> Result<FfmpegOutput, std::io::Error> {
@@ -265,4 +320,113 @@ fn run_ffmpeg_with_spinner(args: &[&str], message: &str) -> Result<FfmpegOutput,
 
     pb.finish_and_clear();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_config_precedence_is_cli_then_env_then_defaults() {
+        assert_eq!(
+            resolve_process_config(None, None, None, None).unwrap(),
+            ProcessConfig::default()
+        );
+        assert_eq!(
+            resolve_process_config(None, None, Some("videotoolbox"), Some("30M")).unwrap(),
+            ProcessConfig {
+                video_codec: VideoCodec::Videotoolbox,
+                video_bitrate: "30M".to_string(),
+            }
+        );
+        assert_eq!(
+            resolve_process_config(
+                Some(VideoCodec::X264),
+                Some("12M"),
+                Some("invalid-env-codec"),
+                Some("0M"),
+            )
+            .unwrap(),
+            ProcessConfig {
+                video_codec: VideoCodec::X264,
+                video_bitrate: "12M".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn process_config_rejects_invalid_environment_values() {
+        assert!(resolve_process_config(None, None, Some("nvenc"), None).is_err());
+        assert!(resolve_process_config(None, None, None, Some("0M")).is_err());
+    }
+
+    #[test]
+    fn x264_transform_preserves_existing_arguments() {
+        let args = [
+            "-i",
+            "input.mp4",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "14",
+            "-preset",
+            "slow",
+            "output.mp4",
+        ];
+        assert_eq!(
+            transform_encoder_args(&args, &ProcessConfig::default()),
+            args
+        );
+    }
+
+    #[test]
+    fn videotoolbox_transform_replaces_only_the_known_x264_sequence() {
+        let args = [
+            "-i",
+            "input.mp4",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "14",
+            "-preset",
+            "slow",
+            "-pix_fmt",
+            "yuv420p",
+            "output.mp4",
+        ];
+        let config = ProcessConfig {
+            video_codec: VideoCodec::Videotoolbox,
+            video_bitrate: "24M".to_string(),
+        };
+
+        assert_eq!(
+            transform_encoder_args(&args, &config),
+            [
+                "-i",
+                "input.mp4",
+                "-c:v",
+                "h264_videotoolbox",
+                "-b:v",
+                "24M",
+                "-profile:v",
+                "high",
+                "-pix_fmt",
+                "yuv420p",
+                "output.mp4",
+            ]
+        );
+    }
+
+    #[test]
+    fn videotoolbox_transform_preserves_copy_and_audio_only_invocations() {
+        let config = ProcessConfig {
+            video_codec: VideoCodec::Videotoolbox,
+            video_bitrate: "24M".to_string(),
+        };
+        let copy_args = ["-i", "input.mp4", "-c:v", "copy", "output.mp4"];
+        let audio_args = ["-i", "input.mp4", "-vn", "-c:a", "aac", "output.m4a"];
+
+        assert_eq!(transform_encoder_args(&copy_args, &config), copy_args);
+        assert_eq!(transform_encoder_args(&audio_args, &config), audio_args);
+    }
 }

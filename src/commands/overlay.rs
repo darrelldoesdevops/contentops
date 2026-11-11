@@ -249,7 +249,7 @@ fn wrap_title_lines(text: &str, font_size: u32, max_width: u32) -> Vec<String> {
     result
 }
 
-fn build_title_filter(text: &str, args: &OverlayArgs, video_height: u32) -> String {
+pub(crate) fn build_title_filter(text: &str, args: &OverlayArgs, video_height: u32) -> String {
     let t_start = args.start;
     let t_end = if args.duration > 0.0 {
         args.start + args.duration
