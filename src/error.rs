@@ -79,6 +79,12 @@ pub enum AppError {
     #[error("ffmpeg was built without libass (no 'ass' filter)")]
     LibassNotFound,
 
+    #[error("invalid imported words in {path}: {message}")]
+    InvalidWordsJson { path: PathBuf, message: String },
+
+    #[error("output path collision: {first} conflicts with {second}")]
+    OutputCollision { first: PathBuf, second: PathBuf },
+
     #[error("transcript fix word count mismatch: expected {expected} words, got {actual}")]
     TranscriptMismatch { expected: usize, actual: usize },
 }
@@ -254,6 +260,22 @@ pub fn format_error(err: &AppError) -> String {
                 "error:".red().bold(),
                 "hint".bold(),
                 reinstall_hint
+            )
+        }
+        AppError::InvalidWordsJson { path, message } => {
+            format!(
+                "{} invalid imported words in {}: {}",
+                "error:".red().bold(),
+                path.display(),
+                message
+            )
+        }
+        AppError::OutputCollision { first, second } => {
+            format!(
+                "{} output path collision: {} conflicts with {}",
+                "error:".red().bold(),
+                first.display(),
+                second.display()
             )
         }
         AppError::TranscriptMismatch { expected, actual } => {

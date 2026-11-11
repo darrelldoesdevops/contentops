@@ -18,6 +18,23 @@ use temp::TempFileRegistry;
 fn main() {
     let cli = Cli::parse();
 
+    let env_vcodec = std::env::var("CONTENTOPS_VCODEC").ok();
+    let env_vbitrate = std::env::var("CONTENTOPS_VBITRATE").ok();
+    let process_config = match ffmpeg::resolve_process_config(
+        cli.vcodec,
+        cli.vbitrate.as_deref(),
+        env_vcodec.as_deref(),
+        env_vbitrate.as_deref(),
+    ) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("{} {}", "error:".red().bold(), error);
+            std::process::exit(2);
+        }
+    };
+    ffmpeg::install_process_config(process_config)
+        .expect("process FFmpeg configuration should only be initialized once");
+
     let registry = TempFileRegistry::new();
     temp::register_cleanup(registry.clone_inner());
 

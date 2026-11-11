@@ -14,7 +14,7 @@ use crate::temp::{TempFileRegistry, make_temp_file};
 use crate::tiktok;
 use crate::ui;
 
-#[derive(serde::Serialize, Deserialize, Clone)]
+#[derive(Debug, serde::Serialize, Deserialize, Clone)]
 pub struct Word {
     pub word: String,
     pub start: f64,
@@ -71,6 +71,238 @@ fn derive_caption_output(input: &Path, suffix: &str, ext: &str) -> PathBuf {
     let parent = input.parent().unwrap_or(Path::new("."));
     let stem = input.file_stem().unwrap_or_default().to_string_lossy();
     parent.join(format!("{}_{}.{}", stem, suffix, ext))
+}
+
+struct CaptionOutputs {
+    srt: PathBuf,
+    json: PathBuf,
+    video: PathBuf,
+}
+
+impl CaptionOutputs {
+    fn collision_paths(&self, burn: bool) -> Vec<&Path> {
+        let mut paths = vec![self.srt.as_path(), self.json.as_path()];
+        if burn {
+            paths.push(self.video.as_path());
+        }
+        paths
+    }
+}
+
+fn resolve_caption_outputs(args: &CaptionArgs) -> CaptionOutputs {
+    let srt = args
+        .output
+        .clone()
+        .unwrap_or_else(|| derive_caption_output(&args.input, "captioned", "srt"));
+    let json = if args.output.is_some() {
+        srt.with_extension("json")
+    } else {
+        derive_caption_output(&args.input, "captioned", "json")
+    };
+    let video = args
+        .video_out
+        .clone()
+        .unwrap_or_else(|| derive_caption_output(&args.input, "captioned", "mp4"));
+
+    CaptionOutputs { srt, json, video }
+}
+
+// Container duration can be rounded past the final frame timestamp; one 20 fps frame avoids rejecting it.
+const VIDEO_DURATION_TOLERANCE_SECONDS: f64 = 0.05;
+
+fn load_imported_words(path: &Path) -> anyhow::Result<Vec<Word>> {
+    let content = std::fs::read_to_string(path).map_err(|e| AppError::StageIo {
+        stage: format!("read-words-json ({})", path.display()),
+        source: e,
+    })?;
+
+    serde_json::from_str(&content).map_err(|e| {
+        AppError::InvalidWordsJson {
+            path: path.to_path_buf(),
+            message: format!("malformed JSON: {e}"),
+        }
+        .into()
+    })
+}
+
+fn validate_imported_words(words: &[Word], video_duration: f64, path: &Path) -> anyhow::Result<()> {
+    let invalid = |message: String| AppError::InvalidWordsJson {
+        path: path.to_path_buf(),
+        message,
+    };
+
+    if words.is_empty() {
+        return Err(invalid("the array must contain at least one word".into()).into());
+    }
+
+    if !video_duration.is_finite() || video_duration < 0.0 {
+        return Err(invalid(format!(
+            "could not determine a valid input video duration ({video_duration})"
+        ))
+        .into());
+    }
+
+    for (index, word) in words.iter().enumerate() {
+        if word.word.trim().is_empty() {
+            return Err(invalid(format!("word {} has empty text", index + 1)).into());
+        }
+        if !word.start.is_finite() || !word.end.is_finite() {
+            return Err(invalid(format!(
+                "word {} has non-finite timing ({}, {})",
+                index + 1,
+                word.start,
+                word.end
+            ))
+            .into());
+        }
+        if word.start < 0.0 || word.end < 0.0 {
+            return Err(invalid(format!(
+                "word {} has negative timing ({}, {})",
+                index + 1,
+                word.start,
+                word.end
+            ))
+            .into());
+        }
+        if word.end <= word.start {
+            return Err(invalid(format!(
+                "word {} must have positive duration, got start {} and end {}",
+                index + 1,
+                word.start,
+                word.end
+            ))
+            .into());
+        }
+        if let Some(previous) = index.checked_sub(1).map(|i| &words[i])
+            && word.start < previous.end
+        {
+            return Err(invalid(format!(
+                "word {} starts at {} before word {} ends at {}",
+                index + 1,
+                word.start,
+                index,
+                previous.end
+            ))
+            .into());
+        }
+        if word.end > video_duration + VIDEO_DURATION_TOLERANCE_SECONDS {
+            return Err(invalid(format!(
+                "word {} ends at {}, beyond video duration {} ({} second tolerance)",
+                index + 1,
+                word.end,
+                video_duration,
+                VIDEO_DURATION_TOLERANCE_SECONDS
+            ))
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+fn normalized_path(path: &Path) -> std::io::Result<PathBuf> {
+    if path.exists() {
+        return std::fs::canonicalize(path);
+    }
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
+    })?;
+    Ok(std::fs::canonicalize(parent)?.join(file_name))
+}
+
+fn existing_files_match(first: &Path, second: &Path) -> std::io::Result<bool> {
+    let metadata = |path: &Path| match std::fs::metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    };
+    let (Some(first), Some(second)) = (metadata(first)?, metadata(second)?) else {
+        return Ok(false);
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(first.dev() == second.dev() && first.ino() == second.ino())
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = (first, second);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "cannot safely overwrite existing caption outputs on this platform; use unused output paths",
+        ))
+    }
+}
+
+fn reject_output_collisions(outputs: &[&Path], sources: &[&Path]) -> anyhow::Result<()> {
+    let normalized_outputs = outputs
+        .iter()
+        .map(|path| normalized_path(path))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| AppError::StageIo {
+            stage: "validate-output-path".into(),
+            source: e,
+        })?;
+    let normalized_sources = sources
+        .iter()
+        .map(|path| normalized_path(path))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| AppError::StageIo {
+            stage: "validate-input-path".into(),
+            source: e,
+        })?;
+
+    for (output_index, output) in normalized_outputs.iter().enumerate() {
+        for (source_index, source) in normalized_sources.iter().enumerate() {
+            if output == source
+                || existing_files_match(outputs[output_index], sources[source_index]).map_err(
+                    |error| AppError::StageIo {
+                        stage: format!(
+                            "compare-file-identity ({} and {})",
+                            outputs[output_index].display(),
+                            sources[source_index].display()
+                        ),
+                        source: error,
+                    },
+                )?
+            {
+                return Err(AppError::OutputCollision {
+                    first: outputs[output_index].to_path_buf(),
+                    second: sources[source_index].to_path_buf(),
+                }
+                .into());
+            }
+        }
+        for other_index in 0..output_index {
+            if output == &normalized_outputs[other_index]
+                || existing_files_match(outputs[output_index], outputs[other_index]).map_err(
+                    |error| AppError::StageIo {
+                        stage: format!(
+                            "compare-file-identity ({} and {})",
+                            outputs[output_index].display(),
+                            outputs[other_index].display()
+                        ),
+                        source: error,
+                    },
+                )?
+            {
+                return Err(AppError::OutputCollision {
+                    first: outputs[output_index].to_path_buf(),
+                    second: outputs[other_index].to_path_buf(),
+                }
+                .into());
+            }
+        }
+    }
+
+    Ok(())
 }
 
 pub fn group_words_into_srt(words: &[Word]) -> Vec<SrtEntry> {
@@ -189,6 +421,20 @@ fn format_ass_time(seconds: f64) -> String {
     format!("{}:{:02}:{:02}.{:02}", hours, minutes, secs, cs)
 }
 
+fn escape_ass_text(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '\\' => escaped.push_str("\\\u{2060}"),
+            '{' => escaped.push_str("\\{"),
+            '}' => escaped.push_str("\\}"),
+            '\r' | '\n' => escaped.push(' '),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
+
 pub fn generate_ass(words: &[Word]) -> String {
     let mut output = String::new();
 
@@ -226,36 +472,54 @@ pub fn generate_ass(words: &[Word]) -> String {
         };
 
         for (active_idx, _) in group.words.iter().enumerate() {
-            let start = format_ass_time(group.words[active_idx].start);
-            let end = if active_idx + 1 < group.words.len() {
-                format_ass_time(group.words[active_idx + 1].start)
+            let start = group.words[active_idx].start;
+            let next_word_start = if active_idx + 1 < group.words.len() {
+                Some(group.words[active_idx + 1].start)
             } else {
-                let raw_end = group.words[active_idx].end;
-                let clamped = match next_group_start {
-                    Some(next_start) => raw_end.min(next_start),
-                    None => raw_end,
-                };
-                format_ass_time(clamped)
+                next_group_start
             };
+            let raw_end = group.words[active_idx].end;
+            let active_end = next_word_start.map_or(raw_end, |next_start| raw_end.min(next_start));
 
-            let mut text = String::new();
+            let mut highlighted_text = String::new();
             for (i, w) in group.words.iter().enumerate() {
                 if i == active_idx {
-                    text.push_str(&format!("{{\\c{}}}", HIGHLIGHT_COLOR));
-                    text.push_str(&w.text.to_uppercase());
-                    text.push_str("{\\c&H00FFFFFF&}");
+                    highlighted_text.push_str(&format!("{{\\c{}}}", HIGHLIGHT_COLOR));
+                    highlighted_text.push_str(&escape_ass_text(&w.text.to_uppercase()));
+                    highlighted_text.push_str("{\\c&H00FFFFFF&}");
                 } else {
-                    text.push_str(&w.text.to_uppercase());
+                    highlighted_text.push_str(&escape_ass_text(&w.text.to_uppercase()));
                 }
                 if i < group.words.len() - 1 {
-                    text.push(' ');
+                    highlighted_text.push(' ');
                 }
             }
 
             output.push_str(&format!(
                 "Dialogue: 0,{},{},Default,,0,0,0,,{}\n",
-                start, end, text
+                format_ass_time(start),
+                format_ass_time(active_end),
+                highlighted_text
             ));
+
+            if active_idx + 1 < group.words.len()
+                && let Some(next_start) = next_word_start
+                && active_end < next_start
+                && format_ass_time(active_end) != format_ass_time(next_start)
+            {
+                let neutral_text = group
+                    .words
+                    .iter()
+                    .map(|word| escape_ass_text(&word.text.to_uppercase()))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                output.push_str(&format!(
+                    "Dialogue: 0,{},{},Default,,0,0,0,,{}\n",
+                    format_ass_time(active_end),
+                    format_ass_time(next_start),
+                    neutral_text
+                ));
+            }
         }
     }
 
@@ -750,6 +1014,25 @@ pub fn burn_captions(
     verbose: bool,
     registry: &TempFileRegistry,
 ) -> anyhow::Result<()> {
+    burn_captions_with_filter(input, words, output, None, verbose, registry)
+}
+
+fn combine_video_filters(ass_path: &Path, trailing_filter: Option<&str>) -> String {
+    let caption_filter = format!("ass={}", ass_path.to_string_lossy());
+    match trailing_filter.filter(|filter| !filter.is_empty()) {
+        Some(filter) => format!("{caption_filter},{filter}"),
+        None => caption_filter,
+    }
+}
+
+pub(crate) fn burn_captions_with_filter(
+    input: &Path,
+    words: &[Word],
+    output: &Path,
+    trailing_filter: Option<&str>,
+    verbose: bool,
+    registry: &TempFileRegistry,
+) -> anyhow::Result<()> {
     require_ffmpeg_libass()?;
 
     let parent_dir = input.parent().unwrap_or(Path::new("."));
@@ -763,7 +1046,7 @@ pub fn burn_captions(
     })?;
 
     let input_str = input.to_string_lossy();
-    let vf_string = format!("ass={}", ass_path.to_string_lossy());
+    let vf_string = combine_video_filters(&ass_path, trailing_filter);
     let output_str = output.to_string_lossy().to_string();
 
     let burn_args = [
@@ -834,6 +1117,93 @@ pub fn burn_captions(
 }
 
 pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> anyhow::Result<()> {
+    if args.words_json.is_some() {
+        run_with_imported_words(args, verbose, registry)
+    } else {
+        run_with_whisper(args, verbose, registry)
+    }
+}
+
+fn run_with_imported_words(
+    args: CaptionArgs,
+    verbose: bool,
+    registry: &TempFileRegistry,
+) -> anyhow::Result<()> {
+    require_ffmpeg()?;
+
+    if !args.input.exists() {
+        return Err(AppError::InputNotFound(args.input).into());
+    }
+
+    let words_path = args
+        .words_json
+        .as_deref()
+        .expect("clap requires --words-json for imported captions");
+    let caption_outputs = resolve_caption_outputs(&args);
+    let words = load_imported_words(words_path)?;
+    reject_output_collisions(
+        &caption_outputs.collision_paths(args.burn),
+        &[args.input.as_path(), words_path],
+    )?;
+    let CaptionOutputs {
+        srt: srt_output,
+        json: json_output,
+        video: video_output,
+    } = caption_outputs;
+
+    let input_str = args.input.to_string_lossy();
+    let video_duration =
+        ffmpeg::probe_duration_strict(&input_str).map_err(|e| AppError::StageIo {
+            stage: "probe-video-duration".into(),
+            source: e,
+        })?;
+    validate_imported_words(&words, video_duration, words_path)?;
+
+    let entries = group_words_into_srt(&words);
+    let srt_content = format_srt(&entries);
+    std::fs::write(&srt_output, srt_content).map_err(|e| AppError::StageIo {
+        stage: "write-srt".into(),
+        source: e,
+    })?;
+
+    let json_content = serde_json::to_string_pretty(&words).map_err(|e| AppError::ParseFailed {
+        stage: "caption-json".into(),
+        message: e.to_string(),
+    })?;
+    std::fs::write(&json_output, json_content).map_err(|e| AppError::StageIo {
+        stage: "write-json".into(),
+        source: e,
+    })?;
+
+    if args.burn {
+        burn_captions(&args.input, &words, &video_output, verbose, registry)?;
+        let video_size = std::fs::metadata(&video_output)
+            .map(|metadata| format_size(metadata.len(), DECIMAL))
+            .unwrap_or_else(|_| "unknown size".to_string());
+        eprintln!(
+            "\u{2713} Created {} ({})",
+            video_output.display(),
+            video_size
+        );
+    }
+
+    let srt_size = std::fs::metadata(&srt_output)
+        .map(|metadata| format_size(metadata.len(), DECIMAL))
+        .unwrap_or_else(|_| "unknown size".to_string());
+    let json_size = std::fs::metadata(&json_output)
+        .map(|metadata| format_size(metadata.len(), DECIMAL))
+        .unwrap_or_else(|_| "unknown size".to_string());
+    eprintln!("\u{2713} Created {} ({})", srt_output.display(), srt_size);
+    eprintln!("\u{2713} Created {} ({})", json_output.display(), json_size);
+
+    Ok(())
+}
+
+fn run_with_whisper(
+    args: CaptionArgs,
+    verbose: bool,
+    registry: &TempFileRegistry,
+) -> anyhow::Result<()> {
     // 1. Validation
     require_ffmpeg()?;
     require_whisper()?;
@@ -842,20 +1212,25 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
         return Err(AppError::InputNotFound(args.input).into());
     }
 
-    if !args.model.exists() {
-        return Err(AppError::ModelNotFound(args.model).into());
+    let model = args
+        .model
+        .as_deref()
+        .expect("clap requires --model for Whisper captions");
+    if !model.exists() {
+        return Err(AppError::ModelNotFound(model.to_path_buf()).into());
     }
 
     // 2. Derive output paths
-    let srt_output = args
-        .output
-        .clone()
-        .unwrap_or_else(|| derive_caption_output(&args.input, "captioned", "srt"));
-    let json_output = if args.output.is_some() {
-        srt_output.with_extension("json")
-    } else {
-        derive_caption_output(&args.input, "captioned", "json")
-    };
+    let caption_outputs = resolve_caption_outputs(&args);
+    reject_output_collisions(
+        &caption_outputs.collision_paths(args.burn),
+        &[args.input.as_path(), model],
+    )?;
+    let CaptionOutputs {
+        srt: srt_output,
+        json: json_output,
+        video: video_output,
+    } = caption_outputs;
 
     let parent_dir = args.input.parent().unwrap_or(Path::new("."));
 
@@ -925,7 +1300,7 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
     } else {
         eprintln!(
             "Running: whisper-cli -m {} -f {} --output-json --max-len 1 -l {}",
-            args.model.display(),
+            model.display(),
             wav_str,
             args.lang
         );
@@ -934,7 +1309,7 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
 
     let whisper_output = Command::new("whisper-cli")
         .arg("-m")
-        .arg(&args.model)
+        .arg(model)
         .arg("-f")
         .arg(&temp_wav)
         .arg("--output-json")
@@ -1063,85 +1438,7 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
 
     // 8. Burn captions into video (if --burn flag passed)
     if args.burn && !words.is_empty() {
-        require_ffmpeg_libass()?;
-        let video_output = derive_caption_output(&args.input, "captioned", "mp4");
-
-        let ass_content = generate_ass(&words);
-        let ass_temp = make_temp_file(parent_dir, ".ass")?;
-        let ass_path = ass_temp.path().to_path_buf();
-        registry.register(ass_path.clone());
-        std::fs::write(&ass_path, ass_content).map_err(|e| AppError::StageIo {
-            stage: "write-ass".to_string(),
-            source: e,
-        })?;
-
-        let vf_string = format!("ass={}", ass_path.to_string_lossy());
-        let video_output_str = video_output.to_string_lossy().to_string();
-
-        let burn_args = [
-            "-i",
-            &input_str,
-            "-vf",
-            &vf_string,
-            "-c:v",
-            "libx264",
-            "-crf",
-            "14",
-            "-preset",
-            "slow",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "copy",
-            &video_output_str,
-        ];
-
-        let spinner = if !verbose {
-            Some(ui::make_spinner("Burning captions..."))
-        } else {
-            eprintln!("Running: ffmpeg {}", burn_args.join(" "));
-            None
-        };
-
-        let result = if verbose {
-            ffmpeg::run_ffmpeg_verbose(&burn_args)
-        } else {
-            ffmpeg::run_ffmpeg(&burn_args)
-        };
-
-        let _ = std::fs::remove_file(&ass_path);
-        registry.remove(&ass_path);
-
-        match result {
-            Ok(ref output) if output.success => {
-                if let Some(ref pb) = spinner {
-                    pb.finish_with_message("Captions burned");
-                }
-            }
-            Ok(output) => {
-                if let Some(pb) = spinner {
-                    pb.finish_and_clear();
-                }
-                let truncated = last_n_lines(&output.stderr, 20);
-                let code = output.exit_code.unwrap_or(-1);
-                return Err(AppError::FfmpegFailed {
-                    stage: "caption-burn".to_string(),
-                    code,
-                    stderr: truncated,
-                }
-                .into());
-            }
-            Err(io_err) => {
-                if let Some(pb) = spinner {
-                    pb.finish_and_clear();
-                }
-                return Err(AppError::StageIo {
-                    stage: "caption-burn".to_string(),
-                    source: io_err,
-                }
-                .into());
-            }
-        }
+        burn_captions(&args.input, &words, &video_output, verbose, registry)?;
 
         let video_size = std::fs::metadata(&video_output)
             .map(|m| format_size(m.len(), DECIMAL))
@@ -1171,4 +1468,299 @@ pub fn run(args: CaptionArgs, verbose: bool, registry: &TempFileRegistry) -> any
     eprintln!("\u{2713} Created {} ({})", json_output.display(), json_size);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use super::*;
+
+    fn word(text: &str, start: f64, end: f64) -> Word {
+        Word {
+            word: text.to_string(),
+            start,
+            end,
+        }
+    }
+
+    fn caption_args(input: PathBuf) -> CaptionArgs {
+        CaptionArgs {
+            input,
+            output: None,
+            model: None,
+            words_json: Some(PathBuf::from("words.json")),
+            lang: "en".to_string(),
+            burn: true,
+            video_out: None,
+            fix: false,
+        }
+    }
+
+    #[test]
+    fn caption_outputs_preserve_srt_option_and_default_video_name() {
+        let mut args = caption_args(PathBuf::from("/tmp/source.mp4"));
+        args.output = Some(PathBuf::from("/tmp/custom.srt"));
+
+        let outputs = resolve_caption_outputs(&args);
+
+        assert_eq!(outputs.srt, PathBuf::from("/tmp/custom.srt"));
+        assert_eq!(outputs.json, PathBuf::from("/tmp/custom.json"));
+        assert_eq!(outputs.video, PathBuf::from("/tmp/source_captioned.mp4"));
+    }
+
+    #[test]
+    fn caption_outputs_use_explicit_video_path_for_imported_and_whisper_flows() {
+        for words_json in [Some(PathBuf::from("words.json")), None] {
+            let mut args = caption_args(PathBuf::from("/tmp/source.mp4"));
+            args.words_json = words_json;
+            args.model = args
+                .words_json
+                .is_none()
+                .then(|| PathBuf::from("model.bin"));
+            args.video_out = Some(PathBuf::from("/tmp/rendered.mp4"));
+
+            assert_eq!(
+                resolve_caption_outputs(&args).video,
+                PathBuf::from("/tmp/rendered.mp4")
+            );
+        }
+    }
+
+    #[test]
+    fn collision_paths_include_explicit_video_only_when_burning_for_both_sources() {
+        for words_json in [Some(PathBuf::from("words.json")), None] {
+            let mut args = caption_args(PathBuf::from("source.mp4"));
+            args.words_json = words_json;
+            args.model = args
+                .words_json
+                .is_none()
+                .then(|| PathBuf::from("model.bin"));
+            args.video_out = Some(PathBuf::from("rendered.mp4"));
+            let outputs = resolve_caption_outputs(&args);
+
+            assert_eq!(
+                outputs.collision_paths(true),
+                vec![
+                    outputs.srt.as_path(),
+                    outputs.json.as_path(),
+                    Path::new("rendered.mp4")
+                ]
+            );
+            assert_eq!(
+                outputs.collision_paths(false),
+                vec![outputs.srt.as_path(), outputs.json.as_path()]
+            );
+        }
+    }
+
+    #[test]
+    fn combined_filter_applies_ass_before_title_overlay() {
+        assert_eq!(
+            combine_video_filters(Path::new("captions.ass"), Some("drawtext=text='TITLE'")),
+            "ass=captions.ass,drawtext=text='TITLE'"
+        );
+    }
+
+    #[test]
+    fn imported_words_preserve_text_and_timing() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            file,
+            r#"[{{"word":"Skool, {{exact}}","start":0.125,"end":0.987}}]"#
+        )
+        .unwrap();
+
+        let words = load_imported_words(file.path()).unwrap();
+
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].word, "Skool, {exact}");
+        assert_eq!(words[0].start, 0.125);
+        assert_eq!(words[0].end, 0.987);
+    }
+
+    #[test]
+    fn imported_words_reject_malformed_json() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        write!(file, "not-json").unwrap();
+
+        let error = load_imported_words(file.path()).unwrap_err().to_string();
+
+        assert!(error.contains("malformed JSON"));
+        assert!(error.contains(&file.path().display().to_string()));
+    }
+
+    #[test]
+    fn imported_words_report_read_failure_with_failing_path() {
+        let path = Path::new("missing-parent/contentops-words.json");
+        let error = load_imported_words(path).unwrap_err().to_string();
+
+        assert!(error.contains("read-words-json"));
+        assert!(error.contains(&path.display().to_string()));
+    }
+
+    #[test]
+    fn imported_word_validation_accepts_adjacent_intervals_and_duration_tolerance() {
+        let words = vec![word("one", 0.0, 0.5), word("two", 0.5, 1.04)];
+
+        validate_imported_words(&words, 1.0, Path::new("words.json")).unwrap();
+    }
+
+    #[test]
+    fn imported_word_validation_rejects_invalid_inputs() {
+        let cases = vec![
+            (Vec::new(), 1.0, "at least one word"),
+            (vec![word("  ", 0.0, 0.1)], 1.0, "empty text"),
+            (vec![word("one", f64::NAN, 0.1)], 1.0, "non-finite timing"),
+            (vec![word("one", -0.1, 0.1)], 1.0, "negative timing"),
+            (vec![word("one", 0.1, 0.1)], 1.0, "positive duration"),
+            (
+                vec![word("one", 0.0, 0.6), word("two", 0.5, 0.8)],
+                1.0,
+                "before word 1 ends",
+            ),
+            (vec![word("one", 0.0, 1.051)], 1.0, "beyond video duration"),
+        ];
+
+        for (words, duration, expected) in cases {
+            let error = validate_imported_words(&words, duration, Path::new("words.json"))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(expected),
+                "expected {error:?} to contain {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ass_preserves_supplied_boundaries_and_escapes_imported_controls() {
+        let words = vec![
+            word("{first}\n\\N", 0.125, 0.4),
+            word("second}", 0.456, 0.987),
+        ];
+
+        let ass = generate_ass(&words);
+
+        assert!(ass.contains(
+            "Dialogue: 0,0:00:00.13,0:00:00.40,Default,,0,0,0,,{\\c&HFFFF00&}\\{FIRST\\} \\\u{2060}N{\\c&H00FFFFFF&} SECOND\\}"
+        ));
+        assert!(ass.contains(
+            "Dialogue: 0,0:00:00.46,0:00:00.99,Default,,0,0,0,,\\{FIRST\\} \\\u{2060}N {\\c&HFFFF00&}SECOND\\}{\\c&H00FFFFFF&}"
+        ));
+    }
+
+    #[test]
+    fn ass_keeps_group_visible_during_internal_gap() {
+        let words = vec![
+            word("first", 0.1, 0.3),
+            word("second", 0.8, 1.1),
+            word("third", 1.1, 1.5),
+        ];
+
+        let ass = generate_ass(&words);
+        let gap_event = "Dialogue: 0,0:00:00.30,0:00:00.80,Default,,0,0,0,,FIRST SECOND THIRD";
+        let gap_line = ass
+            .lines()
+            .find(|line| line.contains("0:00:00.30,0:00:00.80"))
+            .expect("ASS should cover the internal gap");
+
+        assert_eq!(gap_line, gap_event);
+        assert!(!gap_line.contains(HIGHLIGHT_COLOR));
+    }
+
+    #[test]
+    fn ass_skips_zero_duration_neutral_event_after_rounding() {
+        let words = vec![word("first", 0.1, 0.304), word("second", 0.3049, 0.5)];
+
+        let ass = generate_ass(&words);
+
+        assert!(
+            !ass.lines()
+                .any(|line| line.contains("0:00:00.30,0:00:00.30"))
+        );
+    }
+
+    #[test]
+    fn ass_ends_long_gap_highlight_at_supplied_word_end_and_keeps_grouping() {
+        let words = vec![
+            word("Omarchy.", 25.888, 26.349),
+            word("Omarchy,", 29.583, 30.844),
+            word("next", 30.844, 31.1),
+        ];
+
+        let ass = generate_ass(&words);
+
+        assert!(ass.contains(
+            "Dialogue: 0,0:00:25.89,0:00:26.35,Default,,0,0,0,,{\\c&HFFFF00&}OMARCHY.{\\c&H00FFFFFF&} OMARCHY, NEXT"
+        ));
+        assert!(ass.contains(
+            "Dialogue: 0,0:00:29.58,0:00:30.84,Default,,0,0,0,,OMARCHY. {\\c&HFFFF00&}OMARCHY,{\\c&H00FFFFFF&} NEXT"
+        ));
+        assert!(ass.contains(
+            "Dialogue: 0,0:00:30.84,0:00:31.10,Default,,0,0,0,,OMARCHY. OMARCHY, {\\c&HFFFF00&}NEXT{\\c&H00FFFFFF&}"
+        ));
+    }
+
+    #[test]
+    fn output_collision_rejects_input_alias_and_duplicate_outputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("video.mp4");
+        std::fs::write(&input, "video").unwrap();
+        let alias = directory.path().join(".").join("video.mp4");
+        let sidecar = directory.path().join("captions.json");
+
+        assert!(reject_output_collisions(&[&alias], &[&input]).is_err());
+        assert!(reject_output_collisions(&[&sidecar, &sidecar], &[&input]).is_err());
+    }
+
+    #[test]
+    fn explicit_video_output_collision_preserves_sources_for_both_caption_flows() {
+        let directory = tempfile::tempdir().unwrap();
+        let video = directory.path().join("video.mp4");
+        let caption_source = directory.path().join("words-or-model.bin");
+        std::fs::write(&video, "video source bytes").unwrap();
+        std::fs::write(&caption_source, "caption source bytes").unwrap();
+        let video_bytes = std::fs::read(&video).unwrap();
+        let caption_source_bytes = std::fs::read(&caption_source).unwrap();
+
+        for source in [&video, &caption_source] {
+            assert!(reject_output_collisions(&[source], &[&video, &caption_source]).is_err());
+            assert_eq!(std::fs::read(&video).unwrap(), video_bytes);
+            assert_eq!(
+                std::fs::read(&caption_source).unwrap(),
+                caption_source_bytes
+            );
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn output_collision_rejects_hard_links_without_changing_source_contents() {
+        let directory = tempfile::tempdir().unwrap();
+        let video = directory.path().join("video.mp4");
+        let words = directory.path().join("words.json");
+        std::fs::write(&video, "video source bytes").unwrap();
+        std::fs::write(&words, "words source bytes").unwrap();
+        let video_bytes = std::fs::read(&video).unwrap();
+        let words_bytes = std::fs::read(&words).unwrap();
+
+        let video_alias = directory.path().join("video-output.srt");
+        std::fs::hard_link(&video, &video_alias).unwrap();
+        assert!(reject_output_collisions(&[&video_alias], &[&video, &words]).is_err());
+        assert_eq!(std::fs::read(&video).unwrap(), video_bytes);
+
+        let words_alias = directory.path().join("words-output.srt");
+        std::fs::hard_link(&words, &words_alias).unwrap();
+        assert!(reject_output_collisions(&[&words_alias], &[&video, &words]).is_err());
+        assert_eq!(std::fs::read(&words).unwrap(), words_bytes);
+
+        let first_output = directory.path().join("captions.srt");
+        let second_output = directory.path().join("captions.json");
+        std::fs::write(&first_output, "existing output bytes").unwrap();
+        let output_bytes = std::fs::read(&first_output).unwrap();
+        std::fs::hard_link(&first_output, &second_output).unwrap();
+        assert!(reject_output_collisions(&[&first_output, &second_output], &[]).is_err());
+        assert_eq!(std::fs::read(&first_output).unwrap(), output_bytes);
+    }
 }

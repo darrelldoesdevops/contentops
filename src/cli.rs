@@ -1,6 +1,12 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum VideoCodec {
+    X264,
+    Videotoolbox,
+}
 
 #[derive(Parser)]
 #[command(name = "contentops", about = "Video processing pipeline", version)]
@@ -11,6 +17,14 @@ pub struct Cli {
     /// Show verbose FFmpeg output
     #[arg(long, global = true)]
     pub verbose: bool,
+
+    /// Video encoder for re-encoding operations
+    #[arg(long, global = true, value_enum)]
+    pub vcodec: Option<VideoCodec>,
+
+    /// Video bitrate used by the VideoToolbox encoder
+    #[arg(long, global = true, value_parser = parse_positive_bitrate)]
+    pub vbitrate: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -51,6 +65,10 @@ pub struct CutArgs {
     #[arg(long)]
     pub dry_run: bool,
 
+    /// Print the dry-run result as JSON to stdout
+    #[arg(long, requires = "dry_run")]
+    pub json: bool,
+
     /// VAD speech probability threshold (0.0-1.0, lower = more sensitive)
     #[arg(long, default_value = "0.5", value_parser = parse_vad_threshold)]
     pub vad_threshold: f32,
@@ -65,6 +83,12 @@ pub struct CutArgs {
 }
 
 #[derive(Args)]
+#[command(group(
+    ArgGroup::new("caption_source")
+        .required(true)
+        .multiple(false)
+        .args(["model", "words_json"])
+))]
 pub struct CaptionArgs {
     /// Input video file
     pub input: PathBuf,
@@ -73,9 +97,13 @@ pub struct CaptionArgs {
     #[arg(short = 'o')]
     pub output: Option<PathBuf>,
 
-    /// Path to whisper model file
-    #[arg(long)]
-    pub model: PathBuf,
+    /// Path to whisper model file (required unless --words-json is used)
+    #[arg(long, conflicts_with = "words_json")]
+    pub model: Option<PathBuf>,
+
+    /// Existing word timings as a JSON array, in seconds relative to the input video
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["model", "fix"])]
+    pub words_json: Option<PathBuf>,
 
     /// Language code for transcription
     #[arg(long, default_value = "en")]
@@ -84,6 +112,10 @@ pub struct CaptionArgs {
     /// Burn captions into video
     #[arg(long)]
     pub burn: bool,
+
+    /// Burned video output path (default: input_captioned.mp4)
+    #[arg(long, value_name = "PATH", requires = "burn")]
+    pub video_out: Option<PathBuf>,
 
     /// Use Claude to fix transcription errors
     #[arg(long)]
@@ -184,4 +216,153 @@ fn parse_vad_threshold(s: &str) -> Result<f32, String> {
         return Err(format!("{} is not in 0.0..=1.0", val));
     }
     Ok(val)
+}
+
+pub(crate) fn parse_positive_bitrate(value: &str) -> Result<String, String> {
+    let number = value
+        .strip_suffix(['k', 'K', 'm', 'M', 'g', 'G'])
+        .unwrap_or(value);
+    let parsed: f64 = number
+        .parse()
+        .map_err(|_| format!("invalid bitrate: {value}"))?;
+    if !parsed.is_finite() || parsed <= 0.0 {
+        return Err(format!("bitrate must be positive: {value}"));
+    }
+    Ok(value.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::Cli;
+
+    #[test]
+    fn caption_accepts_model_input() {
+        assert!(
+            Cli::try_parse_from(["contentops", "caption", "--model", "model.bin", "video.mp4"])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn caption_accepts_words_json_input() {
+        assert!(
+            Cli::try_parse_from([
+                "contentops",
+                "caption",
+                "--words-json",
+                "words.json",
+                "video.mp4",
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn caption_requires_exactly_one_caption_source() {
+        let error = Cli::try_parse_from(["contentops", "caption", "video.mp4"])
+            .err()
+            .expect("caption source should be required")
+            .to_string();
+
+        assert!(error.contains("<--model <MODEL>|--words-json <PATH>>"));
+        assert!(!error.contains("--model <MODEL> --words-json <PATH>"));
+    }
+
+    #[test]
+    fn caption_rejects_model_with_words_json() {
+        assert!(
+            Cli::try_parse_from([
+                "contentops",
+                "caption",
+                "--model",
+                "model.bin",
+                "--words-json",
+                "words.json",
+                "video.mp4",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn caption_rejects_fix_with_words_json() {
+        assert!(
+            Cli::try_parse_from([
+                "contentops",
+                "caption",
+                "--words-json",
+                "words.json",
+                "--fix",
+                "video.mp4",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn caption_video_out_requires_burn() {
+        assert!(
+            Cli::try_parse_from([
+                "contentops",
+                "caption",
+                "--words-json",
+                "words.json",
+                "--video-out",
+                "burned.mp4",
+                "video.mp4",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "contentops",
+                "caption",
+                "--words-json",
+                "words.json",
+                "--burn",
+                "--video-out",
+                "burned.mp4",
+                "video.mp4",
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn cut_json_requires_dry_run() {
+        assert!(Cli::try_parse_from(["contentops", "cut", "--json", "video.mp4"]).is_err());
+        assert!(
+            Cli::try_parse_from(["contentops", "cut", "--dry-run", "--json", "video.mp4"]).is_ok()
+        );
+    }
+
+    #[test]
+    fn global_encoder_flags_accept_valid_values() {
+        assert!(
+            Cli::try_parse_from([
+                "contentops",
+                "--vcodec",
+                "videotoolbox",
+                "--vbitrate",
+                "25M",
+                "cut",
+                "video.mp4",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "contentops",
+                "cut",
+                "video.mp4",
+                "--vcodec",
+                "x264",
+                "--vbitrate",
+                "0",
+            ])
+            .is_err()
+        );
+    }
 }
