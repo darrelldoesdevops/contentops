@@ -62,9 +62,36 @@ pub fn probe_dimensions(input: &str) -> Option<(u32, u32)> {
     }
 }
 
+/// `CONTENTOPS_VCODEC=videotoolbox` swaps the x264 encode (`-c:v libx264 -crf 14 -preset slow`) for Apple's
+/// hardware encoder at `CONTENTOPS_VBITRATE` (default 40M): several times faster, and platforms re-encode anyway.
+/// Unset, the arguments pass through unchanged.
+fn encoder_args(args: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    if std::env::var("CONTENTOPS_VCODEC").as_deref() != Ok("videotoolbox") {
+        return out;
+    }
+    let bitrate = std::env::var("CONTENTOPS_VBITRATE").unwrap_or_else(|_| "40M".to_string());
+    let x264 = ["-c:v", "libx264", "-crf", "14", "-preset", "slow"];
+    if let Some(i) = out
+        .windows(x264.len())
+        .position(|w| w.iter().map(String::as_str).eq(x264))
+    {
+        let hw = [
+            "-c:v",
+            "h264_videotoolbox",
+            "-b:v",
+            bitrate.as_str(),
+            "-profile:v",
+            "high",
+        ];
+        out.splice(i..i + x264.len(), hw.iter().map(|s| s.to_string()));
+    }
+    out
+}
+
 pub fn run_ffmpeg(args: &[&str]) -> Result<FfmpegOutput, std::io::Error> {
     let output = Command::new("ffmpeg")
-        .args(args)
+        .args(encoder_args(args))
         .arg("-y")
         .arg("-nostdin")
         .stdin(Stdio::null())
@@ -81,7 +108,7 @@ pub fn run_ffmpeg(args: &[&str]) -> Result<FfmpegOutput, std::io::Error> {
 
 pub fn run_ffmpeg_verbose(args: &[&str]) -> Result<FfmpegOutput, std::io::Error> {
     let output = Command::new("ffmpeg")
-        .args(args)
+        .args(encoder_args(args))
         .arg("-y")
         .arg("-nostdin")
         .stdin(Stdio::null())
@@ -171,7 +198,7 @@ pub fn run_ffmpeg_with_progress(
     };
 
     let mut child = Command::new("ffmpeg")
-        .args(args)
+        .args(encoder_args(args))
         .arg("-y")
         .arg("-nostdin")
         .arg("-progress")
